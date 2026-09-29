@@ -240,3 +240,115 @@ describe("refresh and eligibility", () => {
     expect(await requestRefresh(db, "standalone", undefined, NOW)).toBe(0);
   });
 });
+
+describe("stacks and trust", () => {
+  const stack = (project: string, running = 2) => ({
+    project,
+    directory: `/opt/${project}`,
+    running,
+    total: 2,
+    compose: true,
+    rollback: project === "listmonk",
+  });
+  const stacks = (sqlite: DatabaseSync) =>
+    sqlite
+      .prepare(
+        "SELECT project, directory, running, total, compose, rollback FROM stacks WHERE node_id = ? ORDER BY project",
+      )
+      .all(NODE);
+
+  it("stores stacks and removes the ones that left", async () => {
+    const { db, sqlite, node } = setup();
+    await applyInventory(
+      db,
+      node(),
+      {
+        hash: HASH_A,
+        services: [],
+        stacks: [stack("listmonk"), stack("shop")],
+      },
+      NOW,
+    );
+    expect(stacks(sqlite)).toEqual([
+      {
+        project: "listmonk",
+        directory: "/opt/listmonk",
+        running: 2,
+        total: 2,
+        compose: 1,
+        rollback: 1,
+      },
+      {
+        project: "shop",
+        directory: "/opt/shop",
+        running: 2,
+        total: 2,
+        compose: 1,
+        rollback: 0,
+      },
+    ]);
+    await applyInventory(
+      db,
+      node(),
+      { hash: HASH_B, services: [], stacks: [stack("listmonk", 1)] },
+      NOW + 1_000,
+    );
+    expect(stacks(sqlite)).toEqual([
+      {
+        project: "listmonk",
+        directory: "/opt/listmonk",
+        running: 1,
+        total: 2,
+        compose: 1,
+        rollback: 1,
+      },
+    ]);
+  });
+
+  it("stores the trust report", async () => {
+    const { db, sqlite, node } = setup();
+    await applyInventory(
+      db,
+      node(),
+      {
+        hash: HASH_A,
+        services: [],
+        trust: { version: 2, keys: ["0123456789abcdef", "fedcba9876543210"] },
+      },
+      NOW,
+    );
+    expect(
+      sqlite
+        .prepare("SELECT trust_version, trust_keys FROM nodes WHERE id = ?")
+        .get(NODE),
+    ).toEqual({
+      trust_version: 2,
+      trust_keys: '["0123456789abcdef","fedcba9876543210"]',
+    });
+  });
+
+  it("leaves stacks and trust alone when the inventory omits them", async () => {
+    const { db, sqlite, node } = setup();
+    await applyInventory(
+      db,
+      node(),
+      {
+        hash: HASH_A,
+        services: [],
+        stacks: [stack("listmonk")],
+        trust: { version: 1, keys: ["0123456789abcdef"] },
+      },
+      NOW,
+    );
+    await applyInventory(
+      db,
+      node(),
+      { hash: HASH_B, services: [entry("adguard")] },
+      NOW + 1_000,
+    );
+    expect(stacks(sqlite)).toHaveLength(1);
+    expect(
+      sqlite.prepare("SELECT trust_version FROM nodes WHERE id = ?").get(NODE),
+    ).toEqual({ trust_version: 1 });
+  });
+});

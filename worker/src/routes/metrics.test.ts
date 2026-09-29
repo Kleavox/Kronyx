@@ -7,7 +7,7 @@ import { createTestDb } from "../test/sqlite-d1";
 import { epochIso, parseRange, RECENT_SQL } from "./metrics";
 
 function get(db: D1Database, path: string) {
-  return app.request(`https://krynodes.test${path}`, {}, {
+  return app.request(`https://kry.example.test${path}`, {}, {
     DB: db,
   } as unknown as Env);
 }

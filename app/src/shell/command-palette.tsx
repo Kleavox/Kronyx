@@ -16,6 +16,7 @@ import {
   verb,
   type ActionTarget,
 } from "@/lib/services";
+import { deployBlocker, groupStacks } from "@/lib/stacks";
 import type { NodeRecord, ServiceAction, ServicesResponse } from "@/types";
 
 import { SECTIONS } from "./nav";
@@ -45,6 +46,7 @@ export function CommandPalette({
         notRunning: false,
       })
     : [];
+  const stacks = services ? groupStacks(services, nodes, "") : [];
 
   return (
     <CommandDialog
@@ -59,6 +61,9 @@ export function CommandPalette({
         <CommandGroup heading="Actions">
           <CommandItem onSelect={() => go("/?enroll=1")}>
             Enroll node
+          </CommandItem>
+          <CommandItem onSelect={() => go("/devices")}>
+            Deploy devices
           </CommandItem>
           <CommandItem onSelect={() => go("/checks?add=1")}>
             Add check
@@ -132,6 +137,27 @@ export function CommandPalette({
                   ]
                 : items;
             })}
+          </CommandGroup>
+        )}
+        {stacks.length > 0 && (
+          <CommandGroup heading="Stacks">
+            {stacks.flatMap((group) =>
+              group.members
+                .filter((member) => deployBlocker(member) === null)
+                .map((member) => (
+                  <CommandItem
+                    key={`${group.project}|${member.node.id}`}
+                    value={`stack deploy ${group.project} ${member.node.name}`}
+                    onSelect={() =>
+                      go(
+                        `/services?view=stacks&deploy=${encodeURIComponent(group.project)}&node=${member.node.id}`,
+                      )
+                    }
+                  >
+                    Deploy {group.project} · {member.node.name}
+                  </CommandItem>
+                )),
+            )}
           </CommandGroup>
         )}
       </CommandList>

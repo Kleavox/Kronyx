@@ -45,15 +45,64 @@ export const enrollmentResponseSchema = z.object({
 
 const serviceKindSchema = z.enum(["systemd", "docker"]);
 
+export const SESSION_MS = 15 * 60_000;
+export const COMMAND_GRACE_MS = 60 * 60_000;
+export const TRUST_CHANGE_MS = 10 * 60_000;
+
+const b64url = z
+  .string()
+  .min(1)
+  .max(4096)
+  .regex(/^[A-Za-z0-9_-]+$/u);
+
+export const assertionSchema = z.strictObject({
+  credentialId: b64url,
+  authenticatorData: b64url,
+  clientDataJSON: b64url,
+  signature: b64url,
+});
+
+export const signedCommandSchema = z.strictObject({
+  grant: assertionSchema.extend({ grant: b64url }),
+  command: b64url,
+  signature: b64url,
+});
+
+export const signedTrustSchema = z.strictObject({
+  change: b64url,
+  assertion: assertionSchema.nullable(),
+});
+
 export const agentActionSchema = z
   .strictObject({
     id: z.string().uuid(),
-    kind: serviceKindSchema,
+    kind: z.enum(["systemd", "docker", "compose", "trust"]),
     name: z.string(),
-    action: z.enum(["start", "stop", "restart"]),
+    action: z.enum(["start", "stop", "restart", "deploy", "rollback", "trust"]),
     expiresAt: z.string().datetime(),
+    signed: z.union([signedCommandSchema, signedTrustSchema]).optional(),
   })
-  .refine((action) => isValidTarget(action.kind, action.name));
+  .refine((action) => isValidTarget(action.kind, action.name))
+  .refine((action) => {
+    if (action.kind === "compose") {
+      return (
+        (action.action === "deploy" || action.action === "rollback") &&
+        signedCommandSchema.safeParse(action.signed).success
+      );
+    }
+    if (action.kind === "trust") {
+      return (
+        action.action === "trust" &&
+        signedTrustSchema.safeParse(action.signed).success
+      );
+    }
+    return (
+      (action.action === "start" ||
+        action.action === "stop" ||
+        action.action === "restart") &&
+      action.signed === undefined
+    );
+  });
 
 export const heartbeatResponseSchema = z.object({
   ok: z.literal(true),
@@ -79,6 +128,22 @@ export const serviceEntrySchema = z
   })
   .refine((entry) => isValidTarget(entry.kind, entry.name));
 
+export const stackEntrySchema = z
+  .strictObject({
+    project: z.string(),
+    directory: z.string().min(1).max(4096).startsWith("/"),
+    running: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+    compose: z.boolean(),
+    rollback: z.boolean(),
+  })
+  .refine((stack) => isValidTarget("compose", stack.project));
+
+export const trustReportSchema = z.strictObject({
+  version: z.number().int().nonnegative(),
+  keys: z.array(z.string().regex(/^[0-9a-f]{16}$/u)).max(20),
+});
+
 export const actionResultSchema = z.strictObject({
   id: z.string().uuid(),
   ok: z.boolean(),
@@ -95,6 +160,8 @@ export const agentActionsRequestSchema = z
       .strictObject({
         hash: z.string().regex(/^[0-9a-f]{64}$/u),
         services: z.array(serviceEntrySchema).max(500).optional(),
+        stacks: z.array(stackEntrySchema).max(50).optional(),
+        trust: trustReportSchema.optional(),
       })
       .optional(),
   })
@@ -134,3 +201,8 @@ export type AgentConfigResponse = z.infer<typeof agentConfigResponseSchema>;
 export type AgentActionResult = z.infer<typeof actionResultSchema>;
 export type ServiceEntry = z.infer<typeof serviceEntrySchema>;
 export type AgentActionsRequest = z.infer<typeof agentActionsRequestSchema>;
+export type Assertion = z.infer<typeof assertionSchema>;
+export type SignedCommand = z.infer<typeof signedCommandSchema>;
+export type SignedTrust = z.infer<typeof signedTrustSchema>;
+export type StackEntry = z.infer<typeof stackEntrySchema>;
+export type TrustReport = z.infer<typeof trustReportSchema>;

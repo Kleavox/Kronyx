@@ -136,7 +136,7 @@ describe("agent rate limit", () => {
     } as unknown as Env;
     const call = () =>
       app.request(
-        "https://krynodes.test/api/agent/config",
+        "https://kry.example.test/api/agent/config",
         { headers: { "cf-connecting-ip": "203.0.113.7" } },
         env,
       );

@@ -54,7 +54,7 @@ function setup() {
   } as unknown as Env;
   const call = (method: string, path: string, body?: unknown) =>
     app.request(
-      `https://krynodes.test${path}`,
+      `https://kry.example.test${path}`,
       {
         method,
         headers: { "content-type": "application/json" },

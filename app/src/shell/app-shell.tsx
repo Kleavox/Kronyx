@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Link, NavLink, Outlet } from "react-router";
 import { ChevronDown, Search, User } from "lucide-react";
 import { displayHandle } from "@/lib/format";
@@ -13,10 +13,15 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { SessionPill } from "@/features/deploy/session-pill";
 import { useActionToasts } from "@/features/services/use-action-toasts";
 import { useOverview, useRunAction, useServices } from "@/lib/api";
 import { timeAgo } from "@/lib/format";
 import { accountLinks } from "@/lib/account";
+import {
+  sessionSnapshot,
+  subscribe as subscribeSession,
+} from "@/lib/deploy-session";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 import { isPending } from "@/lib/services";
@@ -66,6 +71,12 @@ export function AppShell({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  const deploySession = useSyncExternalStore(
+    subscribeSession,
+    sessionSnapshot,
+    sessionSnapshot,
+  );
+
   if (overview.isError && !overview.data) {
     return (
       <FaultScreen
@@ -110,8 +121,12 @@ export function AppShell({
         </nav>
         <span className="flex-1 md:hidden" />
         {overview.dataUpdatedAt > 0 && (
-          <Freshness updatedAt={overview.dataUpdatedAt} />
+          <Freshness
+            updatedAt={overview.dataUpdatedAt}
+            crowded={deploySession !== null}
+          />
         )}
+        <SessionPill />
         <Button
           variant="outline"
           size="sm"
@@ -193,10 +208,21 @@ function Count({
   );
 }
 
-function Freshness({ updatedAt }: { updatedAt: number }) {
+function Freshness({
+  updatedAt,
+  crowded,
+}: {
+  updatedAt: number;
+  crowded: boolean;
+}) {
   const now = useNow();
   return (
-    <span className="font-mono text-[11px] whitespace-nowrap text-muted-foreground md:hidden lg:inline">
+    <span
+      className={cn(
+        "font-mono text-[11px] whitespace-nowrap text-muted-foreground md:hidden lg:inline",
+        crowded && "max-sm:hidden",
+      )}
+    >
       <span className="max-sm:sr-only">Updated </span>
       {ageOf(updatedAt, now)}
     </span>
@@ -237,6 +263,10 @@ function AccountMenu({
         <DropdownMenuLabel className="font-normal text-muted-foreground">
           {identity.email}
         </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem asChild>
+          <Link to="/devices">Deploy devices</Link>
+        </DropdownMenuItem>
         {links.length > 0 && <DropdownMenuSeparator />}
         {links.map((link) => (
           <DropdownMenuItem key={link.href} asChild>

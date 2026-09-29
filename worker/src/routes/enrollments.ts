@@ -2,13 +2,24 @@ import type { MiddlewareHandler } from "hono";
 
 import type { Env } from "../env";
 import { randomToken, sha256 } from "../lib/crypto";
+import { activeDevices } from "./devices";
 import { agentOrigin, type KrynodesApp, type KrynodesEnv } from "./shared";
 
 const ENROLLMENT_TTL_MS = 30 * 60_000;
 
-function installCommand(env: Env, token: string): string {
+function installCommand(
+  env: Env,
+  token: string,
+  devices: { id: string; alg: number; public_key: string }[],
+): string {
   const endpoint = agentOrigin(env);
-  return `curl -fsSL ${endpoint}/install.sh | sudo sh -s -- ${endpoint} ${token}`;
+  const trust =
+    devices.length > 0
+      ? ` --trust ${env.PUBLIC_ORIGIN} ${devices
+          .map((device) => `${device.id}.${device.alg}.${device.public_key}`)
+          .join(" ")}`
+      : "";
+  return `curl -fsSL ${endpoint}/install.sh | sudo sh -s -- ${endpoint} ${token}${trust}`;
 }
 
 export function registerEnrollmentRoutes(
@@ -30,7 +41,11 @@ export function registerEnrollmentRoutes(
         id,
         enrollmentToken: token,
         enrollmentExpiresAt: expiresAt,
-        command: installCommand(context.env, token),
+        command: installCommand(
+          context.env,
+          token,
+          await activeDevices(context.env.DB, context.get("identity").id),
+        ),
       },
       201,
     );

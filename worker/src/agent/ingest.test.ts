@@ -214,7 +214,7 @@ describe("agent routes", () => {
     seedCheck(sqlite, { id: CHECK, nodeId: NODE.id });
     const call = (path: string, init: RequestInit = {}) =>
       app.request(
-        `https://krynodes.test${path}`,
+        `https://kry.example.test${path}`,
         {
           ...init,
           headers: {
@@ -281,7 +281,7 @@ describe("POST /api/checks", () => {
       seedCheck(sqlite, { id: crypto.randomUUID(), nodeId: NODE.id });
     }
     const response = await app.request(
-      "https://krynodes.test/api/checks",
+      "https://kry.example.test/api/checks",
       {
         method: "POST",
         headers: { "content-type": "application/json" },

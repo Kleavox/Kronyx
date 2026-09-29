@@ -16,6 +16,7 @@ import { HeartbeatStrip, newestLatency } from "@/components/strips";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AgentPanel } from "@/features/agent/agent-panel";
+import { NodeStacks } from "@/features/deploy/node-stacks";
 import { NodeServices, RecentActions } from "@/features/services/node-sections";
 import { NodeActions } from "@/features/nodes/node-actions";
 import { useCheckResults, useNodeMetrics, useOverview } from "@/lib/api";
@@ -228,6 +229,8 @@ export function NodeDetailPage() {
             </ul>
           )}
         </section>
+
+        <NodeStacks node={node} seen={overview.dataUpdatedAt} />
 
         <NodeServices node={node} seen={overview.dataUpdatedAt} />
 

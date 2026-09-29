@@ -3,12 +3,16 @@ import { describe, expect, it } from "vitest";
 import fixture from "./fixtures/agent-config.json";
 import targets from "./fixtures/targets.json";
 import {
+  agentActionSchema,
   agentActionsRequestSchema,
   agentActionsResponseSchema,
   agentConfigResponseSchema,
   agentHeartbeatSchema,
   heartbeatResponseSchema,
   isProtectedTarget,
+  COMMAND_GRACE_MS,
+  SESSION_MS,
+  TRUST_CHANGE_MS,
   isValidTarget,
 } from "./index";
 
@@ -333,5 +337,111 @@ describe("strict action messages", () => {
         ],
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("deploy messages", () => {
+  const id = "0b4f4f53-7d1c-4b55-9a39-2f0a0d6c1a02";
+  const assertion = {
+    credentialId: "Y3JlZA",
+    authenticatorData: "YXV0aA",
+    clientDataJSON: "Y2xpZW50",
+    signature: "c2ln",
+  };
+  const signedCommand = {
+    grant: { grant: "Z3JhbnQ", ...assertion },
+    command: "Y29tbWFuZA",
+    signature: "c2lnbmF0dXJl",
+  };
+  const deploy = {
+    id,
+    kind: "compose",
+    name: "listmonk",
+    action: "deploy",
+    expiresAt: "2026-09-29T10:10:00.000Z",
+    signed: signedCommand,
+  };
+  const inventory = (extra: Record<string, unknown>) => ({
+    nodeId: "0b4f4f53-7d1c-4b55-9a39-2f0a0d6c1a03",
+    inventory: { hash: "a".repeat(64), ...extra },
+  });
+
+  it("accepts a signed compose deploy and refuses it unsigned or on a service", () => {
+    expect(agentActionSchema.safeParse(deploy).success).toBe(true);
+    expect(
+      agentActionSchema.safeParse({ ...deploy, action: "rollback" }).success,
+    ).toBe(true);
+    const { signed: _, ...unsigned } = deploy;
+    expect(agentActionSchema.safeParse(unsigned).success).toBe(false);
+    expect(
+      agentActionSchema.safeParse({ ...deploy, action: "restart" }).success,
+    ).toBe(false);
+    expect(
+      agentActionSchema.safeParse({
+        ...deploy,
+        kind: "docker",
+        name: "adguard",
+        action: "restart",
+      }).success,
+    ).toBe(false);
+    expect(
+      agentActionSchema.safeParse({
+        ...deploy,
+        signed: { ...signedCommand, extra: 1 },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts a trust action with or without an assertion", () => {
+    const trust = {
+      id,
+      kind: "trust",
+      name: "devices",
+      action: "trust",
+      expiresAt: "2026-09-29T10:10:00.000Z",
+      signed: { change: "Y2hhbmdl", assertion },
+    };
+    expect(agentActionSchema.safeParse(trust).success).toBe(true);
+    expect(
+      agentActionSchema.safeParse({
+        ...trust,
+        signed: { change: "Y2hhbmdl", assertion: null },
+      }).success,
+    ).toBe(true);
+    expect(
+      agentActionSchema.safeParse({ ...trust, signed: signedCommand }).success,
+    ).toBe(false);
+  });
+
+  it("accepts stacks and trust in the inventory and refuses a relative directory", () => {
+    const stack = {
+      project: "listmonk",
+      directory: "/opt/listmonk",
+      running: 5,
+      total: 5,
+      compose: true,
+      rollback: false,
+    };
+    const trust = { version: 2, keys: ["0123456789abcdef"] };
+    expect(
+      agentActionsRequestSchema.safeParse(inventory({ stacks: [stack], trust }))
+        .success,
+    ).toBe(true);
+    expect(
+      agentActionsRequestSchema.safeParse(
+        inventory({ stacks: [{ ...stack, directory: "opt/listmonk" }] }),
+      ).success,
+    ).toBe(false);
+    expect(
+      agentActionsRequestSchema.safeParse(
+        inventory({ trust: { version: 1, keys: ["xyz"] } }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("names the session limits", () => {
+    expect(SESSION_MS).toBe(15 * 60_000);
+    expect(COMMAND_GRACE_MS).toBe(60 * 60_000);
+    expect(TRUST_CHANGE_MS).toBe(10 * 60_000);
   });
 });

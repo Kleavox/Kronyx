@@ -14,8 +14,8 @@ describe("incident notifier", () => {
       DB: db,
       EMAIL: { send },
       ALERT_EMAIL: "operator@example.test",
-      FROM_EMAIL: "krynodes@example.test",
-      PUBLIC_ORIGIN: "https://krynodes.example.test",
+      FROM_EMAIL: "kry@example.test",
+      PUBLIC_ORIGIN: "https://kry.example.test",
     } as unknown as Env);
 
     await notify({

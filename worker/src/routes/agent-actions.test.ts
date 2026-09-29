@@ -45,7 +45,7 @@ async function setup() {
   } as unknown as Env;
   const post = (path: string, token: string, body: unknown) =>
     app.request(
-      `https://krynodes.test${path}`,
+      `https://kry.example.test${path}`,
       {
         method: "POST",
         headers: {

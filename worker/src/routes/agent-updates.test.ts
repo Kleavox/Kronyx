@@ -23,11 +23,11 @@ async function setup(agentVersion = "0.1.0") {
   const env = {
     DB: db,
     PUBLIC_ORIGIN: "https://kry.example.test",
-    AGENT_ORIGIN: "https://krynodes.example.workers.dev",
+    AGENT_ORIGIN: "https://kry.example.workers.dev",
   } as unknown as Env;
   const call = (method: string, path: string, body?: unknown, token?: string) =>
     app.request(
-      `https://krynodes.test${path}`,
+      `https://kry.example.test${path}`,
       {
         method,
         headers: {
@@ -200,7 +200,7 @@ describe("auto-update setting and overview", () => {
       version: "0.5.2",
       checkedAt: "2026-09-28T08:00:00.000Z",
       updateCommand:
-        "curl -fsSL https://krynodes.example.workers.dev/install.sh | sudo sh -s -- --update",
+        "curl -fsSL https://kry.example.workers.dev/install.sh | sudo sh -s -- --update",
     });
     expect(overview.nodes[0]).toMatchObject({
       auto_update: 1,

@@ -9,6 +9,7 @@ import {
 import { registerAdminRoutes } from "./routes/admin";
 import { registerAgentRoutes } from "./routes/agent";
 import { registerAgentUpdateRoutes } from "./routes/agent-updates";
+import { registerDeviceRoutes } from "./routes/devices";
 import { registerCheckResultRoutes } from "./routes/check-results";
 import { registerEnrollmentRoutes } from "./routes/enrollments";
 import { registerMetricRoutes } from "./routes/metrics";
@@ -50,6 +51,7 @@ registerCheckResultRoutes(app, requireOperator);
 registerEnrollmentRoutes(app, requireOperator);
 registerAgentUpdateRoutes(app, requireOperator);
 registerServiceRoutes(app, requireOperator);
+registerDeviceRoutes(app, requireOperator);
 registerAgentRoutes(app);
 
 app.all("/api/*", (context) =>

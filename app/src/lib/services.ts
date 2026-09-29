@@ -1,4 +1,6 @@
 import type {
+  ActionKind,
+  ActionVerb,
   ActionRecord,
   CheckRecord,
   NodeRecord,
@@ -14,14 +16,19 @@ import { untilWindowSettles } from "./series";
 const PENDING_POLL_MS = 5_000;
 const REFRESH_WAIT_MS = 3 * 60_000;
 
-const WORDS: Record<
-  ServiceAction,
-  { verb: string; doing: string; done: string }
-> = {
-  start: { verb: "Start", doing: "Starting…", done: "Started" },
-  stop: { verb: "Stop", doing: "Stopping…", done: "Stopped" },
-  restart: { verb: "Restart", doing: "Restarting…", done: "Restarted" },
-};
+const WORDS: Record<ActionVerb, { verb: string; doing: string; done: string }> =
+  {
+    start: { verb: "Start", doing: "Starting…", done: "Started" },
+    stop: { verb: "Stop", doing: "Stopping…", done: "Stopped" },
+    restart: { verb: "Restart", doing: "Restarting…", done: "Restarted" },
+    deploy: { verb: "Deploy", doing: "Deploying…", done: "Deployed" },
+    rollback: {
+      verb: "Roll back",
+      doing: "Rolling back…",
+      done: "Rolled back",
+    },
+    trust: { verb: "Update", doing: "Updating…", done: "Updated" },
+  };
 
 export interface ActionTarget {
   nodeId: string;
@@ -44,11 +51,12 @@ export interface ServiceGroup {
   members: ServiceMember[];
 }
 
-export function displayName(kind: ServiceKind, name: string): string {
+export function displayName(kind: ActionKind, name: string): string {
+  if (kind === "trust") return "Deploy devices";
   return kind === "systemd" ? name.replace(/\.service$/u, "") : name;
 }
 
-export function verb(action: ServiceAction): string {
+export function verb(action: ActionVerb): string {
   return WORDS[action].verb;
 }
 

@@ -1,4 +1,8 @@
-import { isProtectedTarget, isValidTarget } from "@krynodes/protocol";
+import {
+  isProtectedTarget,
+  isValidTarget,
+  signedCommandSchema,
+} from "@krynodes/protocol";
 import type { MiddlewareHandler } from "hono";
 import { z } from "zod";
 
@@ -9,6 +13,7 @@ import {
   sweepStatements,
   type ActionRow,
 } from "../actions/store";
+import { decodeJson } from "../lib/b64url";
 import {
   invalidRequest,
   readJson,
@@ -19,18 +24,29 @@ import {
 const RECENT_MS = 24 * 3_600_000;
 
 const actionRequestSchema = z.object({
-  action: z.enum(["start", "stop", "restart"]),
+  action: z.enum(["start", "stop", "restart", "deploy", "rollback"]),
   mode: z.enum(["rolling", "parallel"]).default("rolling"),
   targets: z
     .array(
       z.object({
+        id: z.string().uuid().optional(),
         nodeId: z.string().uuid(),
-        kind: z.enum(["systemd", "docker"]),
+        kind: z.enum(["systemd", "docker", "compose"]),
         name: z.string().min(1).max(128),
+        signed: signedCommandSchema.optional(),
       }),
     )
     .min(1)
     .max(50),
+});
+
+const commandSchema = z.object({
+  v: z.literal(1),
+  id: z.string(),
+  nodeId: z.string(),
+  kind: z.string(),
+  name: z.string(),
+  action: z.string(),
 });
 
 const refreshSchema = z.object({
@@ -72,14 +88,16 @@ export function registerServiceRoutes(
     const [nodes, services, actions] = await Promise.all([
       db
         .prepare(
-          `SELECT id, inventory_at, refresh_requested_at FROM nodes
-           WHERE owner_user_id = ? AND enrolled_at IS NOT NULL`,
+          `SELECT id, inventory_at, refresh_requested_at, trust_version, trust_keys
+           FROM nodes WHERE owner_user_id = ? AND enrolled_at IS NOT NULL`,
         )
         .bind(owner)
         .all<{
           id: string;
           inventory_at: string | null;
           refresh_requested_at: string | null;
+          trust_version: number | null;
+          trust_keys: string | null;
         }>(),
       db
         .prepare(
@@ -106,11 +124,44 @@ export function registerServiceRoutes(
         .bind(owner, new Date(now - RECENT_MS).toISOString())
         .all<ActionRow>(),
     ]);
+    const stacks = await db
+      .prepare(
+        `SELECT node_id, project, directory, running, total, compose, rollback FROM stacks
+         WHERE node_id IN (SELECT id FROM nodes WHERE owner_user_id = ?)
+         ORDER BY node_id, project`,
+      )
+      .bind(owner)
+      .all<{
+        node_id: string;
+        project: string;
+        directory: string;
+        running: number;
+        total: number;
+        compose: number;
+        rollback: number;
+      }>();
     return context.json({
       nodes: nodes.results.map((node) => ({
         id: node.id,
         inventoryAt: node.inventory_at,
         refreshRequestedAt: node.refresh_requested_at,
+        trust:
+          node.trust_version === null
+            ? null
+            : {
+                version: node.trust_version,
+                keys: JSON.parse(node.trust_keys ?? "[]") as string[],
+              },
+        stacks: stacks.results
+          .filter((stack) => stack.node_id === node.id)
+          .map((stack) => ({
+            project: stack.project,
+            directory: stack.directory,
+            running: stack.running,
+            total: stack.total,
+            compose: stack.compose === 1,
+            rollback: stack.rollback === 1,
+          })),
         services: services.results
           .filter((service) => service.node_id === node.id)
           .map((service) => ({
@@ -147,11 +198,42 @@ export function registerServiceRoutes(
     const parsed = actionRequestSchema.safeParse(await readJson(context));
     if (!parsed.success) return invalidRequest(context);
     const { action, mode, targets } = parsed.data;
+    const compose = action === "deploy" || action === "rollback";
     if (
       new Set(targets.map(targetKey)).size !== targets.length ||
-      targets.some((target) => !isValidTarget(target.kind, target.name))
+      targets.some(
+        (target) =>
+          !isValidTarget(target.kind, target.name) ||
+          (target.kind === "compose") !== compose ||
+          (target.signed !== undefined) !== compose ||
+          (compose && target.id === undefined),
+      )
     ) {
       return invalidRequest(context);
+    }
+    if (
+      compose &&
+      targets.some((target) => {
+        const command = commandSchema.safeParse(
+          decodeJson(target.signed!.command),
+        );
+        return (
+          !command.success ||
+          command.data.id !== target.id ||
+          command.data.nodeId !== target.nodeId ||
+          command.data.kind !== "compose" ||
+          command.data.name !== target.name ||
+          command.data.action !== action
+        );
+      })
+    ) {
+      return context.json(
+        {
+          code: "SIGNATURE_MISMATCH",
+          message: "The signed command does not match the request.",
+        },
+        400,
+      );
     }
     if (targets.some((target) => isProtectedTarget(target.kind, target.name))) {
       return context.json(
@@ -185,13 +267,21 @@ export function registerServiceRoutes(
 
     await db.batch(sweepStatements(db, now));
     const [known, pending] = await Promise.all([
-      db
-        .prepare(
-          `SELECT node_id AS nodeId, kind, name FROM services
-           WHERE node_id IN (SELECT value FROM json_each(?))`,
-        )
-        .bind(nodeIds)
-        .all<{ nodeId: string; kind: string; name: string }>(),
+      (compose
+        ? db
+            .prepare(
+              `SELECT node_id AS nodeId, 'compose' AS kind, project AS name FROM stacks
+               WHERE node_id IN (SELECT value FROM json_each(?)) AND compose = 1
+                 AND (? = 'deploy' OR rollback = 1)`,
+            )
+            .bind(nodeIds, action)
+        : db
+            .prepare(
+              `SELECT node_id AS nodeId, kind, name FROM services
+               WHERE node_id IN (SELECT value FROM json_each(?))`,
+            )
+            .bind(nodeIds)
+      ).all<{ nodeId: string; kind: string; name: string }>(),
       db
         .prepare(
           `SELECT node_id AS nodeId, kind, name FROM actions
@@ -229,8 +319,18 @@ export function registerServiceRoutes(
       requestedBy: identity.email,
       now,
     });
+    const credential = targets[0]?.signed?.grant.credentialId;
+    const used = credential
+      ? [
+          db
+            .prepare(
+              "UPDATE devices SET last_used_at = ? WHERE id = ? AND owner_user_id = ?",
+            )
+            .bind(new Date(now).toISOString(), credential, identity.id),
+        ]
+      : [];
     try {
-      await db.batch(batch.statements);
+      await db.batch([...batch.statements, ...used]);
     } catch (error) {
       if (!String(error).includes("UNIQUE")) throw error;
       return context.json(

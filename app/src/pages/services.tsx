@@ -11,6 +11,11 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
+  DeployDialog,
+  type DeployRequest,
+} from "@/features/deploy/deploy-dialog";
+import { StackList } from "@/features/deploy/stack-list";
+import {
   ActionDialog,
   type ActionRequest,
 } from "@/features/services/action-dialog";
@@ -22,6 +27,7 @@ import {
   groupServices,
   refreshPending,
 } from "@/lib/services";
+import { groupStacks } from "@/lib/stacks";
 
 export function ServicesPage() {
   const overview = useOverview();
@@ -30,6 +36,8 @@ export function ServicesPage() {
   const [params, setParams] = useSearchParams();
   const [query, setQuery] = useState("");
   const [request, setRequest] = useState<ActionRequest | null>(null);
+  const [deploy, setDeploy] = useState<DeployRequest | null>(null);
+  const stacksView = params.get("view") === "stacks";
   const notRunning = params.get("state") === "down";
   const showSystem = params.get("system") === "1";
 
@@ -79,6 +87,28 @@ export function ServicesPage() {
           targets: bulkTargets(bulkGroup, seen),
         }
       : null);
+  const stackGroups = groupStacks(services.data, nodes, query);
+  const linked = params.get("deploy") ?? params.get("rollback");
+  const linkedGroup = linked
+    ? groupStacks(services.data, nodes, "").find(
+        (group) => group.project === linked,
+      )
+    : undefined;
+  const linkedNode = params.get("node");
+  const deployRequest: DeployRequest | null =
+    deploy ??
+    (linkedGroup
+      ? {
+          action: params.get("rollback") ? "rollback" : "deploy",
+          project: linkedGroup.project,
+          members: linkedGroup.members.filter(
+            (member) => !linkedNode || member.node.id === linkedNode,
+          ),
+        }
+      : null);
+  const servicesByNode = new Map(
+    services.data.nodes.map((node) => [node.id, node.services]),
+  );
 
   return (
     <>
@@ -87,40 +117,63 @@ export function ServicesPage() {
         actions={
           nodes.length > 0 && (
             <>
+              <FilterChips
+                label="View"
+                value={stacksView ? "stacks" : "services"}
+                onChange={(value) =>
+                  setParam("view", value === "stacks" ? "stacks" : null)
+                }
+                options={[
+                  { value: "services", label: "Services" },
+                  { value: "stacks", label: "Stacks" },
+                ]}
+              />
               <Input
                 type="search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search services or servers"
-                aria-label="Search services or servers"
+                placeholder={
+                  stacksView
+                    ? "Search stacks or servers"
+                    : "Search services or servers"
+                }
+                aria-label={
+                  stacksView
+                    ? "Search stacks or servers"
+                    : "Search services or servers"
+                }
                 className="h-11 w-full md:h-8 md:w-56"
               />
-              <FilterChips
-                label="Filter services"
-                value={notRunning ? "down" : "all"}
-                onChange={(value) =>
-                  setParam("state", value === "all" ? null : value)
-                }
-                options={[
-                  { value: "all", label: "All" },
-                  { value: "down", label: "Not running" },
-                ]}
-              />
-              <div className="flex items-center gap-2">
-                <Switch
-                  id="system-services"
-                  checked={showSystem}
-                  onCheckedChange={(checked) =>
-                    setParam("system", checked ? "1" : null)
-                  }
-                />
-                <Label
-                  htmlFor="system-services"
-                  className="text-xs text-muted-foreground"
-                >
-                  System services
-                </Label>
-              </div>
+              {!stacksView && (
+                <>
+                  <FilterChips
+                    label="Filter services"
+                    value={notRunning ? "down" : "all"}
+                    onChange={(value) =>
+                      setParam("state", value === "all" ? null : value)
+                    }
+                    options={[
+                      { value: "all", label: "All" },
+                      { value: "down", label: "Not running" },
+                    ]}
+                  />
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      id="system-services"
+                      checked={showSystem}
+                      onCheckedChange={(checked) =>
+                        setParam("system", checked ? "1" : null)
+                      }
+                    />
+                    <Label
+                      htmlFor="system-services"
+                      className="text-xs text-muted-foreground"
+                    >
+                      System services
+                    </Label>
+                  </div>
+                </>
+              )}
               <Button
                 variant="outline"
                 disabled={refresh.isPending || refreshing}
@@ -144,6 +197,25 @@ export function ServicesPage() {
             </Button>
           }
         />
+      ) : stacksView ? (
+        stackGroups.length === 0 ? (
+          <EmptyState
+            title={query ? "No stacks match" : "No Compose stacks yet"}
+            body={
+              query
+                ? "Change the search to see the rest."
+                : "Servers list Docker Compose stacks here once their agent reports them."
+            }
+          />
+        ) : (
+          <StackList
+            groups={stackGroups}
+            seen={seen}
+            showServer
+            services={servicesByNode}
+            onRequest={setDeploy}
+          />
+        )
       ) : groups.length === 0 ? (
         <EmptyState
           title={
@@ -166,6 +238,24 @@ export function ServicesPage() {
         />
       )}
 
+      <DeployDialog
+        request={deployRequest}
+        seen={seen}
+        onClose={() => {
+          setDeploy(null);
+          if (linked) {
+            setParams(
+              (current) => {
+                const next = new URLSearchParams(current);
+                for (const key of ["deploy", "rollback", "node"])
+                  next.delete(key);
+                return next;
+              },
+              { replace: true },
+            );
+          }
+        }}
+      />
       <ActionDialog
         request={dialogRequest}
         onClose={() => {

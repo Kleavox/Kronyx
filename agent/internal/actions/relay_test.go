@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -41,7 +42,7 @@ func newRelay(t *testing.T) (*Relay, *fakePoster) {
 
 func writeInventory(t *testing.T, relay *Relay, services []Service, taken time.Time) Inventory {
 	t.Helper()
-	inventory, err := NewInventory(services, taken)
+	inventory, err := inventoryOf(services, taken)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +59,7 @@ func TestEnqueueWritesOneFilePerAction(t *testing.T) {
 		t.Fatal(err)
 	}
 	var written Request
-	if err := readJSON(filepath.Join(relay.RequestDir, idA+".json"), &written); err != nil || written != action {
+	if err := readJSON(filepath.Join(relay.RequestDir, idA+".json"), &written); err != nil || !reflect.DeepEqual(written, action) {
 		t.Fatalf("written %#v err %v", written, err)
 	}
 	entries, _ := os.ReadDir(relay.RequestDir)

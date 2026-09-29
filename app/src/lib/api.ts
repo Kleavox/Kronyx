@@ -11,6 +11,7 @@ import type {
   BatchMode,
   CheckKind,
   CheckResults,
+  DeviceRecord,
   Enrollment,
   EnrollmentStatus,
   MetricRange,
@@ -25,6 +26,7 @@ import { pollEnrollment } from "./enrollment";
 import { apiFetch, errorMessage } from "./http";
 import { keepWhileSameNode, queryKeys } from "./query-client";
 import { untilWindowSettles } from "./series";
+import type { Assertion, DeviceInput, SignedTarget } from "./passkeys";
 import { pollServices, type ActionTarget } from "./services";
 
 const MINUTE = 60_000;
@@ -262,4 +264,36 @@ export const useRefreshServices = () =>
       ),
     [queryKeys.services],
     true,
+  );
+
+export function useDevices() {
+  return useQuery({
+    queryKey: queryKeys.devices,
+    queryFn: () => apiFetch<{ devices: DeviceRecord[] }>("/api/devices"),
+  });
+}
+
+export const useRegisterDevice = () =>
+  useApiMutation(
+    (device: DeviceInput) => apiFetch("/api/devices", send("POST", device)),
+    [queryKeys.devices],
+    true,
+  );
+
+export const useTrust = () =>
+  useApiMutation(
+    (body: { changes: string[] } | { change: string; assertion: Assertion }) =>
+      apiFetch<{ queued: number }>("/api/trust", send("POST", body)),
+    [queryKeys.devices, queryKeys.services, ["actions"]],
+    true,
+  );
+
+export const useDeploy = () =>
+  useApiMutation(
+    (body: {
+      action: "deploy" | "rollback";
+      mode: BatchMode;
+      targets: SignedTarget[];
+    }) => apiFetch<{ batchId: string }>("/api/actions", send("POST", body)),
+    [queryKeys.services, ["actions"], queryKeys.devices],
   );

@@ -15,7 +15,7 @@ function setup() {
   const env = { DB: db } as unknown as Env;
   const patch = (body: unknown) =>
     app.request(
-      `https://krynodes.test/api/checks/${CHECK}`,
+      `https://kry.example.test/api/checks/${CHECK}`,
       {
         method: "PATCH",
         headers: { "content-type": "application/json" },
@@ -60,7 +60,7 @@ describe("public check fields", () => {
     const { env, patch } = setup();
     await patch({ public: true, publicNote: "DNS" });
     const overview = (await (
-      await app.request("https://krynodes.test/api/overview", {}, env)
+      await app.request("https://kry.example.test/api/overview", {}, env)
     ).json()) as { checks: { public: number; public_note: string | null }[] };
     expect(overview.checks[0]).toMatchObject({ public: 1, public_note: "DNS" });
   });

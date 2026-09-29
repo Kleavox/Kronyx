@@ -12,7 +12,7 @@ function setup() {
   seedNode(sqlite, { id: NODE });
   const patch = (id: string, body: unknown) =>
     app.request(
-      `https://krynodes.test/api/nodes/${id}`,
+      `https://kry.example.test/api/nodes/${id}`,
       {
         method: "PATCH",
         headers: { "content-type": "application/json" },

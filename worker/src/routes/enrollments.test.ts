@@ -18,7 +18,7 @@ function fleet(extra: Partial<Env> = {}) {
     token?: string,
   ) =>
     app.request(
-      `https://krynodes.test${path}`,
+      `https://kry.example.test${path}`,
       {
         method,
         headers: {
@@ -81,11 +81,11 @@ describe("enrollment tokens", () => {
 
   it("points the command at AGENT_ORIGIN when it is set", async () => {
     const { create } = fleet({
-      AGENT_ORIGIN: "https://krynodes.example.workers.dev",
+      AGENT_ORIGIN: "https://kry.example.workers.dev",
     });
     const { command } = await create();
     expect(command).toMatch(
-      /^curl -fsSL https:\/\/krynodes\.example\.workers\.dev\/install\.sh \| sudo sh -s -- https:\/\/krynodes\.example\.workers\.dev \S+$/u,
+      /^curl -fsSL https:\/\/kry\.example\.workers\.dev\/install\.sh \| sudo sh -s -- https:\/\/kry\.example\.workers\.dev \S+$/u,
     );
   });
 

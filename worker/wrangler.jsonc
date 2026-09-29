@@ -8,8 +8,8 @@
   "preview_urls": false,
   "vars": {
     "ENVIRONMENT": "development",
-    "PUBLIC_ORIGIN": "http://127.0.0.1:8790",
-    "FROM_EMAIL": "krynodes@example.test",
+    "PUBLIC_ORIGIN": "http://localhost:8790",
+    "FROM_EMAIL": "kry@example.test",
   },
   "assets": {
     "directory": "../app/dist",

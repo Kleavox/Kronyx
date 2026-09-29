@@ -17,6 +17,7 @@ export const queryKeys = {
   services: ["services"],
   nodeActions: (id: string) => ["actions", "node", id],
   enrollment: (id: string) => ["enrollments", id],
+  devices: ["devices"],
 } as const;
 
 export function createQueryClient(): QueryClient {

@@ -13,7 +13,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useCreateEnrollment, useEnrollmentStatus } from "@/lib/api";
+import {
+  useCreateEnrollment,
+  useDevices,
+  useEnrollmentStatus,
+} from "@/lib/api";
 import { enrollmentStep } from "@/lib/enrollment";
 import { errorMessage } from "@/lib/http";
 import { queryKeys } from "@/lib/query-client";
@@ -29,6 +33,7 @@ export function EnrollDialog({
 }) {
   const client = useQueryClient();
   const create = useCreateEnrollment();
+  const deviceCount = useDevices().data?.devices.length ?? 0;
   const status = useEnrollmentStatus(open ? create.data?.id : undefined);
   const step = enrollmentStep(Boolean(create.data), status.data);
   const node = status.data?.status === "used" ? status.data.node : null;
@@ -56,6 +61,11 @@ export function EnrollDialog({
                 here once it enrolls, named after its hostname and reporting
                 every minute.
               </DialogDescription>
+              <p className="text-xs text-muted-foreground">
+                {deviceCount > 0
+                  ? `This server will trust your ${deviceCount} deploy ${deviceCount === 1 ? "device" : "devices"}.`
+                  : "Set up deploy devices later; this server can trust them then."}
+              </p>
             </DialogHeader>
             {create.error && (
               <p role="alert" className="text-sm text-destructive">

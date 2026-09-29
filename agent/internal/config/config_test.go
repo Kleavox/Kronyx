@@ -10,7 +10,7 @@ import (
 func TestSaveAndLoad(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	err := Save(path, Config{
-		Endpoint: "https://krynodes.example.test", NodeID: "node-id",
+		Endpoint: "https://kry.example.test", NodeID: "node-id",
 		Token: "secret", IntervalSeconds: 60,
 	})
 	if err != nil {
@@ -34,7 +34,7 @@ func TestSaveAndLoad(t *testing.T) {
 
 func TestRejectsInsecureRemoteEndpoint(t *testing.T) {
 	_, err := validate(Config{
-		Endpoint: "http://krynodes.example.com", NodeID: "node", Token: "token",
+		Endpoint: "http://kry.example.com", NodeID: "node", Token: "token",
 	})
 	if err == nil {
 		t.Fatal("expected insecure endpoint rejection")

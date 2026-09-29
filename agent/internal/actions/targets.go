@@ -7,6 +7,8 @@ import (
 
 var targetName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9@._-]{0,127}$`)
 
+var projectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
+
 var protectedUnits = compile(
 	`^ssh\.service$`, `^sshd\.service$`,
 	`^krynodes\.service$`, `^krynodes-.+\.service$`,
@@ -45,6 +47,12 @@ func matchesAny(patterns []*regexp.Regexp, name string) bool {
 }
 
 func ValidTarget(kind, name string) bool {
+	switch kind {
+	case "compose":
+		return projectName.MatchString(name)
+	case "trust":
+		return name == "devices"
+	}
 	if !targetName.MatchString(name) {
 		return false
 	}

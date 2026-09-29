@@ -14,6 +14,7 @@ import { createQueryClient } from "@/lib/query-client";
 import { NodeDetailPage } from "@/pages/node-detail";
 import { NotFoundPage } from "@/pages/not-found";
 import { ServicesPage } from "@/pages/services";
+import { DevicesPage } from "./pages/devices";
 import { AppShell } from "@/shell/app-shell";
 import { SessionGate } from "@/shell/session-gate";
 
@@ -31,6 +32,7 @@ createRoot(document.getElementById("root")!).render(
                   <Route index element={<FleetPage />} />
                   <Route path="nodes/:id" element={<NodeDetailPage />} />
                   <Route path="services" element={<ServicesPage />} />
+                  <Route path="devices" element={<DevicesPage />} />
                   <Route path="checks" element={<ChecksPage />} />
                   <Route path="incidents" element={<IncidentsPage />} />
                   <Route path="*" element={<NotFoundPage />} />

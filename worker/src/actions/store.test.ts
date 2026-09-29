@@ -298,4 +298,80 @@ describe("action batches", () => {
       /SEARCH actions USING INDEX idx_actions_status_node \(status=\?\)/u,
     );
   });
+
+  it("stores a signed compose action under the browser's id and delivers it", async () => {
+    const { db, sqlite } = setup();
+    const id = "55555555-5555-4555-8555-555555555555";
+    const signed = {
+      grant: {
+        grant: "Z3JhbnQ",
+        credentialId: "Y3JlZA",
+        authenticatorData: "YXV0aA",
+        clientDataJSON: "Y2xpZW50",
+        signature: "c2ln",
+      },
+      command: "Y29tbWFuZA",
+      signature: "c2lnbmF0dXJl",
+    };
+    const batch = createBatch(db, {
+      action: "deploy",
+      mode: "rolling",
+      targets: [{ id, nodeId: A, kind: "compose", name: "listmonk", signed }],
+      requestedBy: "owner@example.test",
+      now: NOW,
+    });
+    expect(batch.actions[0]!.id).toBe(id);
+    await db.batch(batch.statements);
+    expect(
+      sqlite.prepare("SELECT signed FROM actions WHERE id = ?").get(id),
+    ).toEqual({ signed: JSON.stringify(signed) });
+    expect(await deliverActions(db, A, NOW)).toEqual([
+      {
+        id,
+        kind: "compose",
+        name: "listmonk",
+        action: "deploy",
+        expiresAt: iso(NOW + 10 * MINUTE),
+        signed,
+      },
+    ]);
+  });
+
+  it("delivers a restart without a signed payload", async () => {
+    const { db, queue } = setup();
+    await queue("rolling", [A]);
+    const [delivered] = await deliverActions(db, A, NOW);
+    expect(delivered).not.toHaveProperty("signed");
+  });
+
+  it("abandons a compose action after 30 minutes and a restart after 15", async () => {
+    const { db, sqlite, queue, sweep, status } = setup();
+    const { actions } = await queue("parallel", [A]);
+    const deploy = createBatch(db, {
+      action: "deploy",
+      mode: "parallel",
+      targets: [
+        {
+          id: "66666666-6666-4666-8666-666666666666",
+          nodeId: B,
+          kind: "compose",
+          name: "listmonk",
+          signed: { grant: { grant: "Zw" }, command: "Yw", signature: "cw" },
+        },
+      ],
+      requestedBy: "owner@example.test",
+      now: NOW,
+    });
+    await db.batch(deploy.statements);
+    await deliverActions(db, A, NOW);
+    await deliverActions(db, B, NOW);
+    await sweep(NOW + 16 * MINUTE);
+    expect(status(actions[0]!.id)).toBe("failed");
+    expect(status("66666666-6666-4666-8666-666666666666")).toBe("sent");
+    await sweep(NOW + 31 * MINUTE);
+    expect(status("66666666-6666-4666-8666-666666666666")).toBe("failed");
+    expect(
+      sqlite.prepare("SELECT output FROM actions WHERE kind = 'compose'").get(),
+    ).toEqual({ output: "No result from the server" });
+  });
 });

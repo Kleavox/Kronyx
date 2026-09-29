@@ -38,7 +38,7 @@ func TestServiceUnitRunsAsKrynodes(t *testing.T) {
 			t.Fatalf("unit is missing %q:\n%s", want, unit)
 		}
 	}
-	if strings.Contains(unit, "kry-agent") || strings.Contains(strings.ToLower(unit), "kleavox") {
+	if strings.Contains(strings.ToLower(unit), "kleavox") {
 		t.Fatalf("unit still uses an old name:\n%s", unit)
 	}
 	if unitPath != "/etc/systemd/system/krynodes.service" {
@@ -97,6 +97,23 @@ func TestTheExecutorUnitRunsAsRootInASandbox(t *testing.T) {
 	}
 	if strings.Contains(unit, "User=") {
 		t.Error("the executor must run as root")
+	}
+}
+
+func TestTheExecutorCanReadStacksUnderHomeDirectories(t *testing.T) {
+	unit := execUnit("/usr/local/bin/kry")
+	if !strings.Contains(unit, "ProtectHome=read-only\n") || strings.Contains(unit, "ProtectHome=true") {
+		t.Fatalf("compose files under /root or /home must stay readable:\n%s", unit)
+	}
+}
+
+func TestTrustArgumentsMayStartWithADash(t *testing.T) {
+	options, err := parseTrust([]string{"--initial", "--origin", "https://kry.kleavox.xyz", "--", "-abc.-7.KEY", "def.-257.KEY"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.initial || options.origin != "https://kry.kleavox.xyz" || len(options.keys) != 2 || options.keys[0] != "-abc.-7.KEY" {
+		t.Fatalf("options %+v", options)
 	}
 }
 

@@ -7,6 +7,17 @@ if [ "${1:-}" = "--update" ]; then
 fi
 endpoint="${1:-}"
 token="${2:-}"
+trust_origin=""
+if [ "$mode" = "enroll" ] && [ "${3:-}" = "--trust" ]; then
+  trust_origin="${4:-}"
+  if [ -z "$trust_origin" ] || [ -z "${5:-}" ]; then
+    echo "--trust needs the dashboard origin and at least one device" >&2
+    exit 1
+  fi
+  shift 4
+else
+  set --
+fi
 base="${KRY_DOWNLOAD_BASE:-https://github.com/Kleavox/Krynodes/releases/latest/download}"
 bin="${KRY_BIN:-/usr/local/bin/kry}"
 config="${KRY_CONFIG:-/etc/kry/config.json}"
@@ -57,6 +68,9 @@ if [ "$mode" = "enroll" ]; then
   "$bin" enroll --endpoint "$endpoint" --token "$token"
 fi
 "$bin" install-service
+if [ -n "$trust_origin" ]; then
+  "$bin" trust --initial --origin "$trust_origin" -- "$@"
+fi
 systemctl restart krynodes.service
 
 if [ "$mode" = "update" ]; then

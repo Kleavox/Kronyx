@@ -75,12 +75,77 @@ func run(args []string) error {
 		return selfUpdate()
 	case "exec":
 		return execActions()
+	case "trust":
+		return trustDevices(args)
 	case "version":
 		fmt.Println(version)
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q", command)
 	}
+}
+
+type trustOptions struct {
+	initial bool
+	reset   bool
+	origin  string
+	config  string
+	keys    []string
+}
+
+func parseTrust(args []string) (trustOptions, error) {
+	var options trustOptions
+	flags := flag.NewFlagSet("trust", flag.ContinueOnError)
+	flags.BoolVar(&options.initial, "initial", false, "trust the first deploy devices")
+	flags.BoolVar(&options.reset, "reset", false, "forget every trusted deploy device")
+	flags.StringVar(&options.origin, "origin", "", "the dashboard origin, such as https://kry.kleavox.xyz")
+	flags.StringVar(&options.config, "config", defaultConfigPath, "path to the agent config")
+	if err := flags.Parse(args); err != nil {
+		return trustOptions{}, err
+	}
+	options.keys = flags.Args()
+	return options, nil
+}
+
+func trustDevices(args []string) error {
+	options, err := parseTrust(args)
+	if err != nil {
+		return err
+	}
+	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
+		return fmt.Errorf("trust must run as root on Linux")
+	}
+	if options.reset {
+		if err := actions.SaveTrust(actions.StateDir, actions.Trust{}); err != nil {
+			return err
+		}
+		fmt.Println("This server trusts no deploy device now.")
+		return nil
+	}
+	if !options.initial {
+		return fmt.Errorf("use --initial --origin <origin> -- <device>... or --reset")
+	}
+	current, err := actions.LoadTrust(actions.StateDir)
+	if err != nil {
+		return err
+	}
+	if len(current.Keys) > 0 {
+		return fmt.Errorf("this server already trusts deploy devices; run kry trust --reset first")
+	}
+	cfg, err := config.Load(options.config)
+	if err != nil {
+		return err
+	}
+	trust, err := actions.ParseTrustArgs(options.origin, options.keys)
+	if err != nil {
+		return err
+	}
+	trust.NodeID = cfg.NodeID
+	if err := actions.SaveTrust(actions.StateDir, trust); err != nil {
+		return err
+	}
+	fmt.Printf("This server trusts %d deploy devices.\n", len(trust.Keys))
+	return nil
 }
 
 func printMetrics() error {
@@ -98,7 +163,7 @@ func printMetrics() error {
 
 func enroll(args []string) error {
 	flags := flag.NewFlagSet("enroll", flag.ContinueOnError)
-	endpoint := flags.String("endpoint", "https://krynodes.example.com", "Krynodes endpoint")
+	endpoint := flags.String("endpoint", "https://kry.example.com", "Krynodes endpoint")
 	token := flags.String("token", "", "one-time enrollment token")
 	configPath := flags.String("config", defaultConfigPath, "configuration path")
 	if err := flags.Parse(args); err != nil {
@@ -331,7 +396,7 @@ ExecStart=%s exec
 TimeoutStartSec=30min
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectHome=true
+ProtectHome=read-only
 ProtectSystem=strict
 ReadWritePaths=%s
 Environment=DOCKER_CONFIG=%s/docker
@@ -374,7 +439,7 @@ func execActions() error {
 		StateDir:   actions.StateDir,
 		Now:        time.Now,
 		Run:        actions.RunCommand,
-		Collect: func(ctx context.Context, remembered []string) ([]actions.Service, error) {
+		Collect: func(ctx context.Context, remembered []string) (actions.Snapshot, error) {
 			return actions.Collect(ctx, actions.RunCommand, remembered)
 		},
 	}

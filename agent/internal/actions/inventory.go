@@ -20,14 +20,35 @@ type Service = reporter.ServiceEntry
 
 type Runner func(ctx context.Context, name string, args ...string) ([]byte, int, error)
 
-const maxServices = 500
+const (
+	maxServices = 500
+	maxStacks   = 50
+)
 
 var collectTimeout = 30 * time.Second
 
+const containerFormat = "{{.Names}}\t{{.State}}\t{{.Label \"com.docker.compose.project\"}}\t{{.Label \"com.docker.compose.project.working_dir\"}}\t{{.Label \"com.docker.compose.project.config_files\"}}"
+
+type Stack struct {
+	Project   string
+	Directory string
+	Files     []string
+	Running   int
+	Total     int
+}
+
+type Snapshot struct {
+	Services []Service
+	Stacks   []Stack
+	Compose  bool
+}
+
 type Inventory struct {
-	Hash     string    `json:"hash"`
-	TakenAt  string    `json:"takenAt"`
-	Services []Service `json:"services"`
+	Hash     string                `json:"hash"`
+	TakenAt  string                `json:"takenAt"`
+	Services []Service             `json:"services"`
+	Stacks   []reporter.StackEntry `json:"stacks"`
+	Trust    reporter.TrustReport  `json:"trust"`
 }
 
 var unitStates = map[string]string{
@@ -91,24 +112,65 @@ func unitFileExists(present map[string]bool, name string) bool {
 	return false
 }
 
-func parseContainers(output string) []Service {
+func absolute(path string) bool {
+	return strings.HasPrefix(path, "/") && !strings.ContainsRune(path, 0)
+}
+
+func parseContainers(output string) ([]Service, []Stack) {
 	var services []Service
+	found := map[string]*Stack{}
+	broken := map[string]bool{}
 	for line := range strings.SplitSeq(output, "\n") {
-		names, raw, found := strings.Cut(strings.TrimSpace(line), "\t")
-		if !found {
+		fields := strings.Split(strings.TrimSpace(line), "\t")
+		if len(fields) < 2 {
 			continue
 		}
-		name, _, _ := strings.Cut(names, ",")
-		state, known := containerStates[raw]
+		name, _, _ := strings.Cut(fields[0], ",")
+		state, known := containerStates[fields[1]]
 		if !known || !ValidTarget("docker", name) {
 			continue
 		}
 		services = append(services, Service{Kind: "docker", Name: name, State: state})
+		if len(fields) < 5 || fields[2] == "" {
+			continue
+		}
+		project, directory, files := fields[2], fields[3], strings.Split(fields[4], ",")
+		valid := ValidTarget("compose", project) && absolute(directory)
+		for _, file := range files {
+			valid = valid && absolute(file)
+		}
+		stack, seen := found[project]
+		if !valid || (seen && stack.Directory != directory) {
+			broken[project] = true
+			continue
+		}
+		if !seen {
+			stack = &Stack{Project: project, Directory: directory}
+			found[project] = stack
+		}
+		for _, file := range files {
+			if !slices.Contains(stack.Files, file) {
+				stack.Files = append(stack.Files, file)
+			}
+		}
+		stack.Total++
+		if state == "running" {
+			stack.Running++
+		}
 	}
-	return services
+	var stacks []Stack
+	for project, stack := range found {
+		if broken[project] {
+			continue
+		}
+		slices.Sort(stack.Files)
+		stacks = append(stacks, *stack)
+	}
+	slices.SortFunc(stacks, func(a, b Stack) int { return cmp.Compare(a.Project, b.Project) })
+	return services, stacks
 }
 
-func NewInventory(services []Service, now time.Time) (Inventory, error) {
+func NewInventory(services []Service, stacks []reporter.StackEntry, trust reporter.TrustReport, now time.Time) (Inventory, error) {
 	sorted := slices.Clone(services)
 	if sorted == nil {
 		sorted = []Service{}
@@ -119,12 +181,27 @@ func NewInventory(services []Service, now time.Time) (Inventory, error) {
 	if len(sorted) > maxServices {
 		sorted = sorted[:maxServices]
 	}
-	encoded, err := json.Marshal(sorted)
+	listed := slices.Clone(stacks)
+	if listed == nil {
+		listed = []reporter.StackEntry{}
+	}
+	slices.SortFunc(listed, func(a, b reporter.StackEntry) int { return cmp.Compare(a.Project, b.Project) })
+	if len(listed) > maxStacks {
+		listed = listed[:maxStacks]
+	}
+	if trust.Keys == nil {
+		trust.Keys = []string{}
+	}
+	encoded, err := json.Marshal(struct {
+		Services []Service             `json:"services"`
+		Stacks   []reporter.StackEntry `json:"stacks"`
+		Trust    reporter.TrustReport  `json:"trust"`
+	}{sorted, listed, trust})
 	if err != nil {
 		return Inventory{}, err
 	}
 	sum := sha256.Sum256(encoded)
-	return Inventory{Hash: hex.EncodeToString(sum[:]), TakenAt: now.UTC().Format(time.RFC3339Nano), Services: sorted}, nil
+	return Inventory{Hash: hex.EncodeToString(sum[:]), TakenAt: now.UTC().Format(time.RFC3339Nano), Services: sorted, Stacks: listed, Trust: trust}, nil
 }
 
 func rank(service Service) int {
@@ -134,7 +211,7 @@ func rank(service Service) int {
 	return 0
 }
 
-func Collect(ctx context.Context, run Runner, remembered []string) ([]Service, error) {
+func Collect(ctx context.Context, run Runner, remembered []string) (Snapshot, error) {
 	step := func(name string, args ...string) ([]byte, error) {
 		ctx, cancel := context.WithTimeout(ctx, collectTimeout)
 		defer cancel()
@@ -143,17 +220,22 @@ func Collect(ctx context.Context, run Runner, remembered []string) ([]Service, e
 	}
 	units, err := step("systemctl", "list-units", "--type=service", "--all", "--no-legend", "--plain", "--no-pager")
 	if err != nil {
-		return nil, fmt.Errorf("list units: %w", err)
+		return Snapshot{}, fmt.Errorf("list units: %w", err)
 	}
 	files, err := step("systemctl", "list-unit-files", "--type=service", "--no-legend", "--plain", "--no-pager")
 	if err != nil {
-		return nil, fmt.Errorf("list unit files: %w", err)
+		return Snapshot{}, fmt.Errorf("list unit files: %w", err)
 	}
-	services := parseUnits(string(units), string(files), remembered)
-	if containers, err := step("docker", "ps", "-a", "--no-trunc", "--format", "{{.Names}}\t{{.State}}"); err == nil {
-		services = append(services, parseContainers(string(containers))...)
+	snapshot := Snapshot{Services: parseUnits(string(units), string(files), remembered)}
+	if containers, err := step("docker", "ps", "-a", "--no-trunc", "--format", containerFormat); err == nil {
+		services, stacks := parseContainers(string(containers))
+		snapshot.Services = append(snapshot.Services, services...)
+		snapshot.Stacks = stacks
+		if _, err := step("docker", "compose", "version"); err == nil {
+			snapshot.Compose = true
+		}
 	}
-	return services, nil
+	return snapshot, nil
 }
 
 func RunCommand(ctx context.Context, name string, args ...string) ([]byte, int, error) {

@@ -69,7 +69,7 @@ describe("GET /api/overview contract", () => {
     });
 
     const response = await app.request(
-      "https://krynodes.test/api/overview",
+      "https://kry.example.test/api/overview",
       {},
       {
         DB: db,
@@ -101,9 +101,13 @@ describe("GET /api/overview contract", () => {
 describe("unknown API paths", () => {
   it("answer 404 JSON instead of the app shell", async () => {
     const assets = vi.fn(async () => new Response("<!doctype html>"));
-    const response = await app.request("https://krynodes.test/api/unknown", {}, {
-      ASSETS: { fetch: assets },
-    } as unknown as Env);
+    const response = await app.request(
+      "https://kry.example.test/api/unknown",
+      {},
+      {
+        ASSETS: { fetch: assets },
+      } as unknown as Env,
+    );
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({
       code: "NOT_FOUND",

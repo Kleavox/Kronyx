@@ -153,6 +153,8 @@ export interface CheckResults {
 export type ServiceKind = "systemd" | "docker";
 export type ServiceState = "running" | "stopped" | "failed" | "starting";
 export type ServiceAction = "start" | "stop" | "restart";
+export type ActionKind = ServiceKind | "compose" | "trust";
+export type ActionVerb = ServiceAction | "deploy" | "rollback" | "trust";
 export type BatchMode = "rolling" | "parallel";
 type ActionStatus =
   "queued" | "sent" | "done" | "failed" | "expired" | "cancelled" | "skipped";
@@ -165,11 +167,36 @@ export interface ServiceEntry {
   system: boolean;
 }
 
+export interface StackEntry {
+  project: string;
+  directory: string;
+  running: number;
+  total: number;
+  compose: boolean;
+  rollback: boolean;
+}
+
+export interface NodeTrust {
+  version: number;
+  keys: string[];
+}
+
 interface ServiceNode {
   id: string;
   inventoryAt: string | null;
   refreshRequestedAt: string | null;
   services: ServiceEntry[];
+  stacks: StackEntry[];
+  trust: NodeTrust | null;
+}
+
+export interface DeviceRecord {
+  id: string;
+  name: string;
+  alg: number;
+  publicKey: string;
+  createdAt: string;
+  lastUsedAt: string | null;
 }
 
 export interface ActionRecord {
@@ -178,9 +205,9 @@ export interface ActionRecord {
   position: number;
   mode: BatchMode;
   nodeId: string;
-  kind: ServiceKind;
+  kind: ActionKind;
   name: string;
-  action: ServiceAction;
+  action: ActionVerb;
   status: ActionStatus;
   requestedAt: string;
   deliverableAt: string | null;

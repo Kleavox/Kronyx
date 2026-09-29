@@ -1,4 +1,5 @@
 const TARGET_NAME = /^[A-Za-z0-9][A-Za-z0-9@._-]{0,127}$/u;
+const PROJECT_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/u;
 
 const PROTECTED_UNITS = [
   /^ssh\.service$/u,
@@ -21,6 +22,8 @@ const PROTECTED_UNITS = [
 ];
 
 export function isValidTarget(kind: string, name: string): boolean {
+  if (kind === "compose") return PROJECT_NAME.test(name);
+  if (kind === "trust") return name === "devices";
   if (!TARGET_NAME.test(name)) return false;
   if (kind === "systemd") return name.endsWith(".service");
   return kind === "docker";

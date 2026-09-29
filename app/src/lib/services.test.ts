@@ -47,6 +47,8 @@ const data: ServicesResponse = {
       id: "n1",
       inventoryAt: null,
       refreshRequestedAt: null,
+      stacks: [],
+      trust: null,
       services: [
         {
           kind: "docker",
@@ -75,6 +77,8 @@ const data: ServicesResponse = {
       id: "n2",
       inventoryAt: null,
       refreshRequestedAt: null,
+      stacks: [],
+      trust: null,
       services: [
         {
           kind: "docker",
@@ -89,6 +93,8 @@ const data: ServicesResponse = {
       id: "n3",
       inventoryAt: null,
       refreshRequestedAt: null,
+      stacks: [],
+      trust: null,
       services: [
         {
           kind: "docker",

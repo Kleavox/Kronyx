@@ -25,7 +25,7 @@ type Results = {
 
 async function results(db: D1Database): Promise<Results> {
   const response = await app.request(
-    "https://krynodes.test/api/checks/results",
+    "https://kry.example.test/api/checks/results",
     {},
     { DB: db } as unknown as Env,
   );

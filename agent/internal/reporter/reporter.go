@@ -48,11 +48,12 @@ type UpdateInstruction struct {
 }
 
 type ActionRequest struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	Name      string `json:"name"`
-	Action    string `json:"action"`
-	ExpiresAt string `json:"expiresAt"`
+	ID        string          `json:"id"`
+	Kind      string          `json:"kind"`
+	Name      string          `json:"name"`
+	Action    string          `json:"action"`
+	ExpiresAt string          `json:"expiresAt"`
+	Signed    json.RawMessage `json:"signed,omitempty"`
 }
 
 type ActionResult struct {
@@ -71,9 +72,25 @@ type ServiceEntry struct {
 	System bool    `json:"system"`
 }
 
+type StackEntry struct {
+	Project   string `json:"project"`
+	Directory string `json:"directory"`
+	Running   int    `json:"running"`
+	Total     int    `json:"total"`
+	Compose   bool   `json:"compose"`
+	Rollback  bool   `json:"rollback"`
+}
+
+type TrustReport struct {
+	Version int      `json:"version"`
+	Keys    []string `json:"keys"`
+}
+
 type InventoryReport struct {
 	Hash     string          `json:"hash"`
 	Services *[]ServiceEntry `json:"services,omitempty"`
+	Stacks   *[]StackEntry   `json:"stacks,omitempty"`
+	Trust    *TrustReport    `json:"trust,omitempty"`
 }
 
 type ActionsReport struct {
@@ -123,7 +140,7 @@ type ResponseError struct {
 }
 
 func (e *ResponseError) Error() string {
-	return fmt.Sprintf("kry returned HTTP %d", e.Status)
+	return fmt.Sprintf("Krynodes returned HTTP %d", e.Status)
 }
 
 func New(endpoint, token, version string) *Client {

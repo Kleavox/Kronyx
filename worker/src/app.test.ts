@@ -10,7 +10,7 @@ describe("Krynodes without Kleavox", () => {
     "/api/projects",
     "/api/notes",
   ])("has no %s", async (path) => {
-    const response = await app.request(`https://krynodes.test${path}`, {}, {
+    const response = await app.request(`https://kry.example.test${path}`, {}, {
       ENVIRONMENT: "development",
     } as unknown as Env);
     expect(response.status).toBe(404);

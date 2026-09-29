@@ -31,7 +31,10 @@
     ["docker", "adguard"],
     ["docker", "ssh"],
     ["docker", "docker"],
-    ["docker", "my_app.web-1"]
+    ["docker", "my_app.web-1"],
+    ["compose", "listmonk"],
+    ["compose", "my_stack-2"],
+    ["trust", "devices"]
   ],
   "invalid": [
     ["systemd", "nginx"],
@@ -43,6 +46,10 @@
     ["docker", ""],
     ["docker", "a/b"],
     ["docker", "-rm"],
-    ["kubernetes", "nginx"]
+    ["kubernetes", "nginx"],
+    ["compose", "Listmonk"],
+    ["compose", "-x"],
+    ["compose", "a/b"],
+    ["trust", "other"]
   ]
 }

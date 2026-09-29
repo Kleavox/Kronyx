@@ -8,7 +8,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Kleavox/krynodes/agent/internal/reporter"
 )
+
+func inventoryOf(services []Service, now time.Time) (Inventory, error) {
+	return NewInventory(services, nil, reporter.TrustReport{}, now)
+}
 
 const unitList = `nginx.service                 loaded    active   running A high performance web server
 shadowsocks-libev.service     loaded    inactive dead    Shadowsocks-libev Default Server Service
@@ -39,7 +45,10 @@ func TestUnitsBecomeServices(t *testing.T) {
 }
 
 func TestContainersBecomeServices(t *testing.T) {
-	got := parseContainers("adguard\trunning\nweb,web/alias\texited\nbroken\tdead\nbad/name\trunning\nwarming\trestarting\n\n")
+	got, stacks := parseContainers("adguard\trunning\nweb,web/alias\texited\nbroken\tdead\nbad/name\trunning\nwarming\trestarting\n\n")
+	if len(stacks) != 0 {
+		t.Fatalf("containers without compose labels form no stack, got %#v", stacks)
+	}
 	want := []Service{
 		{Kind: "docker", Name: "adguard", State: "running"},
 		{Kind: "docker", Name: "web", State: "stopped"},
@@ -55,19 +64,19 @@ func TestTheHashIgnoresOrderButNotState(t *testing.T) {
 	now := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
 	a := []Service{{Kind: "docker", Name: "b", State: "running"}, {Kind: "systemd", Name: "a.service", State: "running"}}
 	b := []Service{a[1], a[0]}
-	first, _ := NewInventory(a, now)
-	second, _ := NewInventory(b, now)
+	first, _ := inventoryOf(a, now)
+	second, _ := inventoryOf(b, now)
 	if first.Hash != second.Hash || len(first.Hash) != 64 {
 		t.Fatalf("hashes differ: %s %s", first.Hash, second.Hash)
 	}
 	if first.Services[0].Kind != "docker" || first.TakenAt != "2026-09-29T10:00:00Z" {
 		t.Fatalf("unexpected inventory %#v", first)
 	}
-	changed, _ := NewInventory([]Service{{Kind: "docker", Name: "b", State: "stopped"}, a[1]}, now)
+	changed, _ := inventoryOf([]Service{{Kind: "docker", Name: "b", State: "stopped"}, a[1]}, now)
 	if changed.Hash == first.Hash {
 		t.Fatal("a state change must change the hash")
 	}
-	empty, _ := NewInventory(nil, now)
+	empty, _ := inventoryOf(nil, now)
 	if empty.Services == nil {
 		t.Fatal("an empty inventory must encode as a list")
 	}
@@ -86,12 +95,12 @@ func TestCollectSurvivesAMissingDocker(t *testing.T) {
 			return []byte(enabledList), 0, nil
 		}
 	}
-	services, err := Collect(context.Background(), run, nil)
-	if err != nil || len(services) != 5 {
-		t.Fatalf("collect: %d services, err %v", len(services), err)
+	snapshot, err := Collect(context.Background(), run, nil)
+	if err != nil || len(snapshot.Services) != 5 || snapshot.Compose {
+		t.Fatalf("collect: %#v, err %v", snapshot, err)
 	}
-	if calls[2] != "docker ps -a --no-trunc --format {{.Names}}\t{{.State}}" {
-		t.Fatalf("unexpected docker call %q", calls[2])
+	if calls[2] != "docker ps -a --no-trunc --format "+containerFormat || len(calls) != 3 {
+		t.Fatalf("unexpected docker calls %q", calls[2:])
 	}
 }
 
@@ -150,8 +159,8 @@ func TestCollectGivesUpOnAHungDocker(t *testing.T) {
 	}
 	done := make(chan int, 1)
 	go func() {
-		services, _ := Collect(context.Background(), run, nil)
-		done <- len(services)
+		snapshot, _ := Collect(context.Background(), run, nil)
+		done <- len(snapshot.Services)
 	}()
 	select {
 	case count := <-done:
@@ -171,7 +180,7 @@ func TestAnInventoryKeepsAtMost500ServicesPreferringYourOwn(t *testing.T) {
 	for index := range 200 {
 		services = append(services, Service{Kind: "docker", Name: fmt.Sprintf("c%03d", index), State: "stopped"})
 	}
-	inventory, err := NewInventory(services, executorNow)
+	inventory, err := inventoryOf(services, executorNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,5 +192,69 @@ func TestAnInventoryKeepsAtMost500ServicesPreferringYourOwn(t *testing.T) {
 	}
 	if len(inventory.Services) != 500 || own != 200 {
 		t.Fatalf("expected 500 services with all 200 of your own, got %d and %d", len(inventory.Services), own)
+	}
+}
+
+const composeContainers = "listmonk_app\trunning\tlistmonk\t/opt/listmonk\t/opt/listmonk/docker-compose.yml\n" +
+	"listmonk_db\texited\tlistmonk\t/opt/listmonk\t/opt/listmonk/docker-compose.yml,/opt/listmonk/override.yml\n" +
+	"adguard\trunning\t\t\t\n"
+
+func TestContainersFormStacksFromComposeLabels(t *testing.T) {
+	services, stacks := parseContainers(composeContainers)
+	if len(services) != 3 {
+		t.Fatalf("services %#v", services)
+	}
+	want := []Stack{{
+		Project: "listmonk", Directory: "/opt/listmonk",
+		Files:   []string{"/opt/listmonk/docker-compose.yml", "/opt/listmonk/override.yml"},
+		Running: 1, Total: 2,
+	}}
+	if !reflect.DeepEqual(stacks, want) {
+		t.Fatalf("stacks\n got %#v\nwant %#v", stacks, want)
+	}
+}
+
+func TestAStackWithARelativeDirectoryIsLeftOut(t *testing.T) {
+	_, stacks := parseContainers("app\trunning\tshop\tshop\t/opt/shop/compose.yml\nweb\trunning\tsite\t/srv/site\tsite/compose.yml\n")
+	if len(stacks) != 0 {
+		t.Fatalf("relative paths must be left out, got %#v", stacks)
+	}
+}
+
+func TestAnInvalidProjectIsLeftOut(t *testing.T) {
+	_, stacks := parseContainers("app\trunning\tShop\t/opt/shop\t/opt/shop/compose.yml\nweb\trunning\t-x\t/opt/x\t/opt/x/compose.yml\n")
+	if len(stacks) != 0 {
+		t.Fatalf("invalid projects must be left out, got %#v", stacks)
+	}
+}
+
+func TestComposeAvailabilityIsReported(t *testing.T) {
+	for _, available := range []bool{true, false} {
+		run := func(_ context.Context, name string, args ...string) ([]byte, int, error) {
+			if name == "docker" && args[0] == "compose" {
+				if available {
+					return []byte("Docker Compose version v2.29.1"), 0, nil
+				}
+				return nil, 1, errors.New("unknown command compose")
+			}
+			if name == "docker" {
+				return []byte(composeContainers), 0, nil
+			}
+			return nil, 0, nil
+		}
+		snapshot, err := Collect(context.Background(), run, nil)
+		if err != nil || snapshot.Compose != available || len(snapshot.Stacks) != 1 {
+			t.Fatalf("available %v: %#v err %v", available, snapshot, err)
+		}
+	}
+}
+
+func TestTheInventoryHashChangesWhenAStackChanges(t *testing.T) {
+	stack := reporter.StackEntry{Project: "listmonk", Directory: "/opt/listmonk", Running: 5, Total: 5, Compose: true}
+	first, _ := NewInventory(nil, []reporter.StackEntry{stack}, reporter.TrustReport{}, executorNow)
+	stack.Running = 4
+	second, _ := NewInventory(nil, []reporter.StackEntry{stack}, reporter.TrustReport{}, executorNow)
+	if first.Hash == second.Hash {
+		t.Fatal("a stack change must change the hash")
 	}
 }

@@ -20,7 +20,7 @@ export interface ActionRequest {
   targets: ActionTarget[];
 }
 
-const MODES: { value: BatchMode; label: string; detail: string }[] = [
+export const MODES: { value: BatchMode; label: string; detail: string }[] = [
   {
     value: "rolling",
     label: "One at a time (recommended)",

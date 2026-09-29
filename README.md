@@ -130,6 +130,30 @@ The agent never runs anything itself:
 
 `kry uninstall-service` removes these units and that directory.
 
+### Deploy
+
+From agent 0.2.0 the **Stacks** view of the Services page deploys Docker
+Compose stacks: `docker compose pull`, then `up -d`, in the stack's own
+directory, with its own compose files. A failed deploy keeps the images that
+ran before it, and **Roll back** starts them again.
+
+Deploys need a fingerprint. On **Deploy devices** (account menu) you register
+a passkey on your laptop or phone; each server keeps its public key in
+`/var/lib/kry-exec/trust.json`, and the root executor checks every deploy
+against it, so nothing on Cloudflare can start one on its own. One fingerprint
+opens a 15-minute session while the tab is visible; a tab hidden for 2 minutes
+ends it.
+
+- New servers trust your devices through the enroll command.
+- Servers enrolled earlier: **Trust on servers** on the Deploy devices page,
+  accepted only while a server trusts no device yet.
+- Adding or removing a device needs a fingerprint from a device the servers
+  already trust. To start over on a server:
+
+```sh
+sudo kry trust --reset
+```
+
 ## Status page
 
 A second Worker, `stats` (`worker/wrangler.stats.jsonc`), serves a public page at

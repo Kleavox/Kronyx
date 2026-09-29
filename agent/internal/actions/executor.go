@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	maxRequestBytes = 4 << 10
+	maxRequestBytes = 8 << 10
 	maxOutputBytes  = 2 << 10
 	commandTimeout  = 2 * time.Minute
 	expirySkew      = time.Minute
@@ -39,7 +39,11 @@ type Executor struct {
 	StateDir   string
 	Now        func() time.Time
 	Run        Runner
-	Collect    func(context.Context, []string) ([]Service, error)
+	Collect    func(context.Context, []string) (Snapshot, error)
+
+	HealthTimeout time.Duration
+	HealthEvery   time.Duration
+	HealthSettle  time.Duration
 }
 
 type pending struct {
@@ -53,7 +57,7 @@ func (e Executor) Execute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	services, err := e.Collect(ctx, stopped)
+	snapshot, err := e.Collect(ctx, stopped)
 	if err != nil {
 		return err
 	}
@@ -76,11 +80,18 @@ func (e Executor) Execute(ctx context.Context) error {
 			}
 			result := e.refuse(item.id, item.refusal)
 			if item.refusal == nil {
-				result = e.execute(ctx, item.request, services)
-				if result.OK && item.request.Kind == "systemd" {
-					stopped = remember(stopped, item.request.Name, item.request.Action == "stop")
-					if err := writeJSON(e.StateDir, "stopped.json", stopped, 0o640); err != nil {
-						return err
+				switch item.request.Kind {
+				case "trust":
+					result = e.trustChange(item.request)
+				case "compose":
+					result = e.compose(ctx, item.request, snapshot)
+				default:
+					result = e.execute(ctx, item.request, snapshot.Services)
+					if result.OK && item.request.Kind == "systemd" {
+						stopped = remember(stopped, item.request.Name, item.request.Action == "stop")
+						if err := writeJSON(e.StateDir, "stopped.json", stopped, 0o640); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -88,11 +99,15 @@ func (e Executor) Execute(ctx context.Context) error {
 				return err
 			}
 		}
-		if services, err = e.Collect(ctx, stopped); err != nil {
+		if snapshot, err = e.Collect(ctx, stopped); err != nil {
 			return err
 		}
 	}
-	inventory, err := NewInventory(services, e.Now())
+	trust, err := LoadTrust(e.StateDir)
+	if err != nil {
+		log.Printf("%v", err)
+	}
+	inventory, err := NewInventory(snapshot.Services, e.stackEntries(snapshot), trust.Report(), e.Now())
 	if err != nil {
 		return err
 	}
@@ -113,6 +128,7 @@ func (e Executor) unprocessed(ledger map[string]time.Time) []pending {
 	}
 	defer root.Close()
 	if !sameDirectory(info, root) {
+		log.Printf("%s changed while it was opened; no request ran", e.RequestDir)
 		return nil
 	}
 	dir, err := root.Open(".")
@@ -132,6 +148,9 @@ func (e Executor) unprocessed(ledger map[string]time.Time) []pending {
 		}
 		id := strings.TrimSuffix(name, ".json")
 		if _, done := ledger[id]; done {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(e.StateDir, "results", name)); err == nil {
 			continue
 		}
 		request, err := readRequest(root, name)
@@ -222,8 +241,9 @@ func (e Executor) execute(ctx context.Context, request Request, services []Servi
 	}
 	action := request.Action
 	if request.Kind == "docker" && action == "start" {
-		paused, _, err := e.Run(ctx, "docker", "inspect", "--format", "{{.State.Paused}}", "--", request.Name)
-		if err == nil && strings.TrimSpace(string(paused)) == "true" {
+		paused, _, err := e.Run(ctx, "docker", "container", "inspect", "--format", "{{.State.Paused}}", "--", request.Name)
+		words := strings.Fields(string(paused))
+		if err == nil && len(words) > 0 && words[len(words)-1] == "true" {
 			action = "unpause"
 		}
 	}
@@ -236,6 +256,47 @@ func (e Executor) execute(ctx context.Context, request Request, services []Servi
 		result.Output = clean([]byte(err.Error()))
 	}
 	return result
+}
+
+func (e Executor) stackEntries(snapshot Snapshot) []reporter.StackEntry {
+	entries := make([]reporter.StackEntry, 0, len(snapshot.Stacks))
+	for _, stack := range snapshot.Stacks {
+		record, _ := readState[stackRecord](filepath.Join(e.StateDir, "stacks"), stack.Project+".json")
+		entries = append(entries, reporter.StackEntry{
+			Project: stack.Project, Directory: stack.Directory, Running: stack.Running, Total: stack.Total,
+			Compose: snapshot.Compose, Rollback: len(record.Previous) > 0,
+		})
+	}
+	return entries
+}
+
+func expired(request Request, now time.Time) error {
+	expires, err := time.Parse(time.RFC3339Nano, request.ExpiresAt)
+	if err != nil {
+		return errors.New("invalid expiry")
+	}
+	if now.After(expires.Add(expirySkew)) {
+		return fmt.Errorf("the request expired at %s", request.ExpiresAt)
+	}
+	return nil
+}
+
+func (e Executor) trustChange(request Request) Result {
+	if err := expired(request, e.Now()); err != nil {
+		return e.refuse(request.ID, err)
+	}
+	current, err := LoadTrust(e.StateDir)
+	if err != nil {
+		return e.refuse(request.ID, err)
+	}
+	next, err := ApplyTrustChange(current, request, e.Now())
+	if err != nil {
+		return e.refuse(request.ID, err)
+	}
+	if err := SaveTrust(e.StateDir, next); err != nil {
+		return e.refuse(request.ID, err)
+	}
+	return Result{ID: request.ID, OK: true, Output: fmt.Sprintf("trusted %d devices, version %d", len(next.Keys), next.Version), FinishedAt: e.stamp()}
 }
 
 func remember(stopped []string, name string, keep bool) []string {
@@ -305,8 +366,8 @@ func (e Executor) pruneResults() error {
 	return nil
 }
 
-func clean(output []byte) string {
-	text := strings.Map(func(r rune) rune {
+func sanitize(output []byte) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\t' {
 			return r
 		}
@@ -314,8 +375,23 @@ func clean(output []byte) string {
 			return -1
 		}
 		return r
-	}, strings.ToValidUTF8(string(output), ""))
-	text = strings.TrimSpace(text)
+	}, strings.ToValidUTF8(string(output), "")))
+}
+
+func tail(output []byte, limit int) string {
+	text := sanitize(output)
+	limit = max(limit, 0)
+	if len(text) > limit {
+		text = text[len(text)-limit:]
+		for !utf8.ValidString(text) {
+			text = text[1:]
+		}
+	}
+	return text
+}
+
+func clean(output []byte) string {
+	text := sanitize(output)
 	if len(text) > maxOutputBytes {
 		text = text[:maxOutputBytes]
 		for !utf8.ValidString(text) {
@@ -357,5 +433,8 @@ func writeJSON(directory, name string, value any, mode os.FileMode) error {
 	if err := file.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporary, filepath.Join(directory, name))
+	if err := os.Rename(temporary, filepath.Join(directory, name)); err != nil {
+		return err
+	}
+	return syncDirectory(directory)
 }

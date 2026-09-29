@@ -8,8 +8,8 @@ function mailEnv(extra: Partial<Env> = {}) {
   const env = {
     EMAIL: { send },
     ALERT_EMAIL: "operator@example.test",
-    FROM_EMAIL: "krynodes@example.test",
-    PUBLIC_ORIGIN: "https://krynodes.example.test",
+    FROM_EMAIL: "kry@example.test",
+    PUBLIC_ORIGIN: "https://kry.example.test",
     ...extra,
   } as unknown as Env;
   const sent = () =>
@@ -31,19 +31,17 @@ describe("incident email", () => {
     expect(message.to).toBe("operator@example.test");
     expect(message.from).toEqual({
       name: "Krynodes",
-      email: "krynodes@example.test",
+      email: "kry@example.test",
     });
     expect(message.subject).toBe("[Krynodes] API <health> is down");
     expect(message.html).toContain("API &lt;health&gt; is down");
     expect(message.html).not.toContain("<health>");
     expect(message.html).toContain("2026-09-28 08:05 UTC");
-    expect(message.html).toContain(
-      'href="https://krynodes.example.test/incidents"',
-    );
+    expect(message.html).toContain('href="https://kry.example.test/incidents"');
     expect(message.html).not.toMatch(/Pulse|Kleavox/u);
     expect(message.text).toContain("API <health> is down: timeout");
     expect(message.text).toContain("Node: pivox");
-    expect(message.text).toContain("https://krynodes.example.test/incidents");
+    expect(message.text).toContain("https://kry.example.test/incidents");
   });
 
   it("marks a recovery as resolved", async () => {

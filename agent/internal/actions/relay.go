@@ -123,8 +123,10 @@ func (r *Relay) Poll(ctx context.Context) error {
 		if changed || refreshed {
 			report.Inventory = &reporter.InventoryReport{Hash: inventory.Hash}
 			if changed {
-				services := inventory.Services
+				services, stacks, trust := inventory.Services, inventory.Stacks, inventory.Trust
 				report.Inventory.Services = &services
+				report.Inventory.Stacks = &stacks
+				report.Inventory.Trust = &trust
 			}
 		}
 	}

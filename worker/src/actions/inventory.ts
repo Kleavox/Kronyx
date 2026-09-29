@@ -2,6 +2,7 @@ import {
   isProtectedTarget,
   type AgentActionsRequest,
   type ServiceEntry,
+  type StackEntry,
 } from "@krynodes/protocol";
 
 const REPORTING_MS = 3 * 60_000;
@@ -29,6 +30,81 @@ interface ServiceRow {
   state: string;
   since: string | null;
   system: number;
+}
+
+interface StackRow {
+  project: string;
+  directory: string;
+  running: number;
+  total: number;
+  compose: number;
+  rollback: number;
+}
+
+function stackChanged(row: StackRow | undefined, entry: StackEntry): boolean {
+  return (
+    !row ||
+    row.directory !== entry.directory ||
+    row.running !== entry.running ||
+    row.total !== entry.total ||
+    row.compose !== (entry.compose ? 1 : 0) ||
+    row.rollback !== (entry.rollback ? 1 : 0)
+  );
+}
+
+async function stackStatements(
+  db: D1Database,
+  nodeId: string,
+  stacks: StackEntry[],
+  at: string,
+): Promise<D1PreparedStatement[]> {
+  const existing = await db
+    .prepare(
+      "SELECT project, directory, running, total, compose, rollback FROM stacks WHERE node_id = ?",
+    )
+    .bind(nodeId)
+    .all<StackRow>();
+  const before = new Map(existing.results.map((row) => [row.project, row]));
+  const after = new Set(stacks.map((stack) => stack.project));
+  const upserts = stacks
+    .filter((stack) => stackChanged(before.get(stack.project), stack))
+    .map((stack) => ({
+      ...stack,
+      compose: stack.compose ? 1 : 0,
+      rollback: stack.rollback ? 1 : 0,
+    }));
+  const removed = existing.results
+    .filter((row) => !after.has(row.project))
+    .map((row) => row.project);
+  return [
+    ...(upserts.length > 0
+      ? [
+          db
+            .prepare(
+              `INSERT INTO stacks (node_id, project, directory, running, total, compose, rollback, updated_at)
+               SELECT ?1, json_extract(value, '$.project'), json_extract(value, '$.directory'),
+                      json_extract(value, '$.running'), json_extract(value, '$.total'),
+                      json_extract(value, '$.compose'), json_extract(value, '$.rollback'), ?2
+               FROM json_each(?3) WHERE true
+               ON CONFLICT (node_id, project) DO UPDATE SET
+                 directory = excluded.directory, running = excluded.running,
+                 total = excluded.total, compose = excluded.compose,
+                 rollback = excluded.rollback, updated_at = excluded.updated_at`,
+            )
+            .bind(nodeId, at, JSON.stringify(upserts)),
+        ]
+      : []),
+    ...(removed.length > 0
+      ? [
+          db
+            .prepare(
+              `DELETE FROM stacks
+               WHERE node_id = ?1 AND project IN (SELECT value FROM json_each(?2))`,
+            )
+            .bind(nodeId, JSON.stringify(removed)),
+        ]
+      : []),
+  ];
 }
 
 const keyOf = (service: { kind: string; name: string }) =>
@@ -105,6 +181,22 @@ export async function applyInventory(
                WHERE node_id = ?1 AND (kind || ':' || name) IN (SELECT value FROM json_each(?2))`,
             )
             .bind(node.id, JSON.stringify(removed)),
+        ]
+      : []),
+    ...(inventory.stacks
+      ? await stackStatements(db, node.id, inventory.stacks, at)
+      : []),
+    ...(inventory.trust
+      ? [
+          db
+            .prepare(
+              "UPDATE nodes SET trust_version = ?, trust_keys = ? WHERE id = ?",
+            )
+            .bind(
+              inventory.trust.version,
+              JSON.stringify(inventory.trust.keys),
+              node.id,
+            ),
         ]
       : []),
     db
