@@ -1,0 +1,213 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      javascript: ${{ steps.filter.outputs.javascript }}
+      agent: ${{ steps.filter.outputs.agent }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            javascript:
+              - "app/**"
+              - "worker/**"
+              - "packages/**"
+              - "tooling/**"
+              - "package.json"
+              - "pnpm-lock.yaml"
+              - "pnpm-workspace.yaml"
+              - "tsconfig.base.json"
+              - "turbo.json"
+              - ".github/workflows/ci.yml"
+            agent:
+              - "agent/**"
+              - ".github/workflows/ci.yml"
+              - ".github/workflows/agent-release.yml"
+
+  javascript:
+    needs: changes
+    if: needs.changes.outputs.javascript == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.17.0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Cache Turbo
+        uses: actions/cache@v6
+        with:
+          path: .turbo
+          key: turbo-${{ github.job }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ github.job }}-${{ github.ref_name }}-
+            turbo-${{ github.job }}-
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+  agent:
+    needs: changes
+    if: needs.changes.outputs.agent == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+          cache-dependency-path: agent/go.mod
+
+      - run: go test ./...
+        working-directory: agent
+
+      - run: go build -o bin/kry ./cmd/agent
+        working-directory: agent
+
+      - name: Dead-code check
+        working-directory: agent
+        run: |
+          output="$(go run golang.org/x/tools/cmd/deadcode@latest ./...)"
+          if [ -n "$output" ]; then
+            echo "Dead Go code found:"
+            echo "$output"
+            exit 1
+          fi
+
+  validate:
+    name: validate
+    if: always()
+    needs:
+      - changes
+      - javascript
+      - agent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm required checks passed
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          JAVASCRIPT_RESULT: ${{ needs.javascript.result }}
+          AGENT_RESULT: ${{ needs.agent.result }}
+        run: |
+          test "$CHANGES_RESULT" = "success"
+          test "$JAVASCRIPT_RESULT" = "success" || test "$JAVASCRIPT_RESULT" = "skipped"
+          test "$AGENT_RESULT" = "success" || test "$AGENT_RESULT" = "skipped"
+
+  deploy:
+    name: deploy
+    needs:
+      - changes
+      - validate
+    if: >-
+      !cancelled() &&
+      needs.validate.result == 'success' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && needs.changes.outputs.javascript == 'true'))
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      KRY_D1_ID: ${{ secrets.KRY_D1_ID }}
+      ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+      ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
+      ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+      AGENT_HOST: kry.deau.workers.dev
+    steps:
+      - name: Check the production settings
+        run: |
+          missing=""
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID KRY_D1_ID ALERT_EMAIL ACCESS_TEAM_DOMAIN ACCESS_AUD; do
+            if [ -z "${!name}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "Missing from the production environment on GitHub:$missing" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.17.0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build the app and the packages the Worker imports
+        run: pnpm turbo run build --filter=@krynodes/worker^...
+
+      - name: Point the production configs at the D1 database
+        run: sed -i "s/__KRY_D1_ID__/${KRY_D1_ID}/" worker/wrangler.jsonc worker/wrangler.stats.jsonc
+
+      - name: Apply D1 migrations
+        run: pnpm exec wrangler d1 migrations apply DB --remote --env production --config worker/wrangler.jsonc
+
+      - name: Deploy the Worker
+        run: |
+          secrets="$RUNNER_TEMP/kry-secrets.json"
+          node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ ALERT_EMAIL: process.env.ALERT_EMAIL }))' "$secrets"
+          pnpm exec wrangler deploy --config worker/wrangler.jsonc --env production \
+            --var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" \
+            --var "ACCESS_AUD:${ACCESS_AUD}" \
+            --secrets-file "$secrets"
+          rm -f "$secrets"
+
+      - name: Smoke test
+        run: |
+          body="$RUNNER_TEMP/health.txt"
+          headers="$RUNNER_TEMP/health.headers"
+          for attempt in $(seq 1 12); do
+            status="$(curl -s -o "$body" -D "$headers" -w '%{http_code}' "https://${AGENT_HOST}/health" || true)"
+            if [ "$status" = 200 ] && grep -q '"status":"ok"' "$body"; then
+              break
+            fi
+            if [ "$attempt" = 12 ]; then
+              echo "/health on ${AGENT_HOST} never answered ok; the last status was ${status}." >&2
+              grep -i -E '^(server|cf-mitigated|cf-ray|location):' "$headers" >&2 || true
+              head -c 300 "$body" >&2 || true
+              echo >&2
+              exit 1
+            fi
+            sleep 15
+          done
+          code="$(curl -s -o /dev/null -w '%{http_code}' "https://${AGENT_HOST}/api/overview")"
+          if [ "$code" != 401 ]; then
+            echo "/api/overview on ${AGENT_HOST} answered ${code} without an Access token; the Worker must answer 401." >&2
+            exit 1
+          fi
+          echo "/health ok; the dashboard API refuses requests without an Access token."
+
+      - name: Deploy the status page
+        run: pnpm exec wrangler deploy --config worker/wrangler.stats.jsonc --env production

@@ -1,0 +1,27 @@
+{
+  "name": "@krynodes/vite-config",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit --checkers 1"
+  },
+  "files": [
+    "index.ts"
+  ],
+  "dependencies": {
+    "@vitejs/plugin-react": "catalog:"
+  },
+  "peerDependencies": {
+    "vite": "catalog:"
+  },
+  "devDependencies": {
+    "@krynodes/typescript": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:"
+  }
+}

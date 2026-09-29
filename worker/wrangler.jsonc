@@ -1,0 +1,72 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "kry",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-05",
+  "dev": { "port": 8790 },
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    "ENVIRONMENT": "development",
+    "PUBLIC_ORIGIN": "http://127.0.0.1:8790",
+    "FROM_EMAIL": "krynodes@example.test",
+  },
+  "assets": {
+    "directory": "../app/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/health"],
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kry",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "send_email": [{ "name": "EMAIL" }],
+  "ratelimits": [
+    {
+      "name": "AGENT_RATE_LIMIT",
+      "namespace_id": "4101",
+      "simple": { "limit": 60, "period": 60 },
+    },
+  ],
+  "triggers": {
+    "crons": ["17 3 * * *"],
+  },
+  "observability": {
+    "enabled": true,
+  },
+  "env": {
+    "production": {
+      "name": "kry",
+      "workers_dev": true,
+      "preview_urls": false,
+      "routes": [{ "pattern": "kry.kleavox.xyz", "custom_domain": true }],
+      "vars": {
+        "ENVIRONMENT": "production",
+        "PUBLIC_ORIGIN": "https://kry.kleavox.xyz",
+        "FROM_EMAIL": "kry@kleavox.xyz",
+        "AGENT_ORIGIN": "https://kry.deau.workers.dev",
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "kry",
+          "database_id": "__KRY_D1_ID__",
+          "migrations_dir": "migrations",
+        },
+      ],
+      "send_email": [{ "name": "EMAIL" }],
+      "ratelimits": [
+        {
+          "name": "AGENT_RATE_LIMIT",
+          "namespace_id": "4101",
+          "simple": { "limit": 60, "period": 60 },
+        },
+      ],
+    },
+  },
+}

@@ -1,0 +1,34 @@
+node_modules/
+.turbo/
+.wrangler/
+.cache/
+.pnpm-store/
+.agents/
+.dev.vars
+.env
+.env.*
+!.env.example
+.migration/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Framework output
+.vite/
+
+# Playwright
+test-results/
+playwright-report/
+
+# Go
+bin/
+coverage.out
+
+# Rust
+target/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

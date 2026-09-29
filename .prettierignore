@@ -1,0 +1,12 @@
+.agents/
+.cache/
+.turbo/
+node_modules/
+**/.wrangler/
+**/dist/
+**/bin/
+
+docs/
+pnpm-lock.yaml
+packages/compression/pkg/
+packages/crypto/pkg/

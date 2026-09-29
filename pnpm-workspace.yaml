@@ -1,0 +1,30 @@
+packages:
+  - "app"
+  - "worker"
+  - "packages/*"
+  - "tooling/*"
+
+allowBuilds:
+  esbuild: true
+  sharp: true
+  workerd: true
+
+catalog:
+  "@types/react": "^19.2.17"
+  "@types/react-dom": "^19.2.3"
+  "@vitejs/plugin-react": "^6.0.4"
+  "@cloudflare/workers-types": "^5.20260724.1"
+  "@types/node": "^22.19.19"
+  "hono": "^4.12.31"
+  "react": "^19.2.8"
+  "react-dom": "^19.2.8"
+  "typescript": "^7.0.2"
+  "vite": "^8.1.5"
+  "vitest": "^4.1.10"
+  "wrangler": "^4.114.0"
+  "zod": "^4.4.3"
+
+minimumReleaseAgeExclude:
+  - "@cloudflare/workers-types@5.20260724.1"
+  - miniflare@4.20260722.0
+  - wrangler@4.114.0

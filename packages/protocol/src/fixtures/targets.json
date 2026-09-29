@@ -1,0 +1,48 @@
+{
+  "protected": [
+    ["systemd", "ssh.service"],
+    ["systemd", "sshd.service"],
+    ["systemd", "krynodes.service"],
+    ["systemd", "krynodes-exec.service"],
+    ["systemd", "krynodes-update.service"],
+    ["systemd", "docker.service"],
+    ["systemd", "containerd.service"],
+    ["systemd", "systemd-resolved.service"],
+    ["systemd", "systemd-networkd.service"],
+    ["systemd", "dbus.service"],
+    ["systemd", "dbus-broker.service"],
+    ["systemd", "networking.service"],
+    ["systemd", "NetworkManager.service"],
+    ["systemd", "cloudflared.service"],
+    ["systemd", "cloudflared-tunnel.service"],
+    ["systemd", "getty@tty1.service"],
+    ["systemd", "serial-getty@ttyS0.service"],
+    ["systemd", "user@1000.service"],
+    ["systemd", "snap.docker.dockerd.service"]
+  ],
+  "allowed": [
+    ["systemd", "nginx.service"],
+    ["systemd", "shadowsocks-libev.service"],
+    ["systemd", "AdGuardHome.service"],
+    ["systemd", "openvpn@server.service"],
+    ["systemd", "sshguard.service"],
+    ["systemd", "dockerd-proxy.service"],
+    ["systemd", "snap.lxd.daemon.service"],
+    ["docker", "adguard"],
+    ["docker", "ssh"],
+    ["docker", "docker"],
+    ["docker", "my_app.web-1"]
+  ],
+  "invalid": [
+    ["systemd", "nginx"],
+    ["systemd", "../etc/passwd.service"],
+    ["systemd", "a b.service"],
+    ["systemd", "a;b.service"],
+    ["systemd", "-x.service"],
+    ["systemd", "nginx.service\n"],
+    ["docker", ""],
+    ["docker", "a/b"],
+    ["docker", "-rm"],
+    ["kubernetes", "nginx"]
+  ]
+}

@@ -1,0 +1,196 @@
+export interface Identity {
+  id: string;
+  email: string;
+  username: string | null;
+}
+
+export type SessionVia = "access" | "standalone";
+
+export interface SessionResponse {
+  authenticated: boolean;
+  via: SessionVia;
+  identity?: Identity;
+}
+
+export interface NodeRecord {
+  id: string;
+  name: string;
+  hostname: string | null;
+  architecture: string | null;
+  operating_system: string | null;
+  agent_version: string | null;
+  last_seen_at: string | null;
+  enrolled_at: string | null;
+  disabled_at: string | null;
+  interval_seconds: number;
+  cpu_percent: number | null;
+  memory_used_bytes: number | null;
+  memory_total_bytes: number | null;
+  disk_used_bytes: number | null;
+  disk_total_bytes: number | null;
+  load_1: number | null;
+  uptime_seconds: number | null;
+  created_at: string;
+  update_requested_version: string | null;
+  update_requested_at: string | null;
+  auto_update: number;
+}
+
+export type CheckKind = "HTTP" | "TCP" | "SERVICE";
+export type CheckStatus = "UNKNOWN" | "UP" | "DOWN";
+
+export interface CheckRecord {
+  id: string;
+  node_id: string;
+  name: string;
+  kind: CheckKind;
+  target: string;
+  enabled: number;
+  status: CheckStatus;
+  timeout_seconds: number;
+  latency_ms: number | null;
+  last_checked_at: string | null;
+  consecutive_failures: number;
+  last_message: string | null;
+  public: number;
+  public_note: string | null;
+}
+
+export interface Incident {
+  id: string;
+  check_id: string;
+  node_id: string;
+  status: "OPEN" | "RESOLVED";
+  started_at: string;
+  resolved_at: string | null;
+  summary: string | null;
+  check_name: string;
+  node_name: string;
+}
+
+export interface AgentRelease {
+  version: string | null;
+  checkedAt: string | null;
+  updateCommand: string;
+}
+
+export interface Overview {
+  nodes: NodeRecord[];
+  checks: CheckRecord[];
+  incidents: Incident[];
+  agentRelease: AgentRelease;
+}
+
+export interface Enrollment {
+  id: string;
+  enrollmentToken: string;
+  enrollmentExpiresAt: string;
+  command: string;
+}
+
+export type EnrollmentStatus =
+  | { status: "pending" }
+  | { status: "expired" }
+  | { status: "used"; node: { id: string; name: string } | null };
+
+export type MetricRange = "6h" | "24h" | "7d";
+
+interface MetricPoint {
+  t: string;
+  cpu: number | null;
+  memUsed: number | null;
+  memTotal: number | null;
+  diskUsed: number | null;
+  diskTotal: number | null;
+  load1: number | null;
+  load5: number | null;
+  load15: number | null;
+  samples: number;
+}
+
+export interface NodeMetrics {
+  range: MetricRange;
+  bucketSeconds: number;
+  from: string;
+  to: string;
+  points: MetricPoint[];
+}
+
+export interface RecentSlot {
+  t: string;
+  cpu: number | null;
+  memPct: number | null;
+  samples: number;
+}
+
+export interface RecentNode {
+  slotSeconds: number;
+  slots: RecentSlot[];
+}
+
+export interface RecentMetrics {
+  nodes: Record<string, RecentNode>;
+}
+
+export interface CheckResult {
+  t: string;
+  status: "UP" | "DOWN";
+  latencyMs: number | null;
+  message: string | null;
+}
+
+export interface CheckHistory {
+  results: CheckResult[];
+  up4h: number | null;
+}
+
+export interface CheckResults {
+  windowSeconds: number;
+  from: string;
+  checks: Record<string, CheckHistory>;
+}
+
+export type ServiceKind = "systemd" | "docker";
+export type ServiceState = "running" | "stopped" | "failed" | "starting";
+export type ServiceAction = "start" | "stop" | "restart";
+export type BatchMode = "rolling" | "parallel";
+type ActionStatus =
+  "queued" | "sent" | "done" | "failed" | "expired" | "cancelled" | "skipped";
+
+export interface ServiceEntry {
+  kind: ServiceKind;
+  name: string;
+  state: ServiceState;
+  since: string | null;
+  system: boolean;
+}
+
+interface ServiceNode {
+  id: string;
+  inventoryAt: string | null;
+  refreshRequestedAt: string | null;
+  services: ServiceEntry[];
+}
+
+export interface ActionRecord {
+  id: string;
+  batchId: string;
+  position: number;
+  mode: BatchMode;
+  nodeId: string;
+  kind: ServiceKind;
+  name: string;
+  action: ServiceAction;
+  status: ActionStatus;
+  requestedAt: string;
+  deliverableAt: string | null;
+  sentAt: string | null;
+  finishedAt: string | null;
+  exitCode: number | null;
+  output: string | null;
+}
+
+export interface ServicesResponse {
+  nodes: ServiceNode[];
+  actions: ActionRecord[];
+}

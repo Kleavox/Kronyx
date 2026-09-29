@@ -1,0 +1,15 @@
+{
+  "name": "@krynodes/typescript",
+  "version": "0.2.0",
+  "private": true,
+  "files": [
+    "*.json"
+  ],
+  "exports": {
+    "./base.json": "./base.json",
+    "./browser.json": "./browser.json",
+    "./library.json": "./library.json",
+    "./node.json": "./node.json",
+    "./worker.json": "./worker.json"
+  }
+}

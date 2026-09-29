@@ -1,0 +1,27 @@
+{
+  "name": "@krynodes/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "wrangler deploy --dry-run --outdir dist && wrangler deploy --dry-run --config wrangler.stats.jsonc --outdir dist/stats",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "tsc -p tsconfig.test.json --noEmit --checkers 1 && vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit --checkers 1"
+  },
+  "dependencies": {
+    "@krynodes/app": "workspace:*",
+    "@krynodes/protocol": "workspace:*",
+    "hono": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "@krynodes/typescript": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  }
+}

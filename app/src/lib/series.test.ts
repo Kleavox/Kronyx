@@ -1,0 +1,304 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  duringIncident,
+  findGaps,
+  groupByDay,
+  heartbeatSummary,
+  isLonePoint,
+  layoutReportSlots,
+  seriesSummary,
+  sparklineSegments,
+  untilWindowSettles,
+  withGapBreaks,
+} from "./series";
+
+describe("findGaps", () => {
+  const range = { from: 0, to: 600_000 };
+
+  it("treats the whole range as a gap when there is no data", () => {
+    expect(findGaps([], 180, range)).toEqual([{ from: 0, to: 600_000 }]);
+  });
+
+  it("ignores spacing within the limit, so jitter is not an outage", () => {
+    expect(
+      findGaps([0, 120_000, 240_000, 360_000, 480_000, 600_000], 180, range),
+    ).toEqual([]);
+  });
+
+  it("allows the bucket still in progress at the right edge", () => {
+    expect(findGaps([0, 300_000], 300, { from: 0, to: 700_000 }, 300)).toEqual(
+      [],
+    );
+    expect(
+      findGaps([0, 300_000], 300, { from: 0, to: 1_000_000 }, 300),
+    ).toEqual([{ from: 300_000, to: 1_000_000 }]);
+  });
+
+  it("marks leading, interior and trailing silences longer than the limit", () => {
+    expect(findGaps([200_000, 260_000, 500_000], 180, range)).toEqual([
+      { from: 0, to: 200_000 },
+      { from: 260_000, to: 500_000 },
+    ]);
+    expect(findGaps([0, 60_000], 180, range)).toEqual([
+      { from: 60_000, to: 600_000 },
+    ]);
+  });
+});
+
+describe("withGapBreaks", () => {
+  it("inserts one blank row inside each interior gap so the line breaks", () => {
+    const rows: { time: number; v: number | null }[] = [
+      { time: 0, v: 1 },
+      { time: 60_000, v: 2 },
+      { time: 400_000, v: 3 },
+    ];
+    const gaps = [
+      { from: 60_000, to: 400_000 },
+      { from: 400_000, to: 600_000 },
+    ];
+    expect(withGapBreaks(rows, gaps, (time) => ({ time, v: null }))).toEqual([
+      { time: 0, v: 1 },
+      { time: 60_000, v: 2 },
+      { time: 230_000, v: null },
+      { time: 400_000, v: 3 },
+    ]);
+  });
+});
+
+describe("layoutReportSlots", () => {
+  const minute = 60_000;
+  const now = 100 * minute + 30_000;
+
+  it("ends at the newest slot the data can judge", () => {
+    const sample = { t: new Date(99 * minute).toISOString() };
+    const laid = layoutReportSlots({
+      slots: [sample],
+      slotSeconds: 60,
+      graceSeconds: 180,
+      since: 0,
+      now,
+    });
+    expect(laid).toHaveLength(30);
+    expect(laid[29]!.start).toBe(99 * minute);
+    expect(laid[29]!.state).toBe("received");
+    expect(laid[29]!.sample).toBe(sample);
+  });
+
+  it("moves on only when the new slot has its report", () => {
+    const laid = layoutReportSlots({
+      slots: [{ t: new Date(100 * minute + 5_000).toISOString() }],
+      slotSeconds: 60,
+      graceSeconds: 180,
+      since: 0,
+      now,
+    });
+    expect(laid[29]!.start).toBe(100 * minute);
+    expect(laid[29]!.state).toBe("received");
+  });
+
+  it("leaves silence off the strip until it counts as missed", () => {
+    const laid = layoutReportSlots({
+      slots: [],
+      slotSeconds: 60,
+      graceSeconds: 180,
+      since: 0,
+      now,
+    });
+    expect(laid).toHaveLength(30);
+    expect(laid[29]!.start).toBe(97 * minute);
+    expect(laid.every((slot) => slot.state === "missed")).toBe(true);
+  });
+
+  it("judges silence against the age of the data, not the clock", () => {
+    const laid = layoutReportSlots({
+      slots: [],
+      slotSeconds: 60,
+      graceSeconds: 180,
+      since: 0,
+      now,
+      asOf: 97 * minute + 10_000,
+    });
+    expect(laid[29]!.start).toBe(94 * minute);
+    expect(laid[29]!.state).toBe("missed");
+  });
+
+  it("keeps a gap between two reports as pending while it is young", () => {
+    const laid = layoutReportSlots({
+      slots: [
+        { t: new Date(98 * minute).toISOString() },
+        { t: new Date(100 * minute).toISOString() },
+      ],
+      slotSeconds: 60,
+      graceSeconds: 180,
+      since: 0,
+      now,
+    });
+    expect(laid[29]!.state).toBe("received");
+    expect(laid[28]!.state).toBe("pending");
+    expect(laid[27]!.state).toBe("received");
+  });
+
+  it("shows slots before enrollment as none", () => {
+    const laid = layoutReportSlots({
+      slots: [],
+      slotSeconds: 60,
+      graceSeconds: 180,
+      since: 95 * minute,
+      now,
+    });
+    expect(laid[0]!.start).toBe(68 * minute);
+    expect(laid[26]!.state).toBe("none");
+    expect(laid[27]!.state).toBe("missed");
+    expect(laid[29]!.start).toBe(97 * minute);
+  });
+
+  it("shows every slot as none for a node that never enrolled", () => {
+    const laid = layoutReportSlots({
+      slots: [],
+      slotSeconds: 60,
+      graceSeconds: 180,
+      since: null,
+      now,
+    });
+    expect(laid.every((slot) => slot.state === "none")).toBe(true);
+    expect(laid[29]!.start).toBe(100 * minute);
+  });
+
+  it("spans 30 hours for a node reporting hourly", () => {
+    const hour = 3_600_000;
+    const laid = layoutReportSlots({
+      slots: [{ t: new Date(80 * hour).toISOString() }],
+      slotSeconds: 3600,
+      graceSeconds: 10_800,
+      since: 0,
+      now: 100 * hour + 1,
+    });
+    expect(laid[0]!.start).toBe(68 * hour);
+    expect(laid.findIndex((slot) => slot.state === "received")).toBe(12);
+  });
+});
+
+describe("untilWindowSettles", () => {
+  const window = 300_000;
+  const boundary = 1_000 * window;
+
+  it("fetches shortly after agents report at the top of each window", () => {
+    expect(untilWindowSettles(boundary + 10_000)).toBe(5_000);
+    expect(untilWindowSettles(boundary + 100_000)).toBe(215_000);
+  });
+
+  it("never schedules a fetch for the moment it is called", () => {
+    expect(untilWindowSettles(boundary + 15_000)).toBe(window);
+  });
+
+  it("aligns to shorter windows too", () => {
+    expect(untilWindowSettles(boundary + 20_000, 60_000)).toBe(55_000);
+  });
+});
+
+describe("duringIncident", () => {
+  const MIN = 60_000;
+  const at = (clock: string) => Date.parse(`2026-09-28T${clock}:00Z`);
+  const incidents = [
+    {
+      started_at: "2026-09-28T12:00:30.000Z",
+      resolved_at: "2026-09-28 12:20:00",
+    },
+    { started_at: "2026-09-28T13:00:00.000Z", resolved_at: null },
+  ];
+
+  it("counts the window of the first failure, one report before the incident opened", () => {
+    expect(duringIncident(at("11:55"), 5 * MIN, incidents)).toBe(true);
+    expect(duringIncident(at("11:50"), 5 * MIN, incidents)).toBe(false);
+  });
+
+  it("ends at the report that resolved the incident", () => {
+    expect(duringIncident(at("12:15"), 5 * MIN, incidents)).toBe(true);
+    expect(duringIncident(at("12:20"), 5 * MIN, incidents)).toBe(false);
+  });
+
+  it("keeps an open incident running", () => {
+    expect(duringIncident(at("15:00"), 5 * MIN, incidents)).toBe(true);
+  });
+
+  it("treats a failure with no incident as brief", () => {
+    expect(duringIncident(at("12:00"), 5 * MIN, [])).toBe(false);
+  });
+});
+
+describe("summaries", () => {
+  it("summarises heartbeat windows, counting the empty ones", () => {
+    expect(heartbeatSummary([null, null], "4 hours")).toBe(
+      "No results in the last 4 hours",
+    );
+    expect(heartbeatSummary(["UP", "DOWN", null, "UP"], "4 hours")).toBe(
+      "2 up, 1 down, 1 without results in the last 4 hours",
+    );
+  });
+
+  it("summarises a series without inventing data", () => {
+    expect(seriesSummary([null, null], (value) => `${value}%`)).toBe(
+      "No data in this range",
+    );
+    expect(seriesSummary([10, null, 30, 20], (value) => `${value}%`)).toBe(
+      "now 20%, min 10%, max 30%, average 20%",
+    );
+  });
+});
+
+describe("sparklineSegments", () => {
+  it("scales values to the box and breaks at nulls", () => {
+    expect(sparklineSegments([0, 100, null, 50, 50], 100, 100, 28)).toEqual([
+      "0,28 25,0",
+      "75,14 100,14",
+    ]);
+  });
+
+  it("draws a lone point as a zero-length segment so it shows as a dot", () => {
+    expect(sparklineSegments([null, 40, null], 100, 100, 28)).toEqual([
+      "50,16.8 50,16.8",
+    ]);
+  });
+
+  it("clamps out-of-range values and handles an empty series", () => {
+    expect(sparklineSegments([], 100)).toEqual([]);
+    expect(sparklineSegments([150, -5], 100, 100, 28)).toEqual(["0,0 100,28"]);
+  });
+});
+
+describe("isLonePoint", () => {
+  it("is true only for a value with no measured neighbour", () => {
+    const values = [null, 5, null, 1, 2];
+    expect(values.map((_, index) => isLonePoint(values, index))).toEqual([
+      false,
+      true,
+      false,
+      false,
+      false,
+    ]);
+    expect(isLonePoint([7], 0)).toBe(true);
+  });
+});
+
+describe("groupByDay", () => {
+  it("groups items by local day label, preserving order", () => {
+    const now = new Date(2026, 8, 27, 12).getTime();
+    const items = [
+      { id: "a", at: new Date(2026, 8, 27, 9).toISOString() },
+      { id: "b", at: new Date(2026, 8, 26, 21).toISOString() },
+      { id: "c", at: new Date(2026, 8, 26, 2).toISOString() },
+      { id: "d", at: new Date(2026, 8, 23, 9).toISOString() },
+    ];
+    expect(
+      groupByDay(items, (item) => item.at, now).map((group) => [
+        group.label,
+        group.items.map((item) => item.id),
+      ]),
+    ).toEqual([
+      ["Today", ["a"]],
+      ["Yesterday", ["b", "c"]],
+      ["23 Sep", ["d"]],
+    ]);
+  });
+});

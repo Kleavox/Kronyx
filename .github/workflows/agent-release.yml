@@ -1,0 +1,137 @@
+name: Agent Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "agent/**"
+      - ".github/workflows/agent-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: agent-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "agent/VERSION is '$version', which is not MAJOR.MINOR.PATCH." >&2
+            exit 1
+          fi
+          tag="agent-v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${tag} already exists. Bump agent/VERSION to cut a new release."
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v7
+        if: steps.version.outputs.released == 'false'
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.mod
+
+      - name: Test
+        if: steps.version.outputs.released == 'false'
+        run: go test ./...
+
+      - name: Build Linux binaries
+        if: steps.version.outputs.released == 'false'
+        env:
+          CGO_ENABLED: "0"
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o krynodes-linux-amd64 ./cmd/agent
+          GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o krynodes-linux-arm64 ./cmd/agent
+          sha256sum krynodes-linux-amd64 > krynodes-linux-amd64.sha256
+          sha256sum krynodes-linux-arm64 > krynodes-linux-arm64.sha256
+
+      - name: Verify the binary reports its version
+        if: steps.version.outputs.released == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          reported="$(./krynodes-linux-amd64 version)"
+          if [ "$reported" != "$VERSION" ]; then
+            echo "Binary reports '${reported}' but VERSION says '${VERSION}'." >&2
+            exit 1
+          fi
+
+      - name: Sign the binaries
+        if: steps.version.outputs.released == 'false'
+        env:
+          AGENT_SIGNING_KEY: ${{ secrets.AGENT_SIGNING_KEY }}
+        run: |
+          if [ -z "$AGENT_SIGNING_KEY" ]; then
+            echo "Set the AGENT_SIGNING_KEY secret: agents only install signed releases." >&2
+            exit 1
+          fi
+          key="$RUNNER_TEMP/agent-signing-key.pem"
+          printf '%s\n' "$AGENT_SIGNING_KEY" > "$key"
+          derived="$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | base64)"
+          if [ "$derived" != "$(tr -d '[:space:]' < internal/update/release.pub)" ]; then
+            rm -f "$key"
+            echo "AGENT_SIGNING_KEY does not match agent/internal/update/release.pub." >&2
+            exit 1
+          fi
+          for file in krynodes-linux-amd64 krynodes-linux-arm64; do
+            openssl pkeyutl -sign -inkey "$key" -rawin -in "$file" -out "$file.sig"
+          done
+          rm -f "$key"
+
+      - name: Attest amd64 binary
+        if: steps.version.outputs.released == 'false'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: agent/krynodes-linux-amd64
+
+      - name: Attest arm64 binary
+        if: steps.version.outputs.released == 'false'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: agent/krynodes-linux-arm64
+
+      - name: Tag the release
+        if: steps.version.outputs.released == 'false'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Krynodes Agent $TAG"
+          git push origin "$TAG"
+
+      - name: Publish release
+        if: steps.version.outputs.released == 'false'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Krynodes Agent ${{ steps.version.outputs.version }}
+          files: |
+            agent/krynodes-linux-amd64
+            agent/krynodes-linux-amd64.sha256
+            agent/krynodes-linux-amd64.sig
+            agent/krynodes-linux-arm64
+            agent/krynodes-linux-arm64.sha256
+            agent/krynodes-linux-arm64.sig

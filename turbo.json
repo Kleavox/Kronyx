@@ -1,0 +1,23 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": ["tsconfig.base.json", "tooling/typescript/*.json"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "env": ["VITE_*", "PUBLIC_*"],
+      "outputs": ["dist/**", "pkg/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "extends": "@krynodes/typescript/browser.json",
+  "compilerOptions": {
+    "paths": { "@/*": ["./src/*"] }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
+}

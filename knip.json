@@ -1,0 +1,14 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreBinaries": ["go"],
+  "workspaces": {
+    "worker": {
+      "entry": ["src/index.ts", "src/stats/index.ts"],
+      "ignoreDependencies": ["@krynodes/app"]
+    },
+    "app": {
+      "ignore": ["src/components/ui/**"]
+    }
+  },
+  "ignoreDependencies": ["wrangler"]
+}

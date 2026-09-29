@@ -1,0 +1,67 @@
+#!/bin/sh
+set -eu
+
+mode="enroll"
+if [ "${1:-}" = "--update" ]; then
+  mode="update"
+fi
+endpoint="${1:-}"
+token="${2:-}"
+base="${KRY_DOWNLOAD_BASE:-https://github.com/Kleavox/Krynodes/releases/latest/download}"
+bin="${KRY_BIN:-/usr/local/bin/kry}"
+config="${KRY_CONFIG:-/etc/kry/config.json}"
+
+if [ "$mode" = "enroll" ] && { [ -z "$endpoint" ] || [ -z "$token" ]; }; then
+  echo "Usage: curl -fsSL <kry>/install.sh | sudo sh -s -- <endpoint> <enrollment-token>" >&2
+  echo "   or: curl -fsSL <kry>/install.sh | sudo sh -s -- --update" >&2
+  echo "Copy the full command from the Krynodes dashboard." >&2
+  exit 1
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Run it as root: pipe the script into 'sudo sh -s --'." >&2
+  exit 1
+fi
+
+if [ "$mode" = "update" ] && [ ! -f "$config" ]; then
+  echo "No enrolled agent here ($config is missing). Use the Enroll node command instead." >&2
+  exit 1
+fi
+
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64) artifact="krynodes-linux-amd64" ;;
+  Linux-aarch64 | Linux-arm64) artifact="krynodes-linux-arm64" ;;
+  *)
+    echo "Unsupported platform: $(uname -s) $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
+for tool in curl sha256sum systemctl install; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "$tool is required" >&2
+    exit 1
+  fi
+done
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+echo "Downloading $artifact"
+curl -fsSL "$base/$artifact" -o "$tmp/$artifact"
+curl -fsSL "$base/$artifact.sha256" -o "$tmp/$artifact.sha256"
+(cd "$tmp" && sha256sum -c "$artifact.sha256" >/dev/null)
+install -m 0755 "$tmp/$artifact" "$bin"
+
+if [ "$mode" = "enroll" ]; then
+  "$bin" enroll --endpoint "$endpoint" --token "$token"
+fi
+"$bin" install-service
+systemctl restart krynodes.service
+
+if [ "$mode" = "update" ]; then
+  echo "Krynodes agent updated to $("$bin" version)."
+else
+  echo "Krynodes agent $("$bin" version) is running."
+fi
+echo "Check it with: sudo systemctl status krynodes"
