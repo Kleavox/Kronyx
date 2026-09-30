@@ -20,6 +20,8 @@ const (
 	testID     = "33333333-3333-4333-8333-333333333333"
 )
 
+const flagVerified = 0x04
+
 var testNow = time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
 
 func spki(t *testing.T, public any) string {
@@ -199,10 +201,18 @@ func TestAWrongRPIDHashIsRefused(t *testing.T) {
 	refused(t, c.verify(t, testNow), "rp id does not match")
 }
 
-func TestAMissingUserVerificationIsRefused(t *testing.T) {
+func TestAPasskeyWithoutUserVerificationIsAccepted(t *testing.T) {
 	c := newDeployCase(t, algES256)
 	c.assertion.flags = flagPresent
-	refused(t, c.verify(t, testNow), "did not verify the user")
+	if err := c.verify(t, testNow); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAMissingUserPresenceIsRefused(t *testing.T) {
+	c := newDeployCase(t, algES256)
+	c.assertion.flags = flagVerified
+	refused(t, c.verify(t, testNow), "was not touched")
 }
 
 func TestARegistrationInsteadOfAnAssertionIsRefused(t *testing.T) {

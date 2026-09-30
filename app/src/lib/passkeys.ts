@@ -65,20 +65,20 @@ const sha256 = async (bytes: Uint8Array<ArrayBuffer>) =>
 const random = (length: number) =>
   crypto.getRandomValues(new Uint8Array(length));
 
-const NOT_VERIFIED =
-  "This passkey did not ask for your fingerprint, face or PIN. Use one that does, such as Windows Hello or your phone, or turn on verification in your password manager.";
+const NOT_TOUCHED =
+  "The passkey was not touched. Try again and confirm on your device.";
 
-function requireVerified(
+function requirePresent(
   authenticatorData: ArrayBuffer,
   attachment: string | null | undefined,
 ) {
   const flags = new Uint8Array(authenticatorData)[32] ?? 0;
-  if ((flags & 0x05) === 0x05) return;
+  if ((flags & 0x01) === 0x01) return;
   const detail = [
     `flags 0x${flags.toString(16).padStart(2, "0")}`,
     attachment ?? "unknown authenticator",
   ].join(", ");
-  throw new Error(`${NOT_VERIFIED} (${detail})`);
+  throw new Error(`${NOT_TOUCHED} (${detail})`);
 }
 
 export async function registerDevice(
@@ -114,7 +114,7 @@ export async function registerDevice(
   })) as PublicKeyCredential | null;
   if (!credential) throw new Error("No passkey was created.");
   const response = credential.response as AuthenticatorAttestationResponse;
-  requireVerified(
+  requirePresent(
     response.getAuthenticatorData(),
     credential.authenticatorAttachment,
   );
@@ -148,7 +148,7 @@ async function assert(
   })) as PublicKeyCredential | null;
   if (!credential) throw new Error("The passkey did not answer.");
   const response = credential.response as AuthenticatorAssertionResponse;
-  requireVerified(
+  requirePresent(
     response.authenticatorData,
     credential.authenticatorAttachment,
   );

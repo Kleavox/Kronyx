@@ -192,14 +192,21 @@ describe("passkeys", () => {
     });
   });
 
-  it("stops at once when the passkey did not verify the user", async () => {
-    authenticator(0x01);
+  it("accepts a passkey that reports presence without verification", async () => {
+    authenticator(0x19);
     await expect(
       createSession(["ZGV2aWNl"], "kry.example.test", T),
-    ).rejects.toThrow(/fingerprint, face or PIN.*flags 0x01, platform/u);
+    ).resolves.toMatchObject({ grant: { credentialId: "ZGV2aWNl" } });
   });
 
-  it("refuses to set up a passkey that does not verify the user", async () => {
+  it("stops at once when the passkey was not touched", async () => {
+    authenticator(0x00);
+    await expect(
+      createSession(["ZGV2aWNl"], "kry.example.test", T),
+    ).rejects.toThrow(/was not touched.*flags 0x00, platform/u);
+  });
+
+  it("refuses to set up a passkey that was not touched", async () => {
     const created = (flags: number) => ({
       create: async () => ({
         id: "bmV3",
@@ -211,11 +218,11 @@ describe("passkeys", () => {
       }),
     });
     const user = { id: "operator", name: "operator" };
-    vi.stubGlobal("navigator", { credentials: created(0x41) });
+    vi.stubGlobal("navigator", { credentials: created(0x40) });
     await expect(
       registerDevice("Laptop", "kry.example.test", user, []),
-    ).rejects.toThrow(/fingerprint, face or PIN/u);
-    vi.stubGlobal("navigator", { credentials: created(0x45) });
+    ).rejects.toThrow(/was not touched/u);
+    vi.stubGlobal("navigator", { credentials: created(0x59) });
     await expect(
       registerDevice("Laptop", "kry.example.test", user, []),
     ).resolves.toMatchObject({ id: "bmV3", alg: -7 });

@@ -22,7 +22,6 @@ const (
 	commandGrace = 60 * time.Minute
 	clockSkew    = time.Minute
 	flagPresent  = 0x01
-	flagVerified = 0x04
 	algES256     = -7
 	algRS256     = -257
 )
@@ -202,8 +201,8 @@ func verifyAssertion(trust Trust, assertion Assertion, challenge []byte) error {
 	if !bytes.Equal(authData[:32], digest([]byte(trust.RPID))) {
 		return errors.New("rp id does not match")
 	}
-	if authData[32]&flagPresent == 0 || authData[32]&flagVerified == 0 {
-		return errors.New("the passkey did not verify the user")
+	if authData[32]&flagPresent == 0 {
+		return errors.New("the passkey was not touched")
 	}
 	signed := digest(append(append([]byte{}, authData...), digest(clientData)...))
 	switch public := public.(type) {
