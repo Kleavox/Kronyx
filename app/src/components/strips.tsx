@@ -2,10 +2,12 @@ import { Link } from "react-router";
 
 import { clockTime } from "@/lib/format";
 import {
+  barTone,
   heartbeatSummary,
   incidentDuring,
   layoutReportSlots,
   slotTip,
+  type BarTone,
   type SlotState,
 } from "@/lib/series";
 import { cn } from "@/lib/utils";
@@ -16,6 +18,14 @@ const SLOT_CLASS: Record<SlotState, string> = {
   missed: "bg-destructive",
   pending: "bg-border",
   none: "bg-border/50",
+};
+
+const BAR_CLASS: Record<BarTone, string> = {
+  up: "bg-success/85",
+  down: "bg-destructive",
+  brief: "bg-warning",
+  missed: "bg-destructive",
+  empty: "bg-border",
 };
 
 const SLOT_LABEL: Record<SlotState, string> = {
@@ -73,6 +83,7 @@ function spanText(seconds: number): string {
 export function HeartbeatStrip({
   results,
   incidents,
+  since,
   windowSeconds,
   graceSeconds,
   now,
@@ -82,6 +93,7 @@ export function HeartbeatStrip({
 }: {
   results: CheckResult[] | undefined;
   incidents: Pick<Incident, "id" | "started_at" | "resolved_at">[];
+  since: number | null;
   windowSeconds: number;
   graceSeconds: number;
   now: number;
@@ -93,7 +105,7 @@ export function HeartbeatStrip({
     slots: results ?? [],
     slotSeconds: windowSeconds,
     graceSeconds,
-    since: 0,
+    since,
     now,
     asOf,
     count,
@@ -121,13 +133,9 @@ export function HeartbeatStrip({
         );
         const tone = cn(
           "bar-tip flex-1 rounded-[2px]",
-          !slot.sample
-            ? "bg-border"
-            : !down
-              ? "bg-success/85"
-              : incident
-                ? "bg-destructive"
-                : "bg-warning",
+          BAR_CLASS[
+            barTone(slot.state, slot.sample?.status ?? null, Boolean(incident))
+          ],
         );
         return incident ? (
           <Link

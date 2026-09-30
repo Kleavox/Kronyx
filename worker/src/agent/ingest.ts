@@ -7,6 +7,7 @@ import {
 } from "../incident/notify";
 import type { CheckKind } from "../lib/checks";
 import { sha256 } from "../lib/crypto";
+import { compareVersions } from "./releases";
 
 export const CHECK_LIMIT = 10;
 const INCIDENT_THRESHOLD = 2;
@@ -76,6 +77,14 @@ export async function loadAgentConfig(db: D1Database, node: AgentNode) {
   return { checks: rows.results, config, configVersion };
 }
 
+export function updateDone(
+  node: Pick<AgentNode, "update_requested_version">,
+  version: string,
+): boolean {
+  const requested = node.update_requested_version;
+  return Boolean(requested) && compareVersions(version, requested!) >= 0;
+}
+
 export function heartbeatStatements(
   db: D1Database,
   node: AgentNode,
@@ -84,6 +93,7 @@ export function heartbeatStatements(
 ): D1PreparedStatement[] {
   const metrics = heartbeat.metrics;
   const at = sqliteTime(now);
+  const updated = updateDone(node, heartbeat.agentVersion);
   return [
     db
       .prepare(
@@ -93,9 +103,9 @@ export function heartbeatStatements(
              cpu_percent = ?, memory_used_bytes = ?, memory_total_bytes = ?,
              disk_used_bytes = ?, disk_total_bytes = ?, load_1 = ?,
              uptime_seconds = ?, updated_at = ?,
-             update_requested_at = CASE WHEN update_requested_version = ?
+             update_requested_at = CASE WHEN ?
                THEN NULL ELSE update_requested_at END,
-             update_requested_version = CASE WHEN update_requested_version = ?
+             update_requested_version = CASE WHEN ?
                THEN NULL ELSE update_requested_version END
          WHERE id = ?`,
       )
@@ -113,8 +123,8 @@ export function heartbeatStatements(
         metrics.load1,
         metrics.uptimeSeconds,
         at,
-        heartbeat.agentVersion,
-        heartbeat.agentVersion,
+        updated ? 1 : 0,
+        updated ? 1 : 0,
         node.id,
       ),
     db

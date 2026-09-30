@@ -112,6 +112,18 @@ export function incidentDuring<
   });
 }
 
+export type BarTone = "up" | "down" | "brief" | "missed" | "empty";
+
+export function barTone(
+  state: SlotState,
+  status: "UP" | "DOWN" | null,
+  inIncident: boolean,
+): BarTone {
+  if (status === "UP") return "up";
+  if (status === "DOWN") return inIncident ? "down" : "brief";
+  return state === "missed" ? "missed" : "empty";
+}
+
 export function slotTip(
   start: number,
   result: { status: "UP" | "DOWN"; latencyMs: number | null } | null,

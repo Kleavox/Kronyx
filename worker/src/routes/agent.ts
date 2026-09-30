@@ -12,6 +12,7 @@ import {
   loadAgentConfig,
   resultStatements,
   type AgentNode,
+  updateDone,
 } from "../agent/ingest";
 import { randomToken, readBearerToken, sha256 } from "../lib/crypto";
 import { actionsSchema, heartbeatSchema, hostSchema } from "../schemas";
@@ -124,7 +125,7 @@ export function registerAgentRoutes(app: KrynodesApp): void {
       ok: true,
       intervalSeconds: node.interval_seconds,
       configVersion: agent.configVersion,
-      ...(requested && requested !== heartbeat.data.agentVersion
+      ...(requested && !updateDone(node, heartbeat.data.agentVersion)
         ? {
             update: {
               version: requested,

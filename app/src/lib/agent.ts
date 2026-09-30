@@ -24,11 +24,17 @@ export function agentState(
   latest: string | null,
   now: number,
 ): AgentState {
-  if (node.update_requested_version) {
-    const requested = Date.parse(node.update_requested_at ?? "");
-    return now - requested < UPDATE_TIMEOUT_MS ? "updating" : "failed";
-  }
   const version = node.agent_version;
+  const requested = node.update_requested_version;
+  const passed =
+    requested !== null &&
+    version !== null &&
+    VERSION.test(version) &&
+    compareVersions(version, requested) >= 0;
+  if (requested && !passed) {
+    const at = Date.parse(node.update_requested_at ?? "");
+    return now - at < UPDATE_TIMEOUT_MS ? "updating" : "failed";
+  }
   if (!latest || !version || !VERSION.test(version)) return "unknown";
   return compareVersions(version, latest) >= 0 ? "current" : "available";
 }

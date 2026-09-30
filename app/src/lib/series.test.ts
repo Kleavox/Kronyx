@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  barTone,
   incidentDuring,
   findGaps,
   groupByDay,
@@ -358,5 +359,16 @@ describe("bar tooltips", () => {
       "06:10 · DOWN, no incident",
     );
     expect(slotTip(0, null, false, clock)).toBe("06:10 · no result");
+  });
+});
+
+describe("bar tones", () => {
+  it("paints a window with no result red once the check existed", () => {
+    expect(barTone("missed", null, false)).toBe("missed");
+    expect(barTone("none", null, false)).toBe("empty");
+    expect(barTone("pending", null, false)).toBe("empty");
+    expect(barTone("received", "UP", false)).toBe("up");
+    expect(barTone("received", "DOWN", true)).toBe("down");
+    expect(barTone("received", "DOWN", false)).toBe("brief");
   });
 });

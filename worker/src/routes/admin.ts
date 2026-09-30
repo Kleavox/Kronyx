@@ -36,7 +36,8 @@ export function registerAdminRoutes(
       context.env.DB.prepare(
         `SELECT c.id, c.node_id, c.name, c.kind, c.target, c.enabled,
               c.status, c.timeout_seconds, c.latency_ms, c.last_checked_at,
-              c.consecutive_failures, c.last_message, c.public, c.public_note
+              c.consecutive_failures, c.last_message, c.public, c.public_note,
+              c.created_at
        FROM checks c
        JOIN nodes n ON n.id = c.node_id
        WHERE n.owner_user_id = ?

@@ -48,4 +48,13 @@ describe("agentState", () => {
       "failed",
     );
   });
+
+  it("ignores a request the agent already passed, as after an update by hand", () => {
+    expect(agentState(node("0.5.3", "0.5.2", ago(60)), "0.5.3", NOW)).toBe(
+      "current",
+    );
+    expect(agentState(node("0.5.2", "0.5.2", ago(60)), "0.5.3", NOW)).toBe(
+      "available",
+    );
+  });
 });

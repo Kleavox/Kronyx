@@ -234,6 +234,11 @@ export function NodeDetailPage() {
                       </span>
                       <HeartbeatStrip
                         results={results.data?.checks[check.id]?.results}
+                        since={
+                          check.enabled
+                            ? parseTimestamp(check.created_at)
+                            : null
+                        }
                         incidents={incidents.filter(
                           (incident) => incident.check_id === check.id,
                         )}

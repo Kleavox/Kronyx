@@ -43,6 +43,7 @@ const CHECK_KEYS = [
   "last_message",
   "public",
   "public_note",
+  "created_at",
 ];
 const INCIDENT_KEYS = [
   "id",

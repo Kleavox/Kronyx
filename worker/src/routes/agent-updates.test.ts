@@ -129,6 +129,23 @@ describe("POST /api/nodes/:id/update", () => {
       update_requested_at: null,
     });
   });
+
+  it("forgets a request once the agent reports a newer version, as after an update by hand", async () => {
+    const { call, release, row, heartbeat } = await setup();
+    release("0.5.2");
+    await call("POST", `/api/nodes/${NODE}/update`);
+    const done = await call(
+      "POST",
+      "/api/agent/heartbeat",
+      heartbeat("0.5.3"),
+      "agent-token",
+    );
+    expect(await done.json()).not.toHaveProperty("update");
+    expect(row()).toMatchObject({
+      update_requested_version: null,
+      update_requested_at: null,
+    });
+  });
 });
 
 describe("agent release check", () => {

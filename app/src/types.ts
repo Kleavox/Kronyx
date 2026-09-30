@@ -54,6 +54,7 @@ export interface CheckRecord {
   last_message: string | null;
   public: number;
   public_note: string | null;
+  created_at: string;
 }
 
 export interface Incident {

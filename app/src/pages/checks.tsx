@@ -25,6 +25,7 @@ import {
   clockTime,
   graceSeconds,
   nodeState,
+  parseTimestamp,
   publicLabel,
 } from "@/lib/format";
 import { uptimeTip } from "@/lib/series";
@@ -292,6 +293,7 @@ function CheckRow({
       <HeartbeatStrip
         results={history?.results}
         incidents={incidents}
+        since={check.enabled ? parseTimestamp(check.created_at) : null}
         windowSeconds={windowSeconds}
         graceSeconds={graceSeconds(node?.interval_seconds ?? 0)}
         now={now}
