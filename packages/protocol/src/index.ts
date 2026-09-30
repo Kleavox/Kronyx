@@ -84,23 +84,19 @@ export const agentActionSchema = z
   })
   .refine((action) => isValidTarget(action.kind, action.name))
   .refine((action) => {
-    if (action.kind === "compose") {
-      return (
-        (action.action === "deploy" || action.action === "rollback") &&
-        signedCommandSchema.safeParse(action.signed).success
-      );
-    }
     if (action.kind === "trust") {
       return (
         action.action === "trust" &&
         signedTrustSchema.safeParse(action.signed).success
       );
     }
+    const allowed =
+      action.kind === "compose"
+        ? ["deploy", "rollback"]
+        : ["start", "stop", "restart"];
     return (
-      (action.action === "start" ||
-        action.action === "stop" ||
-        action.action === "restart") &&
-      action.signed === undefined
+      allowed.includes(action.action) &&
+      signedCommandSchema.safeParse(action.signed).success
     );
   });
 

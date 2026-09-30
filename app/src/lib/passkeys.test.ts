@@ -3,10 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   b64url,
   createSession,
-  deployCommand,
+  actionCommand,
   fromB64url,
   signCommand,
-  signDeployTargets,
+  signTargets,
   signTrustChange,
 } from "./passkeys";
 
@@ -75,10 +75,11 @@ describe("passkeys", () => {
   it("signs a command the session key verifies (P1363)", async () => {
     authenticator();
     const session = await createSession(["ZGV2aWNl"], "kry.example.test", T);
-    const command = deployCommand(
+    const command = actionCommand(
       {
         id: "55555555-5555-4555-8555-555555555555",
         nodeId: "11111111-1111-4111-8111-111111111111",
+        kind: "compose",
         name: "listmonk",
         action: "deploy",
       },
@@ -128,13 +129,19 @@ describe("passkeys", () => {
     expect(seen).toHaveLength(1);
   });
 
-  it("signs every deploy target before anything is sent", async () => {
+  it("signs every target before anything is sent", async () => {
     authenticator();
     const session = await createSession(["ZGV2aWNl"], "kry.example.test", T);
-    const targets = await signDeployTargets(
+    const targets = await signTargets(
       session,
       "rollback",
-      [{ nodeId: "11111111-1111-4111-8111-111111111111", name: "listmonk" }],
+      [
+        {
+          nodeId: "11111111-1111-4111-8111-111111111111",
+          kind: "compose",
+          name: "listmonk",
+        },
+      ],
       T + MINUTE,
     );
     expect(targets).toHaveLength(1);
@@ -150,5 +157,30 @@ describe("passkeys", () => {
       name: "listmonk",
     });
     expect(target).not.toHaveProperty("session");
+  });
+
+  it("signs a service action with its own kind", async () => {
+    authenticator();
+    const session = await createSession(["ZGV2aWNl"], "kry.example.test", T);
+    const [target] = await signTargets(
+      session,
+      "restart",
+      [
+        {
+          nodeId: "11111111-1111-4111-8111-111111111111",
+          kind: "docker",
+          name: "adguard",
+        },
+      ],
+      T + MINUTE,
+    );
+    expect(target).toMatchObject({ kind: "docker", name: "adguard" });
+    expect(decode(target!.signed.command)).toMatchObject({
+      id: target!.id,
+      nodeId: "11111111-1111-4111-8111-111111111111",
+      kind: "docker",
+      name: "adguard",
+      action: "restart",
+    });
   });
 });

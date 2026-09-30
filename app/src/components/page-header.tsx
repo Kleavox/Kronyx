@@ -24,7 +24,7 @@ export function PageHeader({
         </h1>
         {meta}
         {actions && (
-          <div className="flex flex-wrap items-center gap-2 md:ml-auto">
+          <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
             {actions}
           </div>
         )}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -40,6 +42,29 @@ type stepError struct {
 
 func (e stepError) Error() string { return e.step + " failed" }
 
+var standardComposeFiles = []string{"compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"}
+
+func (e Executor) composeFiles(stack Stack) ([]string, error) {
+	exists := e.Exists
+	if exists == nil {
+		exists = regularFile
+	}
+	if len(stack.Files) > 0 && !slices.ContainsFunc(stack.Files, func(file string) bool { return !exists(file) }) {
+		return stack.Files, nil
+	}
+	for _, name := range standardComposeFiles {
+		if file := path.Join(stack.Directory, name); exists(file) {
+			return []string{file}, nil
+		}
+	}
+	return nil, fmt.Errorf("no compose file found in %s", stack.Directory)
+}
+
+func regularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
 func composeArgs(stack Stack, rest ...string) []string {
 	args := []string{"compose", "--project-name", stack.Project, "--project-directory", stack.Directory}
 	for _, file := range stack.Files {
@@ -62,14 +87,7 @@ func (e Executor) compose(ctx context.Context, request Request, snapshot Snapsho
 	if err := expired(request, e.Now()); err != nil {
 		return e.refuse(request.ID, err)
 	}
-	trust, err := LoadTrust(e.StateDir)
-	if err != nil {
-		return e.refuse(request.ID, err)
-	}
-	if len(trust.Keys) == 0 {
-		return e.refuse(request.ID, errors.New("no trusted deploy devices"))
-	}
-	if _, err := VerifyCommand(trust, request, e.Now()); err != nil {
+	if err := e.authorize(request); err != nil {
 		return e.refuse(request.ID, err)
 	}
 	index := slices.IndexFunc(snapshot.Stacks, func(stack Stack) bool { return stack.Project == request.Name })
@@ -79,10 +97,16 @@ func (e Executor) compose(ctx context.Context, request Request, snapshot Snapsho
 	if !snapshot.Compose {
 		return e.refuse(request.ID, errors.New("docker compose is not available"))
 	}
-	if request.Action == "rollback" {
-		return e.rollback(ctx, request, snapshot.Stacks[index])
+	stack := snapshot.Stacks[index]
+	files, err := e.composeFiles(stack)
+	if err != nil {
+		return e.refuse(request.ID, err)
 	}
-	return e.deploy(ctx, request, snapshot.Stacks[index])
+	stack.Files = files
+	if request.Action == "rollback" {
+		return e.rollback(ctx, request, stack)
+	}
+	return e.deploy(ctx, request, stack)
 }
 
 func (e Executor) running(ctx context.Context, stack Stack) ([]imageRecord, error) {

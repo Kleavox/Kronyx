@@ -127,7 +127,7 @@ export function AgentPanel({
         )}
       </div>
 
-      <label className="mt-4 flex min-h-11 cursor-pointer items-center justify-between gap-4 border-t pt-3 md:min-h-0">
+      <label className="mt-4 flex min-h-9 cursor-pointer items-center justify-between gap-4 border-t pt-3 md:min-h-0">
         <span>
           <span className="block text-sm">Update automatically</span>
           <span className="block text-xs text-muted-foreground">

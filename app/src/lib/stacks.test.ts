@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { NodeRecord, ServicesResponse, StackEntry } from "../types";
-import { actionStage, actionText, outcomeText } from "./services";
+import { actionText, outcomeText } from "./services";
 import { containersOf, deployBlocker, groupStacks } from "./stacks";
 
 const node = (id: string, name: string, agent = "0.2.0") =>
@@ -144,8 +144,7 @@ describe("stacks", () => {
       exitCode: null,
       output: null,
     };
-    expect(actionText(deploy, "Callisto", 0)).toBe("Deploying…");
-    expect(actionStage(deploy, "Callisto")).toBe("Deploying…");
+    expect(actionText(deploy, "Callisto")).toBe("Deploying…");
     expect(
       outcomeText(
         { ...deploy, status: "done", finishedAt: "2026-09-29T10:03:00.000Z" },

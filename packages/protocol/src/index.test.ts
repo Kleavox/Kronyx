@@ -177,6 +177,18 @@ describe("service targets", () => {
   });
 });
 
+const assertion = {
+  credentialId: "Y3JlZA",
+  authenticatorData: "YXV0aA",
+  clientDataJSON: "Y2xpZW50",
+  signature: "c2ln",
+};
+const signedCommand = {
+  grant: { grant: "Z3JhbnQ", ...assertion },
+  command: "Y29tbWFuZA",
+  signature: "c2lnbmF0dXJl",
+};
+
 describe("service action messages", () => {
   const id = "0b4f4f53-7d1c-4b55-9a39-2f0a0d6c1a01";
   const action = {
@@ -185,7 +197,20 @@ describe("service action messages", () => {
     name: "adguard",
     action: "restart",
     expiresAt: "2026-09-29T10:10:00.000Z",
+    signed: signedCommand,
   };
+
+  it("carries a start, stop or restart only with a signed command", () => {
+    expect(agentActionSchema.safeParse(action).success).toBe(true);
+    const { signed: _, ...unsigned } = action;
+    expect(agentActionSchema.safeParse(unsigned).success).toBe(false);
+    expect(
+      agentActionSchema.safeParse({
+        ...action,
+        signed: { change: "Y2hhbmdl", assertion },
+      }).success,
+    ).toBe(false);
+  });
 
   it("carries actions and a refresh in the heartbeat response", () => {
     const parsed = heartbeatResponseSchema.parse({
@@ -342,17 +367,6 @@ describe("strict action messages", () => {
 
 describe("deploy messages", () => {
   const id = "0b4f4f53-7d1c-4b55-9a39-2f0a0d6c1a02";
-  const assertion = {
-    credentialId: "Y3JlZA",
-    authenticatorData: "YXV0aA",
-    clientDataJSON: "Y2xpZW50",
-    signature: "c2ln",
-  };
-  const signedCommand = {
-    grant: { grant: "Z3JhbnQ", ...assertion },
-    command: "Y29tbWFuZA",
-    signature: "c2lnbmF0dXJl",
-  };
   const deploy = {
     id,
     kind: "compose",
@@ -366,7 +380,7 @@ describe("deploy messages", () => {
     inventory: { hash: "a".repeat(64), ...extra },
   });
 
-  it("accepts a signed compose deploy and refuses it unsigned or on a service", () => {
+  it("accepts a signed compose deploy and refuses it unsigned or with a service action", () => {
     expect(agentActionSchema.safeParse(deploy).success).toBe(true);
     expect(
       agentActionSchema.safeParse({ ...deploy, action: "rollback" }).success,
@@ -381,7 +395,7 @@ describe("deploy messages", () => {
         ...deploy,
         kind: "docker",
         name: "adguard",
-        action: "restart",
+        action: "deploy",
       }).success,
     ).toBe(false);
     expect(

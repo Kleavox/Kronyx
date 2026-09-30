@@ -44,15 +44,14 @@ export interface ServiceMember {
   action: ActionRecord | null;
 }
 
-export interface ServiceGroup {
-  key: string;
-  kind: ServiceKind;
-  name: string;
+export interface ServerGroup {
+  node: NodeRecord;
+  trusted: boolean;
   members: ServiceMember[];
 }
 
 export function displayName(kind: ActionKind, name: string): string {
-  if (kind === "trust") return "Deploy devices";
+  if (kind === "trust") return "Trusted devices";
   return kind === "systemd" ? name.replace(/\.service$/u, "") : name;
 }
 
@@ -68,15 +67,6 @@ export function primaryAction(state: ServiceState): ServiceAction {
   return state === "running" || state === "starting" ? "restart" : "start";
 }
 
-export function running(group: ServiceGroup): number {
-  return group.members.filter((member) => member.entry.state === "running")
-    .length;
-}
-
-export function groupPrimary(group: ServiceGroup): ServiceAction {
-  return running(group) === 0 ? "start" : "restart";
-}
-
 export function toTarget(member: ServiceMember): ActionTarget {
   return {
     nodeId: member.node.id,
@@ -86,87 +76,65 @@ export function toTarget(member: ServiceMember): ActionTarget {
   };
 }
 
-export function bulkTargets(group: ServiceGroup, seen: number): ActionTarget[] {
-  return group.members
-    .map((member) => ({
-      ...toTarget(member),
-      offline: nodeState(member.node, seen) === "offline",
-    }))
-    .sort((a, b) => Number(a.offline) - Number(b.offline));
-}
+const troubled = (member: ServiceMember) => member.entry.state !== "running";
 
-export function groupServices(
+export function groupByServer(
   data: ServicesResponse,
   nodes: NodeRecord[],
   options: { showSystem: boolean; query: string; notRunning: boolean },
-): ServiceGroup[] {
+): ServerGroup[] {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const latest = new Map<string, ActionRecord>();
   for (const action of data.actions) {
     latest.set(`${action.nodeId}|${action.kind}:${action.name}`, action);
   }
   const query = options.query.trim().toLowerCase();
-  const groups = new Map<string, ServiceGroup>();
+  const groups: ServerGroup[] = [];
   for (const inventory of data.nodes) {
     const node = byId.get(inventory.id);
     if (!node) continue;
-    for (const entry of inventory.services) {
-      if (entry.system && !options.showSystem) continue;
-      const label = displayName(entry.kind, entry.name).toLowerCase();
-      if (
-        query &&
-        !label.includes(query) &&
-        !node.name.toLowerCase().includes(query)
-      ) {
-        continue;
-      }
-      const key = `${entry.kind}:${entry.name}`;
-      const group = groups.get(key) ?? {
-        key,
-        kind: entry.kind,
-        name: entry.name,
-        members: [],
-      };
-      group.members.push({
+    const serverMatch = !query || node.name.toLowerCase().includes(query);
+    const members = inventory.services
+      .filter(
+        (entry) =>
+          (options.showSystem || !entry.system) &&
+          (serverMatch ||
+            displayName(entry.kind, entry.name).toLowerCase().includes(query)),
+      )
+      .map((entry) => ({
         node,
         entry,
-        action: latest.get(`${node.id}|${key}`) ?? null,
-      });
-      groups.set(key, group);
-    }
+        action: latest.get(`${node.id}|${entry.kind}:${entry.name}`) ?? null,
+      }))
+      .filter((member) => !options.notRunning || troubled(member))
+      .sort(
+        (a, b) =>
+          Number(troubled(b)) - Number(troubled(a)) ||
+          displayName(a.entry.kind, a.entry.name).localeCompare(
+            displayName(b.entry.kind, b.entry.name),
+          ),
+      );
+    if (members.length === 0) continue;
+    groups.push({
+      node,
+      trusted: (inventory.trust?.keys.length ?? 0) > 0,
+      members,
+    });
   }
-  const healthy = (group: ServiceGroup) =>
-    running(group) === group.members.length;
-  return [...groups.values()]
-    .map((group) => ({
-      ...group,
-      members: [...group.members].sort((a, b) =>
-        a.node.name.localeCompare(b.node.name),
-      ),
-    }))
-    .filter((group) => !options.notRunning || !healthy(group))
-    .sort(
-      (a, b) =>
-        Number(healthy(a)) - Number(healthy(b)) ||
-        displayName(a.kind, a.name).localeCompare(displayName(b.kind, b.name)),
-    );
+  const hurt = (group: ServerGroup) => group.members.some(troubled);
+  return groups.sort(
+    (a, b) =>
+      Number(hurt(b)) - Number(hurt(a)) ||
+      a.node.name.localeCompare(b.node.name),
+  );
 }
 
-export function nextReportIn(now: number): number {
-  const since = (((now - 2_000) % 60_000) + 60_000) % 60_000;
-  return Math.ceil((60_000 - since) / 1_000);
-}
-
-export function actionText(
-  action: ActionRecord,
-  nodeName: string,
-  now: number,
-): string {
+export function actionText(action: ActionRecord, nodeName: string): string {
   const words = WORDS[action.action];
   switch (action.status) {
     case "queued":
       return action.deliverableAt
-        ? `Waiting for ${nodeName} · ~${nextReportIn(now)}s`
+        ? `Waiting for ${nodeName}`
         : "Waiting for its turn";
     case "sent":
       return words.doing;
@@ -185,41 +153,11 @@ export function actionText(
   }
 }
 
-export function actionStage(action: ActionRecord, nodeName: string): string {
-  if (action.status === "queued") {
-    return action.deliverableAt
-      ? `Waiting for ${nodeName}`
-      : "Waiting for its turn";
-  }
-  return actionText(action, nodeName, 0);
-}
-
 export function durationText(action: ActionRecord): string | null {
   if (!action.sentAt || !action.finishedAt) return null;
   const seconds =
     (parseTimestamp(action.finishedAt) - parseTimestamp(action.sentAt)) / 1_000;
   return `${Math.max(1, Math.round(seconds))}s`;
-}
-
-export function batchText(
-  batch: ActionRecord[],
-  nodeName: (id: string) => string,
-): string | null {
-  if (batch.length < 2) return null;
-  const ordered = [...batch].sort((a, b) => a.position - b.position);
-  const first = ordered[0]!;
-  const doing = WORDS[first.action].doing.replace("…", "");
-  const stopped = ordered.find(
-    (entry) => entry.status === "failed" || entry.status === "expired",
-  );
-  if (stopped && ordered.some((entry) => entry.status === "skipped")) {
-    return `Stopped at ${nodeName(stopped.nodeId)}`;
-  }
-  const current = ordered.find((entry) => isPending(entry));
-  if (!current) return null;
-  if (first.mode === "parallel") return `${doing} ${ordered.length} servers`;
-  const done = ordered.filter((entry) => entry.status === "done").length;
-  return `${doing} ${done + 1}/${ordered.length} · ${nodeName(current.nodeId)}`;
 }
 
 export function pollServices(

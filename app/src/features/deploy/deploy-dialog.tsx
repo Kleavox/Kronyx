@@ -12,17 +12,30 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { MODES } from "@/features/services/action-dialog";
-import { useDevices, useDeploy } from "@/lib/api";
+import { useDevices } from "@/lib/api";
 import { signersFor } from "@/lib/devices";
 import { nodeState } from "@/lib/format";
 import { errorMessage } from "@/lib/http";
-import { signDeployTargets } from "@/lib/passkeys";
 import { deployBlocker, deployTargets, type StackMember } from "@/lib/stacks";
 import type { BatchMode } from "@/types";
 
 import { useDeploySession } from "./use-deploy-session";
 import { useFingerprints } from "./use-fingerprints";
+import { useSignedAction } from "./use-signed-action";
+
+const MODES: { value: BatchMode; label: string; detail: string }[] = [
+  {
+    value: "rolling",
+    label: "One at a time (recommended)",
+    detail:
+      "The next server goes after the previous one succeeds; the rest stop at the first failure.",
+  },
+  {
+    value: "parallel",
+    label: "All at once",
+    detail: "Every server runs it at its next report.",
+  },
+];
 
 export interface DeployRequest {
   action: "deploy" | "rollback";
@@ -61,11 +74,10 @@ function DeployForm({
   onClose: () => void;
 }) {
   const devices = useDevices();
-  const deploy = useDeploy();
-  const { state, open } = useDeploySession();
+  const run = useSignedAction(false);
+  const { state } = useDeploySession();
   const [mode, setMode] = useState<BatchMode>("rolling");
-  const [working, setWorking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const working = run.isPending;
   const rollback = request.action === "rollback";
   const targets = deployTargets(request.members, seen).filter(
     (member) => !rollback || member.stack.rollback,
@@ -88,35 +100,19 @@ function DeployForm({
   const offline = (member: StackMember) =>
     nodeState(member.node, seen) === "offline";
 
-  const submit = async () => {
-    setWorking(true);
-    setError(null);
-    try {
-      const session = await open(signers);
-      const signed = await signDeployTargets(
-        session,
-        request.action,
-        targets.map((member) => ({
-          nodeId: member.node.id,
-          name: request.project,
-        })),
-      );
-      await deploy.mutateAsync({
+  const submit = () =>
+    run.mutate(
+      {
         action: request.action,
         mode,
-        targets: signed,
-      });
-      onClose();
-    } catch (failure) {
-      setError(
-        failure instanceof DOMException && failure.name === "NotAllowedError"
-          ? "The fingerprint was cancelled."
-          : errorMessage(failure),
-      );
-    } finally {
-      setWorking(false);
-    }
-  };
+        targets: targets.map((member) => ({
+          nodeId: member.node.id,
+          kind: "compose" as const,
+          name: request.project,
+        })),
+      },
+      { onSuccess: onClose },
+    );
 
   return (
     <AlertDialogContent className="max-sm:top-auto max-sm:bottom-0 max-sm:translate-y-0 max-sm:rounded-b-none">
@@ -138,7 +134,7 @@ function DeployForm({
             className="underline underline-offset-4"
             onClick={onClose}
           >
-            {ids.length === 0 ? "Set up deploy devices" : "Update servers"}
+            {ids.length === 0 ? "Set up trusted devices" : "Update servers"}
           </Link>
           .
         </p>
@@ -190,9 +186,9 @@ function DeployForm({
           )}
         </>
       )}
-      {error && (
+      {run.error && (
         <p role="alert" className="text-sm text-destructive">
-          {error}
+          {errorMessage(run.error)}
         </p>
       )}
       <AlertDialogFooter>
@@ -200,7 +196,7 @@ function DeployForm({
         <Button
           variant={rollback ? "destructive" : "default"}
           disabled={working || signers.length === 0 || targets.length === 0}
-          onClick={() => void submit()}
+          onClick={submit}
         >
           {!state && !working && <Fingerprint aria-hidden="true" />}
           {working

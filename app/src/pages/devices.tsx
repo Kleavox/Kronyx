@@ -158,7 +158,7 @@ function NameField({
         value={value}
         maxLength={40}
         onChange={(event) => onChange(event.target.value)}
-        className="h-11 md:h-8 md:w-56"
+        className="h-9 md:h-8 md:w-56"
       />
     </div>
   );
@@ -181,7 +181,7 @@ export function DevicesPage() {
   if (!list || !overview.data || !services.data || !prints) {
     return (
       <>
-        <PageHeader title="Deploy devices" />
+        <PageHeader title="Trusted devices" />
         <Skeleton className="h-64" />
       </>
     );
@@ -344,17 +344,17 @@ export function DevicesPage() {
   if (list.length === 0) {
     return (
       <>
-        <PageHeader title="Deploy devices" />
+        <PageHeader title="Trusted devices" />
         <section className={cn(SECTION, "max-w-xl p-5")}>
           <Fingerprint
             aria-hidden="true"
             className="mb-3 size-6 text-primary"
           />
-          <h2 className="font-medium">Set up deploy with your fingerprint</h2>
+          <h2 className="font-medium">Control servers with your fingerprint</h2>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            Deploys need a fingerprint from a device you trust. Servers keep
-            that device's public key, so nothing on Cloudflare can deploy on its
-            own.
+            Start, stop, restart and deploy need a fingerprint from a device you
+            trust. Servers keep that device's public key, so nothing on
+            Cloudflare can run them on its own.
           </p>
           <ol className="mt-4 space-y-4 text-sm">
             <li className="space-y-2">
@@ -362,7 +362,7 @@ export function DevicesPage() {
               <div className="flex flex-wrap items-end gap-2">
                 <NameField value={name} onChange={setName} />
                 <Button
-                  className="h-11 md:h-8"
+                  className="h-9 md:h-8"
                   disabled={working}
                   onClick={() => void setUp()}
                 >
@@ -385,7 +385,7 @@ export function DevicesPage() {
   return (
     <>
       <PageHeader
-        title="Deploy devices"
+        title="Trusted devices"
         meta={
           <span className="font-mono text-xs text-muted-foreground">
             trusted on {summary.trusted.length}/{summary.total} servers
@@ -401,7 +401,7 @@ export function DevicesPage() {
             <Button
               variant="outline"
               size="sm"
-              className="ml-auto h-11 md:h-8"
+              className="ml-auto h-9 md:h-8"
               onClick={() => setAdding((value) => !value)}
             >
               Add device
@@ -411,7 +411,7 @@ export function DevicesPage() {
             <div className="flex flex-wrap items-end gap-2 border-b px-4 py-3">
               <NameField value={name} onChange={setName} />
               <Button
-                className="h-11 md:h-8"
+                className="h-9 md:h-8"
                 disabled={working}
                 onClick={() => void setUp()}
               >
@@ -445,7 +445,7 @@ export function DevicesPage() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-11 text-destructive md:h-8"
+                  className="h-9 text-destructive md:h-8"
                   disabled={
                     working || list.length === 1 || signedTargets.length === 0
                   }
@@ -474,7 +474,7 @@ export function DevicesPage() {
               {summary.needsTrust.length > 0 && (
                 <Button
                   size="sm"
-                  className="h-11 md:h-8"
+                  className="h-9 md:h-8"
                   disabled={working}
                   onClick={trustFirst}
                 >
@@ -486,7 +486,7 @@ export function DevicesPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-11 md:h-8"
+                  className="h-9 md:h-8"
                   disabled={working}
                   onClick={updateServers}
                 >

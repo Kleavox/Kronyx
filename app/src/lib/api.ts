@@ -8,6 +8,7 @@ import { toast } from "sonner";
 
 import type {
   ActionRecord,
+  ActionVerb,
   BatchMode,
   CheckKind,
   CheckResults,
@@ -18,7 +19,6 @@ import type {
   NodeMetrics,
   Overview,
   RecentMetrics,
-  ServiceAction,
   ServicesResponse,
   SessionResponse,
 } from "../types";
@@ -27,7 +27,7 @@ import { apiFetch, errorMessage } from "./http";
 import { keepWhileSameNode, queryKeys } from "./query-client";
 import { untilWindowSettles } from "./series";
 import type { Assertion, DeviceInput, SignedTarget } from "./passkeys";
-import { pollServices, type ActionTarget } from "./services";
+import { pollServices } from "./services";
 
 const MINUTE = 60_000;
 
@@ -82,7 +82,7 @@ export function useCheckResults() {
   });
 }
 
-function useApiMutation<TVariables, TData = unknown>(
+export function useApiMutation<TVariables, TData = unknown>(
   request: (variables: TVariables) => Promise<TData>,
   invalidate: readonly QueryKey[],
   toastErrors = false,
@@ -217,32 +217,17 @@ export function useNodeActions(id: string) {
   });
 }
 
-export const useRunAction = (toastErrors = true) =>
-  useApiMutation(
-    ({
-      action,
-      mode,
-      targets,
-    }: {
-      action: ServiceAction;
-      mode: BatchMode;
-      targets: ActionTarget[];
-    }) =>
-      apiFetch<{ batchId: string }>(
-        "/api/actions",
-        send("POST", {
-          action,
-          mode,
-          targets: targets.map(({ nodeId, kind, name }) => ({
-            nodeId,
-            kind,
-            name,
-          })),
-        }),
-      ),
-    [queryKeys.services, ["actions"]],
-    toastErrors,
-  );
+export const ACTION_QUERIES = [
+  queryKeys.services,
+  ["actions"],
+  queryKeys.devices,
+] as const;
+
+export const postActions = (body: {
+  action: Exclude<ActionVerb, "trust">;
+  mode: BatchMode;
+  targets: SignedTarget[];
+}) => apiFetch<{ batchId: string }>("/api/actions", send("POST", body));
 
 export const useCancelActions = () =>
   useApiMutation(
@@ -286,14 +271,4 @@ export const useTrust = () =>
       apiFetch<{ queued: number }>("/api/trust", send("POST", body)),
     [queryKeys.devices, queryKeys.services, ["actions"]],
     true,
-  );
-
-export const useDeploy = () =>
-  useApiMutation(
-    (body: {
-      action: "deploy" | "rollback";
-      mode: BatchMode;
-      targets: SignedTarget[];
-    }) => apiFetch<{ batchId: string }>("/api/actions", send("POST", body)),
-    [queryKeys.services, ["actions"], queryKeys.devices],
   );

@@ -38,6 +38,7 @@ func deployExecutor(t *testing.T, action string) (Executor, *fakeRun, Request) {
 	executor.Collect = func(context.Context, []string) (Snapshot, error) {
 		return Snapshot{Stacks: []Stack{listmonk}, Compose: true}, nil
 	}
+	executor.Exists = func(string) bool { return true }
 	executor.HealthTimeout = 80 * time.Millisecond
 	executor.HealthEvery = 5 * time.Millisecond
 	executor.HealthSettle = 10 * time.Millisecond
@@ -212,7 +213,7 @@ func TestAComposeRequestWithoutTrustIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := execute(t, executor)
-	if result.OK || !strings.Contains(result.Output, "no trusted deploy devices") || len(run.calls) != 0 {
+	if result.OK || !strings.Contains(result.Output, "no trusted devices") || len(run.calls) != 0 {
 		t.Fatalf("result %+v calls %q", result, run.calls)
 	}
 }
@@ -333,5 +334,24 @@ func TestAHugeStateListStillFitsTheOutputLimit(t *testing.T) {
 	result := execute(t, executor)
 	if len(result.Output) > maxOutputBytes || !strings.HasPrefix(result.Output, "up failed:") {
 		t.Fatalf("output %d bytes: %q", len(result.Output), result.Output[:60])
+	}
+}
+
+func TestAMissingComposeFileFallsBackToTheStandardFileInTheStackDirectory(t *testing.T) {
+	executor, run, _ := deployExecutor(t, "deploy")
+	executor.Exists = func(path string) bool { return path == "/opt/listmonk/compose.yaml" }
+	execute(t, executor)
+	want := "docker compose --project-name listmonk --project-directory /opt/listmonk -f /opt/listmonk/compose.yaml pull"
+	if !slices.Contains(run.calls, want) {
+		t.Fatalf("calls %q", run.calls)
+	}
+}
+
+func TestADeployWithoutAnyComposeFileIsRefused(t *testing.T) {
+	executor, run, _ := deployExecutor(t, "deploy")
+	executor.Exists = func(string) bool { return false }
+	result := execute(t, executor)
+	if result.OK || !strings.Contains(result.Output, "refused: no compose file found in /opt/listmonk") || slices.ContainsFunc(run.calls, func(call string) bool { return strings.Contains(call, " pull") }) {
+		t.Fatalf("result %+v calls %q", result, run.calls)
 	}
 }

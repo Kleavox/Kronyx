@@ -45,19 +45,12 @@ export function prompting(
   return { ...clock, prompting: false, hiddenSince: isHidden ? now : null };
 }
 
-export function remaining(clock: Clock, now: number): number {
-  return Math.max(0, clock.expiresAt - now);
-}
-
 export interface SessionState {
   clock: Clock;
   session: Session;
 }
 
-export type EndReason = "expired" | "slept" | "locked";
-
 let state: SessionState | null = null;
-let ended: EndReason | null = null;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let watching = false;
 const listeners = new Set<() => void>();
@@ -78,10 +71,7 @@ function schedule(now: number) {
       ? clock.hiddenSince + HIDDEN_LIMIT_MS
       : Infinity;
   const at = Math.min(clock.expiresAt, sleepAt);
-  timer = setTimeout(
-    () => endSession(at === sleepAt ? "slept" : "expired"),
-    Math.max(0, at - now),
-  );
+  timer = setTimeout(endSession, Math.max(0, at - now));
 }
 
 function onVisibility() {
@@ -92,7 +82,7 @@ function onVisibility() {
   } else {
     const clock = visible(state.clock, now);
     if (!clock) {
-      endSession("slept");
+      endSession();
       return;
     }
     state = { ...state, clock };
@@ -123,28 +113,20 @@ export function startSession(
 ): void {
   watch();
   state = { session, clock: start(session.expiresAt, hiddenNow, now) };
-  ended = null;
   schedule(now);
   emit();
 }
 
-export function endSession(reason: EndReason = "locked"): void {
+export function endSession(): void {
   clearTimeout(timer);
-  if (state) ended = reason;
   state = null;
   emit();
-}
-
-export function takeEndReason(): EndReason | null {
-  const reason = ended;
-  ended = null;
-  return reason;
 }
 
 export function activeSession(now = Date.now()): Session | null {
   if (!state) return null;
   if (!alive(state.clock, now)) {
-    endSession(now >= state.clock.expiresAt ? "expired" : "slept");
+    endSession();
     return null;
   }
   return state.session;

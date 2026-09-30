@@ -205,14 +205,13 @@ export function registerServiceRoutes(
         (target) =>
           !isValidTarget(target.kind, target.name) ||
           (target.kind === "compose") !== compose ||
-          (target.signed !== undefined) !== compose ||
-          (compose && target.id === undefined),
+          target.signed === undefined ||
+          target.id === undefined,
       )
     ) {
       return invalidRequest(context);
     }
     if (
-      compose &&
       targets.some((target) => {
         const command = commandSchema.safeParse(
           decodeJson(target.signed!.command),
@@ -221,7 +220,7 @@ export function registerServiceRoutes(
           !command.success ||
           command.data.id !== target.id ||
           command.data.nodeId !== target.nodeId ||
-          command.data.kind !== "compose" ||
+          command.data.kind !== target.kind ||
           command.data.name !== target.name ||
           command.data.action !== action
         );

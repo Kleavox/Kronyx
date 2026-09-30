@@ -1,6 +1,6 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet } from "react-router";
-import { ChevronDown, Search, User } from "lucide-react";
+import { ChevronDown, Lock, Search, User } from "lucide-react";
 import { displayHandle } from "@/lib/format";
 import { errorMessage } from "@/lib/http";
 
@@ -13,15 +13,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { SessionPill } from "@/features/deploy/session-pill";
+import { useDeploySession } from "@/features/deploy/use-deploy-session";
+import { useSignedAction } from "@/features/deploy/use-signed-action";
 import { useActionToasts } from "@/features/services/use-action-toasts";
-import { useOverview, useRunAction, useServices } from "@/lib/api";
+import { useOverview, useServices } from "@/lib/api";
 import { timeAgo } from "@/lib/format";
 import { accountLinks } from "@/lib/account";
-import {
-  sessionSnapshot,
-  subscribe as subscribeSession,
-} from "@/lib/deploy-session";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 import { isPending } from "@/lib/services";
@@ -56,7 +53,7 @@ export function AppShell({
 }) {
   const overview = useOverview();
   const services = useServices();
-  const runAction = useRunAction();
+  const runAction = useSignedAction();
   useActionToasts(services.data?.actions, overview.data?.nodes ?? []);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
@@ -70,12 +67,6 @@ export function AppShell({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-
-  const deploySession = useSyncExternalStore(
-    subscribeSession,
-    sessionSnapshot,
-    sessionSnapshot,
-  );
 
   if (overview.isError && !overview.data) {
     return (
@@ -94,7 +85,7 @@ export function AppShell({
         <Link
           to="/"
           aria-label="Krynodes home"
-          className="flex min-h-11 items-center rounded-sm md:min-h-0"
+          className="flex min-h-9 items-center rounded-sm md:min-h-0"
         >
           <Mark />
         </Link>
@@ -120,13 +111,6 @@ export function AppShell({
           ))}
         </nav>
         <span className="flex-1 md:hidden" />
-        {overview.dataUpdatedAt > 0 && (
-          <Freshness
-            updatedAt={overview.dataUpdatedAt}
-            crowded={deploySession !== null}
-          />
-        )}
-        <SessionPill />
         <Button
           variant="outline"
           size="sm"
@@ -179,7 +163,7 @@ export function AppShell({
         nodes={overview.data?.nodes ?? []}
         services={services.data}
         onRun={(target, action) =>
-          runAction.mutate({ action, mode: "rolling", targets: [target] })
+          runAction.mutate({ action, targets: [target] })
         }
       />
     </div>
@@ -208,27 +192,6 @@ function Count({
   );
 }
 
-function Freshness({
-  updatedAt,
-  crowded,
-}: {
-  updatedAt: number;
-  crowded: boolean;
-}) {
-  const now = useNow();
-  return (
-    <span
-      className={cn(
-        "font-mono text-[11px] whitespace-nowrap text-muted-foreground md:hidden lg:inline",
-        crowded && "max-sm:hidden",
-      )}
-    >
-      <span className="max-sm:sr-only">Updated </span>
-      {ageOf(updatedAt, now)}
-    </span>
-  );
-}
-
 function StaleBanner({ updatedAt }: { updatedAt: number }) {
   const now = useNow();
   return (
@@ -250,6 +213,7 @@ function AccountMenu({
 }) {
   const handle = displayHandle(identity.username, identity.email);
   const links = accountLinks(via);
+  const session = useDeploySession();
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
@@ -265,8 +229,14 @@ function AccountMenu({
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
-          <Link to="/devices">Deploy devices</Link>
+          <Link to="/devices">Trusted devices</Link>
         </DropdownMenuItem>
+        {session.state && (
+          <DropdownMenuItem onSelect={session.lock}>
+            <Lock aria-hidden="true" />
+            Lock actions
+          </DropdownMenuItem>
+        )}
         {links.length > 0 && <DropdownMenuSeparator />}
         {links.map((link) => (
           <DropdownMenuItem key={link.href} asChild>

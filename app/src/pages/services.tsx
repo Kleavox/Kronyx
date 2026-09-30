@@ -19,14 +19,9 @@ import {
   ActionDialog,
   type ActionRequest,
 } from "@/features/services/action-dialog";
-import { ServiceList } from "@/features/services/service-list";
+import { ServerServiceList } from "@/features/services/service-list";
 import { useOverview, useRefreshServices, useServices } from "@/lib/api";
-import {
-  bulkTargets,
-  groupPrimary,
-  groupServices,
-  refreshPending,
-} from "@/lib/services";
+import { groupByServer, refreshPending } from "@/lib/services";
 import { groupStacks } from "@/lib/stacks";
 
 export function ServicesPage() {
@@ -63,7 +58,7 @@ export function ServicesPage() {
 
   const nodes = overview.data.nodes.filter((node) => node.enrolled_at !== null);
   const seen = overview.dataUpdatedAt;
-  const groups = groupServices(services.data, nodes, {
+  const groups = groupByServer(services.data, nodes, {
     showSystem,
     query,
     notRunning,
@@ -71,22 +66,6 @@ export function ServicesPage() {
   const refreshing = services.data.nodes.some((node) =>
     refreshPending(node, services.dataUpdatedAt),
   );
-  const bulk = params.get("bulk");
-  const bulkGroup = bulk
-    ? groupServices(services.data, nodes, {
-        showSystem: true,
-        query: "",
-        notRunning: false,
-      }).find((group) => group.key === bulk)
-    : undefined;
-  const dialogRequest =
-    request ??
-    (bulkGroup
-      ? {
-          action: groupPrimary(bulkGroup),
-          targets: bulkTargets(bulkGroup, seen),
-        }
-      : null);
   const stackGroups = groupStacks(services.data, nodes, query);
   const linked = params.get("deploy") ?? params.get("rollback");
   const linkedGroup = linked
@@ -142,7 +121,7 @@ export function ServicesPage() {
                     ? "Search stacks or servers"
                     : "Search services or servers"
                 }
-                className="h-11 w-full md:h-8 md:w-56"
+                className="h-9 w-full md:h-8 md:w-56"
               />
               {!stacksView && (
                 <>
@@ -230,12 +209,7 @@ export function ServicesPage() {
           }
         />
       ) : (
-        <ServiceList
-          groups={groups}
-          seen={seen}
-          showServer
-          onRequest={setRequest}
-        />
+        <ServerServiceList groups={groups} seen={seen} onRequest={setRequest} />
       )}
 
       <DeployDialog
@@ -256,13 +230,7 @@ export function ServicesPage() {
           }
         }}
       />
-      <ActionDialog
-        request={dialogRequest}
-        onClose={() => {
-          setRequest(null);
-          if (bulk) setParam("bulk", null);
-        }}
-      />
+      <ActionDialog request={request} onClose={() => setRequest(null)} />
     </>
   );
 }

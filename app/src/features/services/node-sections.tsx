@@ -7,7 +7,7 @@ import { clockTime } from "@/lib/format";
 import {
   displayName,
   durationText,
-  groupServices,
+  groupByServer,
   isPending,
   refreshPending,
   verb,
@@ -15,7 +15,12 @@ import {
 import type { NodeRecord } from "@/types";
 
 import { ActionDialog, type ActionRequest } from "./action-dialog";
-import { ActionOutcome, PendingText, ServiceList } from "./service-list";
+import {
+  ActionOutcome,
+  PendingText,
+  ServiceRows,
+  TrustLink,
+} from "./service-list";
 
 const SECTION_TITLE =
   "text-[11px] tracking-wider text-muted-foreground uppercase";
@@ -30,13 +35,16 @@ export function NodeServices({
   const services = useServices();
   const refresh = useRefreshServices();
   const [request, setRequest] = useState<ActionRequest | null>(null);
-  const groups = services.data
-    ? groupServices(services.data, [node], {
+  const [group] = services.data
+    ? groupByServer(services.data, [node], {
         showSystem: false,
         query: "",
         notRunning: false,
       })
     : [];
+  const trusted =
+    (services.data?.nodes.find((entry) => entry.id === node.id)?.trust?.keys
+      .length ?? 0) > 0;
   const refreshing =
     services.data?.nodes.some(
       (entry) =>
@@ -46,12 +54,13 @@ export function NodeServices({
     <section aria-labelledby="node-services">
       <div className="mb-2 flex min-h-8 items-center gap-2">
         <h2 id="node-services" className={SECTION_TITLE}>
-          Services on this node · {groups.length}
+          Services · {group?.members.length ?? 0}
         </h2>
+        {services.data && !trusted && <TrustLink />}
         <Button
           variant="ghost"
           size="sm"
-          className="ml-auto h-11 md:h-8"
+          className="ml-auto h-8"
           disabled={refresh.isPending || refreshing}
           onClick={() => refresh.mutate([node.id])}
         >
@@ -59,19 +68,21 @@ export function NodeServices({
           {refreshing ? "Refreshing…" : "Refresh"}
         </Button>
       </div>
-      {groups.length === 0 ? (
+      {!group ? (
         <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
           {services.data
             ? "No services reported yet. They appear within five minutes of enrolling."
             : "Loading services…"}
         </p>
       ) : (
-        <ServiceList
-          groups={groups}
-          seen={seen}
-          showServer={false}
-          onRequest={setRequest}
-        />
+        <div className="rounded-lg border bg-card">
+          <ServiceRows
+            members={group.members}
+            seen={seen}
+            trusted={trusted}
+            onRequest={setRequest}
+          />
+        </div>
       )}
       <ActionDialog request={request} onClose={() => setRequest(null)} />
     </section>
@@ -83,7 +94,10 @@ export function RecentActions({ node }: { node: NodeRecord }) {
   const list = actions.data?.actions ?? [];
   return (
     <section aria-labelledby="node-recent-actions">
-      <h2 id="node-recent-actions" className={`mb-2 ${SECTION_TITLE}`}>
+      <h2
+        id="node-recent-actions"
+        className={`mb-2 flex min-h-8 items-center ${SECTION_TITLE}`}
+      >
         Recent actions
       </h2>
       {list.length === 0 ? (

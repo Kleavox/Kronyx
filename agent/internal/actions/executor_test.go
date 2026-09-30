@@ -86,8 +86,32 @@ func writeRequest(t *testing.T, dir, file string, body any) {
 	}
 }
 
-func request(id, kind, name, action string, expires time.Time) Request {
-	return Request{ID: id, Kind: kind, Name: name, Action: action, ExpiresAt: expires.Format(time.RFC3339Nano)}
+var serviceSigner *deployCase
+
+func testSigner(t *testing.T) *deployCase {
+	t.Helper()
+	if serviceSigner == nil {
+		serviceSigner = newDeployCase(t, algES256)
+	}
+	return serviceSigner
+}
+
+func newTrustedExecutor(t *testing.T) (Executor, *fakeRun) {
+	t.Helper()
+	executor, run := newExecutor(t)
+	if err := SaveTrust(executor.StateDir, testSigner(t).trust); err != nil {
+		t.Fatal(err)
+	}
+	return executor, run
+}
+
+func request(t *testing.T, id, kind, name, action string, expires time.Time) Request {
+	t.Helper()
+	c := *testSigner(t)
+	c.command.ID, c.command.Kind, c.command.Name, c.command.Action = id, kind, name, action
+	signed := c.request(t)
+	signed.ID, signed.Kind, signed.Name, signed.Action, signed.ExpiresAt = id, kind, name, action, expires.Format(time.RFC3339Nano)
+	return signed
 }
 
 func readResult(t *testing.T, executor Executor, id string) Result {
@@ -100,8 +124,8 @@ func readResult(t *testing.T, executor Executor, id string) Result {
 }
 
 func TestARestartRunsWithExactArgumentsAndReportsSuccess(t *testing.T) {
-	executor, run := newExecutor(t)
-	writeRequest(t, executor.RequestDir, idA+".json", request(idA, "docker", "adguard", "restart", executorNow.Add(10*time.Minute)))
+	executor, run := newTrustedExecutor(t)
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "docker", "adguard", "restart", executorNow.Add(10*time.Minute)))
 	if err := executor.Execute(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -120,16 +144,16 @@ func TestARestartRunsWithExactArgumentsAndReportsSuccess(t *testing.T) {
 
 func TestRefusalsRunNothingAndSayWhy(t *testing.T) {
 	cases := map[string]Request{
-		"protected": request(idA, "systemd", "ssh.service", "restart", executorNow.Add(time.Minute)),
-		"not here":  request(idA, "docker", "ghost", "restart", executorNow.Add(time.Minute)),
-		"expired":   request(idA, "docker", "adguard", "restart", executorNow.Add(-2*time.Minute)),
-		"action":    request(idA, "docker", "adguard", "exec", executorNow.Add(time.Minute)),
-		"name":      request(idA, "docker", "-rm", "restart", executorNow.Add(time.Minute)),
-		"other id":  request(idB, "docker", "adguard", "restart", executorNow.Add(time.Minute)),
+		"protected": request(t, idA, "systemd", "ssh.service", "restart", executorNow.Add(time.Minute)),
+		"not here":  request(t, idA, "docker", "ghost", "restart", executorNow.Add(time.Minute)),
+		"expired":   request(t, idA, "docker", "adguard", "restart", executorNow.Add(-2*time.Minute)),
+		"action":    request(t, idA, "docker", "adguard", "exec", executorNow.Add(time.Minute)),
+		"name":      request(t, idA, "docker", "-rm", "restart", executorNow.Add(time.Minute)),
+		"other id":  request(t, idB, "docker", "adguard", "restart", executorNow.Add(time.Minute)),
 	}
 	for label, body := range cases {
 		t.Run(label, func(t *testing.T) {
-			executor, run := newExecutor(t)
+			executor, run := newTrustedExecutor(t)
 			writeRequest(t, executor.RequestDir, idA+".json", body)
 			if err := executor.Execute(context.Background()); err != nil {
 				t.Fatalf("execute: %v", err)
@@ -143,15 +167,15 @@ func TestRefusalsRunNothingAndSayWhy(t *testing.T) {
 }
 
 func TestAnExpiryWithinTheSkewStillRuns(t *testing.T) {
-	executor, run := newExecutor(t)
-	writeRequest(t, executor.RequestDir, idA+".json", request(idA, "docker", "adguard", "restart", executorNow.Add(-30*time.Second)))
+	executor, run := newTrustedExecutor(t)
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "docker", "adguard", "restart", executorNow.Add(-30*time.Second)))
 	if err := executor.Execute(context.Background()); err != nil || len(run.calls) != 1 {
 		t.Fatalf("calls %#v err %v", run.calls, err)
 	}
 }
 
 func TestUnknownFieldsAreRefused(t *testing.T) {
-	executor, run := newExecutor(t)
+	executor, run := newTrustedExecutor(t)
 	writeRequest(t, executor.RequestDir, idA+".json", map[string]string{"id": idA, "kind": "docker", "name": "adguard", "action": "restart", "expiresAt": executorNow.Add(time.Minute).Format(time.RFC3339), "shell": "rm -rf /"})
 	if err := executor.Execute(context.Background()); err != nil {
 		t.Fatal(err)
@@ -162,8 +186,8 @@ func TestUnknownFieldsAreRefused(t *testing.T) {
 }
 
 func TestEachRequestRunsOnceAndIsRecordedFirst(t *testing.T) {
-	executor, run := newExecutor(t)
-	writeRequest(t, executor.RequestDir, idA+".json", request(idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
+	executor, run := newTrustedExecutor(t)
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
 	run.during = func() {
 		raw, err := os.ReadFile(filepath.Join(executor.StateDir, "executed.json"))
 		if err != nil || !strings.Contains(string(raw), idA) {
@@ -181,10 +205,10 @@ func TestEachRequestRunsOnceAndIsRecordedFirst(t *testing.T) {
 }
 
 func TestARequestWrittenDuringARunIsNotLeftForTheTimer(t *testing.T) {
-	executor, run := newExecutor(t)
-	writeRequest(t, executor.RequestDir, idA+".json", request(idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
+	executor, run := newTrustedExecutor(t)
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
 	run.during = func() {
-		writeRequest(t, executor.RequestDir, idB+".json", request(idB, "systemd", "nginx.service", "stop", executorNow.Add(time.Minute)))
+		writeRequest(t, executor.RequestDir, idB+".json", request(t, idB, "systemd", "nginx.service", "stop", executorNow.Add(time.Minute)))
 	}
 	if err := executor.Execute(context.Background()); err != nil {
 		t.Fatal(err)
@@ -195,8 +219,8 @@ func TestARequestWrittenDuringARunIsNotLeftForTheTimer(t *testing.T) {
 }
 
 func TestTheRequestDirectoryIsNeverWritten(t *testing.T) {
-	executor, _ := newExecutor(t)
-	writeRequest(t, executor.RequestDir, idA+".json", request(idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
+	executor, _ := newTrustedExecutor(t)
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
 	for _, name := range []string{"refresh", ".x.tmp", "notes.json"} {
 		if err := os.WriteFile(filepath.Join(executor.RequestDir, name), []byte("x"), 0o640); err != nil {
 			t.Fatal(err)
@@ -216,12 +240,12 @@ func TestTheRequestDirectoryIsNeverWritten(t *testing.T) {
 }
 
 func TestOversizedAndSymlinkedRequestsAreRefused(t *testing.T) {
-	executor, run := newExecutor(t)
+	executor, run := newTrustedExecutor(t)
 	if err := os.WriteFile(filepath.Join(executor.RequestDir, idA+".json"), []byte(strings.Repeat(" ", 5000)), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	outside := filepath.Join(t.TempDir(), "secret")
-	writeRequest(t, filepath.Dir(outside), "secret", request(idB, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
+	writeRequest(t, filepath.Dir(outside), "secret", request(t, idB, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
 	symlinked := os.Symlink(outside, filepath.Join(executor.RequestDir, idB+".json")) == nil
 	if err := executor.Execute(context.Background()); err != nil {
 		t.Fatal(err)
@@ -238,9 +262,9 @@ func TestOversizedAndSymlinkedRequestsAreRefused(t *testing.T) {
 }
 
 func TestASymlinkedRequestDirectoryIsIgnored(t *testing.T) {
-	executor, run := newExecutor(t)
+	executor, run := newTrustedExecutor(t)
 	elsewhere := t.TempDir()
-	writeRequest(t, elsewhere, idA+".json", request(idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
+	writeRequest(t, elsewhere, idA+".json", request(t, idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
 	if err := os.Remove(executor.RequestDir); err != nil {
 		t.Fatal(err)
 	}
@@ -256,21 +280,21 @@ func TestASymlinkedRequestDirectoryIsIgnored(t *testing.T) {
 }
 
 func TestAUnitStoppedThroughKrynodesIsRememberedUntilItStartsAgain(t *testing.T) {
-	executor, _ := newExecutor(t)
+	executor, _ := newTrustedExecutor(t)
 	var seen [][]string
 	services := []Service{{Kind: "systemd", Name: "nginx.service", State: "running"}}
 	executor.Collect = func(_ context.Context, remembered []string) (Snapshot, error) {
 		seen = append(seen, slices.Clone(remembered))
 		return Snapshot{Services: services}, nil
 	}
-	writeRequest(t, executor.RequestDir, idA+".json", request(idA, "systemd", "nginx.service", "stop", executorNow.Add(time.Minute)))
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "systemd", "nginx.service", "stop", executorNow.Add(time.Minute)))
 	if err := executor.Execute(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if last := seen[len(seen)-1]; !slices.Equal(last, []string{"nginx.service"}) {
 		t.Fatalf("after a stop the unit must be remembered, got %#v", last)
 	}
-	writeRequest(t, executor.RequestDir, idB+".json", request(idB, "systemd", "nginx.service", "start", executorNow.Add(time.Minute)))
+	writeRequest(t, executor.RequestDir, idB+".json", request(t, idB, "systemd", "nginx.service", "start", executorNow.Add(time.Minute)))
 	if err := executor.Execute(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -280,14 +304,14 @@ func TestAUnitStoppedThroughKrynodesIsRememberedUntilItStartsAgain(t *testing.T)
 }
 
 func TestAFailedStopIsNotRemembered(t *testing.T) {
-	executor, run := newExecutor(t)
+	executor, run := newTrustedExecutor(t)
 	run.code, run.err = 1, errors.New("exit status 1")
 	var last []string
 	executor.Collect = func(_ context.Context, remembered []string) (Snapshot, error) {
 		last = remembered
 		return Snapshot{Services: []Service{{Kind: "systemd", Name: "nginx.service", State: "running"}}}, nil
 	}
-	writeRequest(t, executor.RequestDir, idA+".json", request(idA, "systemd", "nginx.service", "stop", executorNow.Add(time.Minute)))
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "systemd", "nginx.service", "stop", executorNow.Add(time.Minute)))
 	if err := executor.Execute(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -297,10 +321,10 @@ func TestAFailedStopIsNotRemembered(t *testing.T) {
 }
 
 func TestAFailedCommandKeepsItsExitCodeAndCleanOutput(t *testing.T) {
-	executor, run := newExecutor(t)
+	executor, run := newTrustedExecutor(t)
 	run.code, run.err = 1, errors.New("exit status 1")
 	run.output = "Job for nginx.service failed.\r\n\x00" + strings.Repeat("x", 3000)
-	writeRequest(t, executor.RequestDir, idA+".json", request(idA, "systemd", "nginx.service", "restart", executorNow.Add(time.Minute)))
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "systemd", "nginx.service", "restart", executorNow.Add(time.Minute)))
 	if err := executor.Execute(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -314,9 +338,9 @@ func TestAFailedCommandKeepsItsExitCodeAndCleanOutput(t *testing.T) {
 }
 
 func TestStartUnpausesAPausedContainer(t *testing.T) {
-	executor, run := newExecutor(t)
+	executor, run := newTrustedExecutor(t)
 	run.respond = map[string]string{"docker container inspect --format {{.State.Paused}} -- adguard": "WARNING: config file is unreadable\ntrue\n"}
-	writeRequest(t, executor.RequestDir, idA+".json", request(idA, "docker", "adguard", "start", executorNow.Add(time.Minute)))
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "docker", "adguard", "start", executorNow.Add(time.Minute)))
 	if err := executor.Execute(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -327,9 +351,9 @@ func TestStartUnpausesAPausedContainer(t *testing.T) {
 }
 
 func TestStartRunsDockerStartWhenNotPaused(t *testing.T) {
-	executor, run := newExecutor(t)
+	executor, run := newTrustedExecutor(t)
 	run.respond = map[string]string{"docker container inspect --format {{.State.Paused}} -- adguard": "false\n"}
-	writeRequest(t, executor.RequestDir, idA+".json", request(idA, "docker", "adguard", "start", executorNow.Add(time.Minute)))
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "docker", "adguard", "start", executorNow.Add(time.Minute)))
 	if err := executor.Execute(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -339,14 +363,14 @@ func TestStartRunsDockerStartWhenNotPaused(t *testing.T) {
 }
 
 func TestACorruptLedgerIsSetAsideInsteadOfStoppingEveryRun(t *testing.T) {
-	executor, run := newExecutor(t)
+	executor, run := newTrustedExecutor(t)
 	if err := os.MkdirAll(executor.StateDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(executor.StateDir, "executed.json"), []byte("{\"trunc"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeRequest(t, executor.RequestDir, idA+".json", request(idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
 	if err := executor.Execute(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -359,14 +383,14 @@ func TestACorruptLedgerIsSetAsideInsteadOfStoppingEveryRun(t *testing.T) {
 }
 
 func TestACorruptStoppedListIsSetAsideInsteadOfStoppingEveryRun(t *testing.T) {
-	executor, run := newExecutor(t)
+	executor, run := newTrustedExecutor(t)
 	if err := os.MkdirAll(executor.StateDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(executor.StateDir, "stopped.json"), []byte("[\"trunc"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	writeRequest(t, executor.RequestDir, idA+".json", request(idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
 	if err := executor.Execute(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -379,14 +403,14 @@ func TestACorruptStoppedListIsSetAsideInsteadOfStoppingEveryRun(t *testing.T) {
 }
 
 func TestALedgerOfTheWrongShapeStartsEmpty(t *testing.T) {
-	executor, run := newExecutor(t)
+	executor, run := newTrustedExecutor(t)
 	if err := os.MkdirAll(executor.StateDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(executor.StateDir, "executed.json"), []byte("null"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeRequest(t, executor.RequestDir, idA+".json", request(idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
 	if err := executor.Execute(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -396,7 +420,7 @@ func TestALedgerOfTheWrongShapeStartsEmpty(t *testing.T) {
 }
 
 func TestARequestThatAlreadyHasAResultIsNotRunAgain(t *testing.T) {
-	executor, run := newExecutor(t)
+	executor, run := newTrustedExecutor(t)
 	if err := os.MkdirAll(filepath.Join(executor.StateDir, "results"), 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +431,7 @@ func TestARequestThatAlreadyHasAResultIsNotRunAgain(t *testing.T) {
 	if err := writeJSON(filepath.Join(executor.StateDir, "results"), idA+".json", done, 0o640); err != nil {
 		t.Fatal(err)
 	}
-	writeRequest(t, executor.RequestDir, idA+".json", request(idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
 	if err := executor.Execute(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -417,7 +441,7 @@ func TestARequestThatAlreadyHasAResultIsNotRunAgain(t *testing.T) {
 }
 
 func TestTheInventoryListsStacksWithRollback(t *testing.T) {
-	executor, _ := newExecutor(t)
+	executor, _ := newTrustedExecutor(t)
 	executor.Collect = func(context.Context, []string) (Snapshot, error) {
 		return Snapshot{
 			Stacks:  []Stack{{Project: "listmonk", Directory: "/opt/listmonk", Files: []string{"/opt/listmonk/docker-compose.yml"}, Running: 5, Total: 5}, {Project: "shop", Directory: "/opt/shop", Files: []string{"/opt/shop/compose.yml"}, Running: 1, Total: 2}},
@@ -442,4 +466,37 @@ func TestTheInventoryListsStacksWithRollback(t *testing.T) {
 	if !reflect.DeepEqual(inventory.Stacks, want) {
 		t.Fatalf("stacks\n got %#v\nwant %#v", inventory.Stacks, want)
 	}
+}
+
+func refusedWithoutRunning(t *testing.T, executor Executor, run *fakeRun, reason string) {
+	t.Helper()
+	if err := executor.Execute(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	result := readResult(t, executor, idA)
+	if len(run.calls) != 0 || result.OK || !strings.Contains(result.Output, reason) {
+		t.Fatalf("calls %#v result %#v", run.calls, result)
+	}
+}
+
+func TestAnUnsignedServiceActionIsRefused(t *testing.T) {
+	executor, run := newTrustedExecutor(t)
+	unsigned := request(t, idA, "docker", "adguard", "restart", executorNow.Add(time.Minute))
+	unsigned.Signed = nil
+	writeRequest(t, executor.RequestDir, idA+".json", unsigned)
+	refusedWithoutRunning(t, executor, run, "refused: the request is not signed")
+}
+
+func TestAServiceActionWithoutTrustIsRefused(t *testing.T) {
+	executor, run := newExecutor(t)
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "docker", "adguard", "restart", executorNow.Add(time.Minute)))
+	refusedWithoutRunning(t, executor, run, "refused: no trusted devices")
+}
+
+func TestASignatureForAnotherActionIsRefused(t *testing.T) {
+	executor, run := newTrustedExecutor(t)
+	restart := request(t, idA, "docker", "adguard", "restart", executorNow.Add(time.Minute))
+	restart.Action = "stop"
+	writeRequest(t, executor.RequestDir, idA+".json", restart)
+	refusedWithoutRunning(t, executor, run, "does not match the request")
 }

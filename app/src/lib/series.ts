@@ -124,6 +124,21 @@ export function heartbeatSummary(
   return `${up} up, ${down} down, ${statuses.length - up - down} without results in the last ${span}`;
 }
 
+export function uptimeTip(
+  results: { t: string; status: "UP" | "DOWN" }[],
+  clock: (value: string) => string,
+): string {
+  const [first] = results;
+  if (!first) return "No reports yet";
+  const up = results.filter((result) => result.status === "UP").length;
+  const lastDown = results.findLast((result) => result.status === "DOWN");
+  return [
+    `Since ${clock(first.t)}`,
+    `${up} of ${results.length} reports up`,
+    lastDown ? `Last down ${clock(lastDown.t)}` : "No downtime recorded",
+  ].join("\n");
+}
+
 export function seriesSummary(
   values: (number | null)[],
   format: (value: number) => string,

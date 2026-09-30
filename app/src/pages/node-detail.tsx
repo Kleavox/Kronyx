@@ -52,7 +52,7 @@ const round1 = (value: number | null) =>
   value === null ? null : Math.round(value * 10) / 10;
 
 const sectionTitle =
-  "mb-2 text-[11px] tracking-wider text-muted-foreground uppercase";
+  "mb-2 flex min-h-8 items-center text-[11px] tracking-wider text-muted-foreground uppercase";
 
 export function NodeDetailPage() {
   const { id = "" } = useParams();
@@ -113,7 +113,7 @@ export function NodeDetailPage() {
             tone={nodeTone(state)}
             label={state}
             detail={
-              state === "online" || state === "offline"
+              state === "offline"
                 ? `reported ${timeAgo(node.last_seen_at, now)}`
                 : undefined
             }
@@ -181,108 +181,120 @@ export function NodeDetailPage() {
         </aside>
       </div>
 
-      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <section aria-labelledby="node-checks">
-          <h2 id="node-checks" className={sectionTitle}>
-            Checks on this node · {checks.length}
-          </h2>
-          {checks.length === 0 ? (
-            <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-              No checks configured. Use Actions to add one.
-            </p>
-          ) : (
-            <ul className="divide-y rounded-lg border bg-card">
-              {checks.map((check) => (
-                <li
-                  key={check.id}
-                  className="grid grid-cols-[auto_minmax(0,1fr)_56px] items-center gap-x-3 gap-y-2 px-3 py-2.5 sm:grid-cols-[auto_minmax(0,1fr)_minmax(120px,1.5fr)_56px]"
-                >
-                  <span className="flex items-center gap-1.5 font-mono text-[11px]">
-                    <StatusDot
-                      tone={checkTone(checkDisplayStatus(check.status, state))}
-                    />
-                    {checkDisplayStatus(check.status, state)}
-                  </span>
-                  <span className="min-w-0 truncate" title={check.name}>
-                    {check.name}{" "}
-                    <span className="font-mono text-[11px] text-muted-foreground">
-                      {check.kind}
-                    </span>
-                  </span>
-                  <HeartbeatStrip
-                    results={results.data?.checks[check.id]?.results}
-                    incidents={incidents.filter(
-                      (incident) => incident.check_id === check.id,
-                    )}
-                    windowSeconds={Math.max(300, node.interval_seconds)}
-                    graceSeconds={graceSeconds(node.interval_seconds)}
-                    now={now}
-                    asOf={results.data ? results.dataUpdatedAt : undefined}
-                    count={24}
-                    className="col-span-3 row-start-2 sm:col-span-1 sm:row-start-auto"
-                  />
-                  <span className="col-start-3 row-start-1 text-right font-mono text-xs sm:col-start-auto sm:row-start-auto">
-                    {newestLatency(results.data?.checks[check.id])}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        <NodeStacks node={node} seen={overview.dataUpdatedAt} />
-
-        <NodeServices node={node} seen={overview.dataUpdatedAt} />
-
-        <section aria-labelledby="node-incidents">
-          <h2 id="node-incidents" className={sectionTitle}>
-            Incidents on this node
-          </h2>
-          {incidents.length === 0 ? (
-            <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-              {checks.some((check) => Boolean(check.enabled))
-                ? "No incidents recorded."
-                : "Add a check to start recording incidents."}
-            </p>
-          ) : (
-            <ul className="divide-y rounded-lg border bg-card">
-              {incidents.map((incident) => {
-                const open = incident.status === "OPEN";
-                const start = parseTimestamp(incident.started_at);
-                const end = incident.resolved_at
-                  ? parseTimestamp(incident.resolved_at)
-                  : now;
-                return (
-                  <li
-                    key={incident.id}
-                    className="flex items-center gap-3 px-3 py-2.5"
-                  >
-                    <StatusDot tone={open ? "bad" : "idle"} />
-                    <span className="min-w-0 flex-1 truncate">
-                      <span className="sr-only">
-                        {open ? "Open: " : "Resolved: "}
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] lg:items-start">
+        <div className="contents lg:flex lg:flex-col lg:gap-6">
+          <div className="order-1 empty:hidden lg:order-none">
+            <NodeServices node={node} seen={overview.dataUpdatedAt} />
+          </div>
+          <div className="order-2 empty:hidden lg:order-none">
+            <NodeStacks node={node} seen={overview.dataUpdatedAt} />
+          </div>
+          <div className="order-5 empty:hidden lg:order-none">
+            <RecentActions node={node} />
+          </div>
+        </div>
+        <div className="contents lg:flex lg:flex-col lg:gap-6">
+          <div className="order-3 empty:hidden lg:order-none">
+            <section aria-labelledby="node-checks">
+              <h2 id="node-checks" className={sectionTitle}>
+                Checks · {checks.length}
+              </h2>
+              {checks.length === 0 ? (
+                <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                  No checks configured. Use Actions to add one.
+                </p>
+              ) : (
+                <ul className="divide-y rounded-lg border bg-card">
+                  {checks.map((check) => (
+                    <li
+                      key={check.id}
+                      className="grid grid-cols-[auto_minmax(0,1fr)_56px] items-center gap-x-3 gap-y-2 px-3 py-2.5 sm:grid-cols-[auto_minmax(0,1fr)_minmax(120px,1.5fr)_56px]"
+                    >
+                      <span className="flex items-center gap-1.5 font-mono text-[11px]">
+                        <StatusDot
+                          tone={checkTone(
+                            checkDisplayStatus(check.status, state),
+                          )}
+                        />
+                        {checkDisplayStatus(check.status, state)}
                       </span>
-                      {incident.check_name}
-                      {incident.summary && (
-                        <span className="text-muted-foreground">
-                          {" "}
-                          · {incident.summary}
+                      <span className="min-w-0 truncate" title={check.name}>
+                        {check.name}{" "}
+                        <span className="font-mono text-[11px] text-muted-foreground">
+                          {check.kind}
                         </span>
-                      )}
-                    </span>
-                    <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                      {open
-                        ? `ongoing ${formatDuration(end - start)}`
-                        : `${shortDate(start)} · ${formatDuration(end - start)}`}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
-
-        <RecentActions node={node} />
+                      </span>
+                      <HeartbeatStrip
+                        results={results.data?.checks[check.id]?.results}
+                        incidents={incidents.filter(
+                          (incident) => incident.check_id === check.id,
+                        )}
+                        windowSeconds={Math.max(300, node.interval_seconds)}
+                        graceSeconds={graceSeconds(node.interval_seconds)}
+                        now={now}
+                        asOf={results.data ? results.dataUpdatedAt : undefined}
+                        count={24}
+                        className="col-span-3 row-start-2 sm:col-span-1 sm:row-start-auto"
+                      />
+                      <span className="col-start-3 row-start-1 text-right font-mono text-xs sm:col-start-auto sm:row-start-auto">
+                        {newestLatency(results.data?.checks[check.id])}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </div>
+          <div className="order-4 empty:hidden lg:order-none">
+            <section aria-labelledby="node-incidents">
+              <h2 id="node-incidents" className={sectionTitle}>
+                Incidents
+              </h2>
+              {incidents.length === 0 ? (
+                <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                  {checks.some((check) => Boolean(check.enabled))
+                    ? "No incidents recorded."
+                    : "Add a check to start recording incidents."}
+                </p>
+              ) : (
+                <ul className="divide-y rounded-lg border bg-card">
+                  {incidents.map((incident) => {
+                    const open = incident.status === "OPEN";
+                    const start = parseTimestamp(incident.started_at);
+                    const end = incident.resolved_at
+                      ? parseTimestamp(incident.resolved_at)
+                      : now;
+                    return (
+                      <li
+                        key={incident.id}
+                        className="flex items-center gap-3 px-3 py-2.5"
+                      >
+                        <StatusDot tone={open ? "bad" : "idle"} />
+                        <span className="min-w-0 flex-1 truncate">
+                          <span className="sr-only">
+                            {open ? "Open: " : "Resolved: "}
+                          </span>
+                          {incident.check_name}
+                          {incident.summary && (
+                            <span className="text-muted-foreground">
+                              {" "}
+                              · {incident.summary}
+                            </span>
+                          )}
+                        </span>
+                        <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                          {open
+                            ? `ongoing ${formatDuration(end - start)}`
+                            : `${shortDate(start)} · ${formatDuration(end - start)}`}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          </div>
+        </div>
       </div>
     </>
   );

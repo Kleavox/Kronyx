@@ -27,5 +27,5 @@ export function useDeploySession() {
     startSession(session);
     return session;
   };
-  return { state, open, lock: () => endSession("locked") };
+  return { state, open, lock: endSession };
 }

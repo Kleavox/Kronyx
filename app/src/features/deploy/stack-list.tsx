@@ -21,7 +21,7 @@ import type { ServiceEntry } from "@/types";
 import type { DeployRequest } from "./deploy-dialog";
 
 const ROW =
-  "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.2fr)_10rem]";
+  "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1.2fr)_7.5rem]";
 
 const offline = (member: StackMember, seen: number) =>
   nodeState(member.node, seen) === "offline";
@@ -35,9 +35,7 @@ const tone = (member: StackMember) =>
 
 function stackLabel(member: StackMember, seen: number, server: boolean) {
   const count = `${member.stack.running}/${member.stack.total} running`;
-  const state = offline(member, seen)
-    ? `${count}, last known ${timeAgo(member.node.last_seen_at, seen)}`
-    : count;
+  const state = offline(member, seen) ? `${count} · offline` : count;
   return server ? `${state} · ${member.node.name}` : state;
 }
 
@@ -73,7 +71,7 @@ function MemberControls({
         <Button
           variant="ghost"
           size="sm"
-          className="h-11 md:h-8"
+          className="h-9 md:h-8"
           onClick={() => cancel.mutate(action.batchId)}
         >
           Cancel
@@ -102,7 +100,7 @@ function MemberControls({
       <Button
         variant="outline"
         size="sm"
-        className="h-11 md:h-8"
+        className="h-9 md:h-8"
         aria-label={`Deploy ${project} on ${member.node.name}`}
         onClick={() =>
           onRequest({ action: "deploy", project, members: [member] })
@@ -208,7 +206,7 @@ export function StackList({
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="size-11 md:size-8"
+                    className="size-9 md:size-8"
                     aria-expanded={expanded}
                     aria-controls={listId}
                     aria-label={`${expanded ? "Hide" : "Show"} servers for ${group.project}`}
@@ -258,7 +256,7 @@ export function StackList({
                     <Button
                       variant="outline"
                       size="sm"
-                      className="h-11 md:h-8"
+                      className="h-9 md:h-8"
                       disabled={deployable.length === 0}
                       aria-label={`Deploy ${group.project} on ${deployable.length} ${deployable.length === 1 ? "server" : "servers"}`}
                       onClick={() =>

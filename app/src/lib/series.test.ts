@@ -10,6 +10,7 @@ import {
   seriesSummary,
   sparklineSegments,
   untilWindowSettles,
+  uptimeTip,
   withGapBreaks,
 } from "./series";
 
@@ -300,5 +301,36 @@ describe("groupByDay", () => {
       ["Yesterday", ["b", "c"]],
       ["23 Sep", ["d"]],
     ]);
+  });
+});
+
+describe("uptime tooltip", () => {
+  const result = (t: string, status: "UP" | "DOWN") => ({
+    t,
+    status,
+    latencyMs: 20,
+    message: null,
+  });
+  const clock = (value: string) => `at ${value.slice(11, 16)}`;
+
+  it("says since when, how many reports were up and when it was last down", () => {
+    expect(
+      uptimeTip(
+        [
+          result("2026-09-30T06:10:00.000Z", "UP"),
+          result("2026-09-30T06:15:00.000Z", "DOWN"),
+          result("2026-09-30T06:20:00.000Z", "DOWN"),
+          result("2026-09-30T06:25:00.000Z", "UP"),
+        ],
+        clock,
+      ),
+    ).toBe("Since at 06:10\n2 of 4 reports up\nLast down at 06:20");
+  });
+
+  it("says when nothing went down or nothing was reported", () => {
+    expect(uptimeTip([result("2026-09-30T06:10:00.000Z", "UP")], clock)).toBe(
+      "Since at 06:10\n1 of 1 reports up\nNo downtime recorded",
+    );
+    expect(uptimeTip([], clock)).toBe("No reports yet");
   });
 });

@@ -7,7 +7,6 @@ import {
   hidden,
   HIDDEN_LIMIT_MS,
   prompting,
-  remaining,
   SESSION_MS,
   start,
   startSession,
@@ -23,7 +22,6 @@ describe("deploy session", () => {
     const clock = start(T + SESSION_MS, false, T);
     expect(alive(clock, T + 15 * MINUTE - 1)).toBe(true);
     expect(alive(clock, T + 15 * MINUTE)).toBe(false);
-    expect(remaining(clock, T + 5 * MINUTE)).toBe(10 * MINUTE);
   });
 
   it("ends after 2 minutes hidden", () => {

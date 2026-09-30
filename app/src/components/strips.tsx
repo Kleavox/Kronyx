@@ -1,9 +1,4 @@
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { clockTime, formatDuration } from "@/lib/format";
+import { clockTime } from "@/lib/format";
 import {
   duringIncident,
   heartbeatSummary,
@@ -47,12 +42,12 @@ export function ReportStrip({
       {states.map((state, index) => (
         <span
           key={index}
-          title={
+          data-tip={
             starts?.[index] === undefined
               ? undefined
               : `${clockTime(starts[index])} · ${SLOT_LABEL[state]}`
           }
-          className={cn("flex-1 rounded-[2px]", SLOT_CLASS[state])}
+          className={cn("bar-tip flex-1 rounded-[2px]", SLOT_CLASS[state])}
         />
       ))}
     </div>
@@ -120,52 +115,35 @@ export function HeartbeatStrip({
     laid.map((slot) => slot.sample?.status ?? null),
     spanText(count * windowSeconds),
   );
-  const lastFailure = laid.findLast((slot) => slot.sample?.status === "DOWN");
   const brief = (start: number, result: CheckResult | null) =>
     result?.status === "DOWN" &&
     !duringIncident(start, windowSeconds * 1000, incidents);
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <div
-          tabIndex={0}
-          role="img"
-          aria-label={summary}
-          className={cn(
-            "flex h-[18px] min-w-0 gap-0.5 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring",
-            className,
+    <div
+      role="img"
+      aria-label={summary}
+      className={cn("flex h-[18px] min-w-0 gap-0.5", className)}
+    >
+      {laid.map((slot) => (
+        <span
+          key={slot.start}
+          data-tip={windowTitle(
+            slot.start,
+            slot.sample,
+            brief(slot.start, slot.sample),
           )}
-        >
-          {laid.map((slot) => (
-            <span
-              key={slot.start}
-              title={windowTitle(
-                slot.start,
-                slot.sample,
-                brief(slot.start, slot.sample),
-              )}
-              className={cn(
-                "flex-1 rounded-[2px]",
-                !slot.sample
-                  ? "bg-border"
-                  : slot.sample.status === "UP"
-                    ? "bg-success/85"
-                    : brief(slot.start, slot.sample)
-                      ? "bg-warning"
-                      : "bg-destructive",
-              )}
-            />
-          ))}
-        </div>
-      </TooltipTrigger>
-      <TooltipContent>
-        <p>{summary}</p>
-        <p className="font-mono text-[11px]">
-          One bar per {formatDuration(windowSeconds * 1000)} window
-          {lastFailure?.sample &&
-            ` · last failure ${clockTime(lastFailure.start)}: ${lastFailure.sample.message ?? "no message"}`}
-        </p>
-      </TooltipContent>
-    </Tooltip>
+          className={cn(
+            "bar-tip flex-1 rounded-[2px]",
+            !slot.sample
+              ? "bg-border"
+              : slot.sample.status === "UP"
+                ? "bg-success/85"
+                : brief(slot.start, slot.sample)
+                  ? "bg-warning"
+                  : "bg-destructive",
+          )}
+        />
+      ))}
+    </div>
   );
 }

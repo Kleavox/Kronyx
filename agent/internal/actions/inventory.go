@@ -27,7 +27,9 @@ const (
 
 var collectTimeout = 30 * time.Second
 
-const containerFormat = "{{.Names}}\t{{.State}}\t{{.Label \"com.docker.compose.project\"}}\t{{.Label \"com.docker.compose.project.working_dir\"}}\t{{.Label \"com.docker.compose.project.config_files\"}}"
+const createdLayout = "2006-01-02 15:04:05 -0700"
+
+const containerFormat = "{{.Names}}\t{{.State}}\t{{.Label \"com.docker.compose.project\"}}\t{{.Label \"com.docker.compose.project.working_dir\"}}\t{{.Label \"com.docker.compose.project.config_files\"}}\t{{.CreatedAt}}"
 
 type Stack struct {
 	Project   string
@@ -119,6 +121,7 @@ func absolute(path string) bool {
 func parseContainers(output string) ([]Service, []Stack) {
 	var services []Service
 	found := map[string]*Stack{}
+	newest := map[string]time.Time{}
 	broken := map[string]bool{}
 	for line := range strings.SplitSeq(output, "\n") {
 		fields := strings.Split(strings.TrimSpace(line), "\t")
@@ -144,14 +147,17 @@ func parseContainers(output string) ([]Service, []Stack) {
 			broken[project] = true
 			continue
 		}
+		var created time.Time
+		if stamp := strings.Fields(fields[len(fields)-1]); len(fields) > 5 && len(stamp) >= 3 {
+			created, _ = time.Parse(createdLayout, strings.Join(stamp[:3], " "))
+		}
 		if !seen {
 			stack = &Stack{Project: project, Directory: directory}
 			found[project] = stack
 		}
-		for _, file := range files {
-			if !slices.Contains(stack.Files, file) {
-				stack.Files = append(stack.Files, file)
-			}
+		if !seen || created.After(newest[project]) {
+			stack.Files = files
+			newest[project] = created
 		}
 		stack.Total++
 		if state == "running" {
@@ -163,7 +169,6 @@ func parseContainers(output string) ([]Service, []Stack) {
 		if broken[project] {
 			continue
 		}
-		slices.Sort(stack.Files)
 		stacks = append(stacks, *stack)
 	}
 	slices.SortFunc(stacks, func(a, b Stack) int { return cmp.Compare(a.Project, b.Project) })

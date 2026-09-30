@@ -40,6 +40,7 @@ type Executor struct {
 	Now        func() time.Time
 	Run        Runner
 	Collect    func(context.Context, []string) (Snapshot, error)
+	Exists     func(string) bool
 
 	HealthTimeout time.Duration
 	HealthEvery   time.Duration
@@ -229,8 +230,23 @@ func check(request Request, now time.Time, services []Service) error {
 	return fmt.Errorf("%s is not on this server", request.Name)
 }
 
+func (e Executor) authorize(request Request) error {
+	trust, err := LoadTrust(e.StateDir)
+	if err != nil {
+		return err
+	}
+	if len(trust.Keys) == 0 {
+		return errors.New("no trusted devices")
+	}
+	_, err = VerifyCommand(trust, request, e.Now())
+	return err
+}
+
 func (e Executor) execute(ctx context.Context, request Request, services []Service) Result {
 	if err := check(request, e.Now(), services); err != nil {
+		return e.refuse(request.ID, err)
+	}
+	if err := e.authorize(request); err != nil {
 		return e.refuse(request.ID, err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, commandTimeout)

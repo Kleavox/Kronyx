@@ -248,7 +248,7 @@ describe("compose actions", () => {
     expect((await deploy("deploy", command({ nodeId: B }))).status).toBe(400);
   });
 
-  it("refuses an unsigned deploy, a signed restart and mixed kinds", async () => {
+  it("refuses an unsigned deploy, a restart signed as a deploy and mixed kinds", async () => {
     const { call, command, deploy } = setup();
     expect((await deploy("deploy", undefined)).status).toBe(400);
     expect(

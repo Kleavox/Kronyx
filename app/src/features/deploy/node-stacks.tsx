@@ -21,7 +21,7 @@ export function NodeStacks({ node, seen }: { node: NodeRecord; seen: number }) {
           id="node-stacks"
           className="text-[11px] tracking-wider text-muted-foreground uppercase"
         >
-          Stacks on this node · {groups.length}
+          Stacks · {groups.length}
         </h2>
       </div>
       <StackList

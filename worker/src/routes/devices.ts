@@ -162,7 +162,7 @@ export function registerDeviceRoutes(
         {
           code: "TRUST_EXISTS",
           message:
-            "A server already trusts deploy devices. Change them with a trusted device.",
+            "A server already trusts devices. Change them with a trusted device.",
         },
         409,
       );

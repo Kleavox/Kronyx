@@ -12,20 +12,22 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AddCheckDialog } from "@/features/checks/add-check-dialog";
 import { StatusPageDialog } from "@/features/checks/status-page-dialog";
+import { useSignedAction } from "@/features/deploy/use-signed-action";
 import {
   useCheckResults,
   useDeleteCheck,
   useOverview,
-  useRunAction,
   useServices,
 } from "@/lib/api";
 import { isPending, serviceForCheck } from "@/lib/services";
 import {
   checkDisplayStatus,
+  clockTime,
   graceSeconds,
   nodeState,
   publicLabel,
 } from "@/lib/format";
+import { uptimeTip } from "@/lib/series";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 import type { CheckHistory, CheckRecord, Incident, NodeRecord } from "@/types";
@@ -43,7 +45,7 @@ export function ChecksPage() {
   const overview = useOverview();
   const results = useCheckResults();
   const services = useServices();
-  const runAction = useRunAction();
+  const runAction = useSignedAction();
   const now = useNow(60_000);
   const [params, setParams] = useSearchParams();
   const filter = readFilter(params.get("status"));
@@ -179,6 +181,10 @@ export function ChecksPage() {
                 restart={(() => {
                   const node = nodeById.get(check.node_id);
                   const entry = serviceForCheck(check, services.data);
+                  const trusted =
+                    (services.data?.nodes.find(
+                      (entry) => entry.id === check.node_id,
+                    )?.trust?.keys.length ?? 0) > 0;
                   const busy = services.data?.actions.some(
                     (action) =>
                       isPending(action) &&
@@ -186,15 +192,13 @@ export function ChecksPage() {
                       action.kind === "systemd" &&
                       action.name === entry?.name,
                   );
-                  return node && entry && !busy
+                  return node && entry && trusted && !busy
                     ? () =>
                         runAction.mutate({
                           action: "restart",
-                          mode: "rolling",
                           targets: [
                             {
                               nodeId: node.id,
-                              nodeName: node.name,
                               kind: "systemd",
                               name: entry.name,
                             },
@@ -297,7 +301,21 @@ function CheckRow({
       />
       <span className="hidden text-right font-mono text-xs md:block">
         <span className="sr-only">Up 4h </span>
-        {history?.up4h == null ? "--" : `${history.up4h.toFixed(1)}%`}
+        {history?.up4h == null ? (
+          "--"
+        ) : (
+          <span
+            tabIndex={0}
+            className="tip"
+            data-tip={uptimeTip(history.results, clockTime)}
+          >
+            {history.up4h.toFixed(1)}%
+            <span className="sr-only">
+              {" "}
+              {uptimeTip(history.results, clockTime)}
+            </span>
+          </span>
+        )}
       </span>
       <span className="hidden text-right font-mono text-xs md:block">
         {newestLatency(history)}

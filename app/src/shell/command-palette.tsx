@@ -10,9 +10,9 @@ import {
 } from "@/components/ui/command";
 import {
   displayName,
-  groupPrimary,
-  groupServices,
+  groupByServer,
   primaryAction,
+  toTarget,
   verb,
   type ActionTarget,
 } from "@/lib/services";
@@ -40,11 +40,11 @@ export function CommandPalette({
     void navigate(to);
   };
   const groups = services
-    ? groupServices(services, nodes, {
+    ? groupByServer(services, nodes, {
         showSystem: false,
         query: "",
         notRunning: false,
-      })
+      }).filter((group) => group.trusted)
     : [];
   const stacks = services ? groupStacks(services, nodes, "") : [];
 
@@ -63,7 +63,7 @@ export function CommandPalette({
             Enroll node
           </CommandItem>
           <CommandItem onSelect={() => go("/devices")}>
-            Deploy devices
+            Trusted devices
           </CommandItem>
           <CommandItem onSelect={() => go("/checks?add=1")}>
             Add check
@@ -97,46 +97,24 @@ export function CommandPalette({
         )}
         {groups.length > 0 && (
           <CommandGroup heading="Services">
-            {groups.flatMap((group) => {
-              const name = displayName(group.kind, group.name);
-              const items = group.members.map((member) => {
+            {groups.flatMap((group) =>
+              group.members.map((member) => {
                 const action = primaryAction(member.entry.state);
+                const name = displayName(member.entry.kind, member.entry.name);
                 return (
                   <CommandItem
-                    key={`${group.key}|${member.node.id}`}
+                    key={`${member.node.id}|${member.entry.kind}:${member.entry.name}`}
                     value={`service ${verb(action)} ${name} ${member.node.name}`}
                     onSelect={() => {
                       onOpenChange(false);
-                      onRun(
-                        {
-                          nodeId: member.node.id,
-                          nodeName: member.node.name,
-                          kind: member.entry.kind,
-                          name: member.entry.name,
-                        },
-                        action,
-                      );
+                      onRun(toTarget(member), action);
                     }}
                   >
                     {verb(action)} {name} · {member.node.name}
                   </CommandItem>
                 );
-              });
-              return group.members.length > 1
-                ? [
-                    ...items,
-                    <CommandItem
-                      key={`${group.key}|all`}
-                      value={`service all ${name}`}
-                      onSelect={() =>
-                        go(`/services?bulk=${encodeURIComponent(group.key)}`)
-                      }
-                    >
-                      {verb(groupPrimary(group))} {name} · all servers
-                    </CommandItem>,
-                  ]
-                : items;
-            })}
+              }),
+            )}
           </CommandGroup>
         )}
         {stacks.length > 0 && (

@@ -22,7 +22,7 @@ export function RowMenu({
           variant="ghost"
           size="icon"
           aria-label={label}
-          className="size-11 md:size-8"
+          className="size-9 md:size-8"
         >
           <Ellipsis aria-hidden="true" />
         </Button>

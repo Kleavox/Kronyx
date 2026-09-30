@@ -64,7 +64,7 @@ export function EnrollDialog({
               <p className="text-xs text-muted-foreground">
                 {deviceCount > 0
                   ? `This server will trust your ${deviceCount} deploy ${deviceCount === 1 ? "device" : "devices"}.`
-                  : "Set up deploy devices later; this server can trust them then."}
+                  : "Set up trusted devices later; this server can trust them then."}
               </p>
             </DialogHeader>
             {create.error && (

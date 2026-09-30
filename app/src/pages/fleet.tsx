@@ -646,7 +646,9 @@ function NodeCard({
           <StatusChip
             tone={nodeTone(state)}
             label={state}
-            detail={live ? timeAgo(node.last_seen_at, now) : undefined}
+            detail={
+              state === "offline" ? timeAgo(node.last_seen_at, now) : undefined
+            }
           />
         </div>
         {systemLine(node) && (
@@ -871,7 +873,7 @@ function NodePanel({
             tone={nodeTone(state)}
             label={state}
             detail={
-              state === "online" || state === "offline"
+              state === "offline"
                 ? `reported ${timeAgo(node.last_seen_at, now)}`
                 : undefined
             }

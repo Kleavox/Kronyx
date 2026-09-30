@@ -195,18 +195,18 @@ func TestAnInventoryKeepsAtMost500ServicesPreferringYourOwn(t *testing.T) {
 	}
 }
 
-const composeContainers = "listmonk_app\trunning\tlistmonk\t/opt/listmonk\t/opt/listmonk/docker-compose.yml\n" +
-	"listmonk_db\texited\tlistmonk\t/opt/listmonk\t/opt/listmonk/docker-compose.yml,/opt/listmonk/override.yml\n" +
-	"adguard\trunning\t\t\t\n"
+const composeContainers = "listmonk_db\texited\tlistmonk\t/opt/listmonk\t/opt/listmonk/docker-compose.yaml\t2026-09-25 11:37:02 +0700 WIB\n" +
+	"listmonk_app\trunning\tlistmonk\t/opt/listmonk\t/opt/listmonk/docker-compose.yml,/opt/listmonk/a-override.yml\t2026-09-25 11:56:10 +0700 +0700\n" +
+	"adguard\trunning\t\t\t\t2026-09-20 08:00:00 +0700 WIB\n"
 
-func TestContainersFormStacksFromComposeLabels(t *testing.T) {
+func TestAStackUsesTheNewestContainersComposeFilesInTheirOrder(t *testing.T) {
 	services, stacks := parseContainers(composeContainers)
 	if len(services) != 3 {
 		t.Fatalf("services %#v", services)
 	}
 	want := []Stack{{
 		Project: "listmonk", Directory: "/opt/listmonk",
-		Files:   []string{"/opt/listmonk/docker-compose.yml", "/opt/listmonk/override.yml"},
+		Files:   []string{"/opt/listmonk/docker-compose.yml", "/opt/listmonk/a-override.yml"},
 		Running: 1, Total: 2,
 	}}
 	if !reflect.DeepEqual(stacks, want) {

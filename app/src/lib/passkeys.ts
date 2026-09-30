@@ -1,3 +1,5 @@
+import type { ActionKind } from "../types";
+
 export const SESSION_MS = 15 * 60_000;
 const COMMAND_GRACE_MS = 60 * 60_000;
 export const TRUST_CHANGE_MS = 10 * 60_000;
@@ -165,8 +167,14 @@ export async function createSession(
   };
 }
 
-export function deployCommand(
-  target: { id: string; nodeId: string; name: string; action: string },
+export interface CommandTarget {
+  nodeId: string;
+  kind: ActionKind;
+  name: string;
+}
+
+export function actionCommand(
+  target: CommandTarget & { id: string; action: string },
   session: Session,
   now = Date.now(),
 ) {
@@ -174,7 +182,7 @@ export function deployCommand(
     v: 1,
     id: target.id,
     nodeId: target.nodeId,
-    kind: "compose",
+    kind: target.kind,
     name: target.name,
     action: target.action,
     issuedAt: iso(now),
@@ -199,35 +207,28 @@ export async function signCommand(
   };
 }
 
-export interface SignedTarget {
+export interface SignedTarget extends CommandTarget {
   id: string;
-  nodeId: string;
-  kind: "compose";
-  name: string;
   signed: SignedCommand;
 }
 
-export function signDeployTargets(
+export function signTargets(
   session: Session,
-  action: "deploy" | "rollback",
-  targets: { nodeId: string; name: string }[],
+  action: string,
+  targets: CommandTarget[],
   now = Date.now(),
 ): Promise<SignedTarget[]> {
   return Promise.all(
-    targets.map(async (target) => {
+    targets.map(async ({ nodeId, kind, name }) => {
       const id = crypto.randomUUID();
       return {
         id,
-        nodeId: target.nodeId,
-        kind: "compose" as const,
-        name: target.name,
+        nodeId,
+        kind,
+        name,
         signed: await signCommand(
           session,
-          deployCommand(
-            { id, nodeId: target.nodeId, name: target.name, action },
-            session,
-            now,
-          ),
+          actionCommand({ id, nodeId, kind, name, action }, session, now),
         ),
       };
     }),

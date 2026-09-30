@@ -11,6 +11,27 @@ const B = "22222222-2222-4222-8222-222222222222";
 const C = "33333333-3333-4333-8333-333333333333";
 const FOREIGN = "44444444-4444-4444-8444-444444444444";
 
+const b64 = (value: unknown) =>
+  Buffer.from(JSON.stringify(value)).toString("base64url");
+
+const signedFor = (target: {
+  id: string;
+  nodeId: string;
+  kind: string;
+  name: string;
+  action: string;
+}) => ({
+  grant: {
+    grant: "Z3JhbnQ",
+    credentialId: "ZGV2aWNlLTE",
+    authenticatorData: "YXV0aA",
+    clientDataJSON: "Y2xpZW50",
+    signature: "c2ln",
+  },
+  command: b64({ v: 1, ...target }),
+  signature: "c2lnbmF0dXJl",
+});
+
 interface Reply {
   code?: string;
   batchId?: string;
@@ -69,11 +90,15 @@ function setup() {
     call("POST", "/api/actions", {
       action: "restart",
       ...(mode ? { mode } : {}),
-      targets: targets.map((target) => ({
-        kind: "docker",
-        name: "adguard",
-        ...target,
-      })),
+      targets: targets.map((target) => {
+        const full = {
+          id: crypto.randomUUID(),
+          kind: "docker",
+          name: "adguard",
+          ...target,
+        };
+        return { ...full, signed: signedFor({ ...full, action: "restart" }) };
+      }),
     });
   return { db, sqlite, env, call, restart };
 }
@@ -200,6 +225,38 @@ describe("POST /api/actions", () => {
     const pending = await restart([{ nodeId: A }]);
     expect(pending.status).toBe(409);
     expect((await reply(pending)).code).toBe("ACTION_PENDING");
+  });
+
+  it("refuses an unsigned restart and one signed for another service", async () => {
+    const { call } = setup();
+    const id = crypto.randomUUID();
+    const target = { id, nodeId: A, kind: "docker", name: "adguard" };
+    expect(
+      (
+        await call("POST", "/api/actions", {
+          action: "restart",
+          targets: [target],
+        })
+      ).status,
+    ).toBe(400);
+    const other = await call("POST", "/api/actions", {
+      action: "restart",
+      targets: [
+        {
+          ...target,
+          signed: signedFor({ ...target, name: "nginx", action: "restart" }),
+        },
+      ],
+    });
+    expect(other.status).toBe(400);
+    expect((await reply(other)).code).toBe("SIGNATURE_MISMATCH");
+    const stop = await call("POST", "/api/actions", {
+      action: "restart",
+      targets: [
+        { ...target, signed: signedFor({ ...target, action: "stop" }) },
+      ],
+    });
+    expect((await reply(stop)).code).toBe("SIGNATURE_MISMATCH");
   });
 
   it("answers ACTION_PENDING when two requests race for one service", async () => {

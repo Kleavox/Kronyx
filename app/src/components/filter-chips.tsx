@@ -12,7 +12,11 @@ export function FilterChips<T extends string>({
   onChange: (value: T) => void;
 }) {
   return (
-    <div role="group" aria-label={label} className="flex flex-wrap gap-1.5">
+    <div
+      role="group"
+      aria-label={label}
+      className="flex max-w-full gap-1.5 overflow-x-auto md:flex-wrap"
+    >
       {options.map((option) => (
         <button
           key={option.value}
@@ -20,7 +24,7 @@ export function FilterChips<T extends string>({
           aria-pressed={value === option.value}
           onClick={() => onChange(option.value)}
           className={cn(
-            "h-11 rounded-md border px-2.5 font-mono text-xs text-muted-foreground hover:text-foreground md:h-8",
+            "h-9 shrink-0 rounded-md border px-2.5 font-mono text-xs whitespace-nowrap text-muted-foreground hover:text-foreground md:h-8",
             "aria-pressed:bg-accent aria-pressed:text-foreground",
           )}
         >

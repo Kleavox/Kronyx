@@ -72,7 +72,7 @@ function StatusPageForm({
           incidents. Never its kind, target, server or error messages.
         </DialogDescription>
       </DialogHeader>
-      <label className="flex min-h-11 cursor-pointer items-center justify-between gap-4 md:min-h-0">
+      <label className="flex min-h-9 cursor-pointer items-center justify-between gap-4 md:min-h-0">
         <span className="text-sm">Show {check.name} on the status page</span>
         <Switch checked={shown} onCheckedChange={setShown} />
       </label>

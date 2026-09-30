@@ -111,10 +111,11 @@ curl -fsSL https://<agent-host>/install.sh | sudo sh -s -- --update
 
 ### Service actions
 
-The dashboard's **Services** page starts, stops and restarts
-the server's systemd units and Docker containers. You can act on one server or
-on several, one at a time by default. The node page and Ctrl K offer the same
-actions, and a SERVICE check's menu has **Restart service**.
+The dashboard's **Services** page lists each server's systemd units and Docker
+containers, grouped by server, and starts, stops or restarts them. The node
+page and Ctrl K offer the same actions, and a SERVICE check's menu has
+**Restart service**. From agent 0.2.1 every one of them needs a fingerprint,
+like a deploy (see below): a server that trusts no device refuses them.
 
 The agent never runs anything itself:
 
@@ -122,8 +123,8 @@ The agent never runs anything itself:
 - The root oneshot `kry exec` does the work. The units `krynodes-exec.path` and
   `krynodes-exec.timer` start it, the timer every 5 minutes to refresh the list of
   services.
-- `kry exec` refuses anything but start, stop or restart of a service that is
-  present on the server.
+- `kry exec` refuses anything but a signed start, stop or restart of a service
+  that is present on the server.
 - It never touches ssh, the network, Docker itself, systemd internals, cloudflared
   or Krynodes.
 - It keeps its state in `/var/lib/kry-exec`.
@@ -137,16 +138,19 @@ Compose stacks: `docker compose pull`, then `up -d`, in the stack's own
 directory, with its own compose files. A failed deploy keeps the images that
 ran before it, and **Roll back** starts them again.
 
-Deploys need a fingerprint. On **Deploy devices** (account menu) you register
-a passkey on your laptop or phone; each server keeps its public key in
-`/var/lib/kry-exec/trust.json`, and the root executor checks every deploy
-against it, so nothing on Cloudflare can start one on its own. One fingerprint
-opens a 15-minute session while the tab is visible; a tab hidden for 2 minutes
-ends it.
+Deploys, like start, stop and restart, need a fingerprint. On **Trusted
+devices** (account menu) you register a passkey on your laptop or phone; each
+server keeps its public key in `/var/lib/kry-exec/trust.json`, and the root
+executor checks every action against it, so nothing on Cloudflare can run one
+on its own. One fingerprint opens a 15-minute session, like sudo: nothing on
+screen counts it down, a tab hidden for 2 minutes ends it, and **Lock actions**
+in the account menu ends it at once.
 
 - New servers trust your devices through the enroll command.
-- Servers enrolled earlier: **Trust on servers** on the Deploy devices page,
+- Servers enrolled earlier: **Trust on servers** on the Trusted devices page,
   accepted only while a server trusts no device yet.
+- Every change to the trusted devices shows each device's key fingerprint for
+  you to check before it is sent.
 - Adding or removing a device needs a fingerprint from a device the servers
   already trust. To start over on a server:
 
