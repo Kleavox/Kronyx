@@ -100,6 +100,16 @@ jobs:
           done
           rm -f "$key"
 
+      # Agents from before the rename still download krynode-linux-*.
+      - name: Publish the binaries under their pre-rename names
+        if: steps.version.outputs.released == 'false'
+        run: |
+          for arch in amd64 arm64; do
+            for suffix in "" .sha256 .sig; do
+              cp "krynodes-linux-$arch$suffix" "krynode-linux-$arch$suffix"
+            done
+          done
+
       - name: Attest amd64 binary
         if: steps.version.outputs.released == 'false'
         uses: actions/attest-build-provenance@v4
@@ -135,3 +145,9 @@ jobs:
             agent/krynodes-linux-arm64
             agent/krynodes-linux-arm64.sha256
             agent/krynodes-linux-arm64.sig
+            agent/krynode-linux-amd64
+            agent/krynode-linux-amd64.sha256
+            agent/krynode-linux-amd64.sig
+            agent/krynode-linux-arm64
+            agent/krynode-linux-arm64.sha256
+            agent/krynode-linux-arm64.sig

@@ -132,6 +132,18 @@ func TestTheExecutorIsStartedByRequestsAndATimer(t *testing.T) {
 	}
 }
 
+func TestLegacyKrynodeUnitsAreRetiredWithoutStoppingTheRunningUpdater(t *testing.T) {
+	disable := strings.Join(legacyDisableCommand(), " ")
+	if !strings.Contains(disable, "krynode.service") || strings.Contains(disable, "krynode-update.service") {
+		t.Fatalf("unexpected legacy disable command %q", disable)
+	}
+	for _, name := range legacyUnits {
+		if strings.HasPrefix(name, "krynodes") {
+			t.Fatalf("legacy cleanup would remove current unit %s", name)
+		}
+	}
+}
+
 func TestUninstallStopsTheExecutorBeforeRemovingItsState(t *testing.T) {
 	commands := uninstallCommands()
 	if len(commands) < 2 || strings.Join(commands[1], " ") != "systemctl stop krynodes-exec.service" {
