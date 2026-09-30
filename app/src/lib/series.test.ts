@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  duringIncident,
+  incidentDuring,
   findGaps,
   groupByDay,
   heartbeatSummary,
   isLonePoint,
   layoutReportSlots,
   seriesSummary,
+  slotTip,
   sparklineSegments,
   untilWindowSettles,
   uptimeTip,
@@ -198,33 +199,34 @@ describe("untilWindowSettles", () => {
   });
 });
 
-describe("duringIncident", () => {
+describe("incidentDuring", () => {
   const MIN = 60_000;
   const at = (clock: string) => Date.parse(`2026-09-28T${clock}:00Z`);
   const incidents = [
     {
+      id: "i1",
       started_at: "2026-09-28T12:00:30.000Z",
       resolved_at: "2026-09-28 12:20:00",
     },
-    { started_at: "2026-09-28T13:00:00.000Z", resolved_at: null },
+    { id: "i2", started_at: "2026-09-28T13:00:00.000Z", resolved_at: null },
   ];
 
   it("counts the window of the first failure, one report before the incident opened", () => {
-    expect(duringIncident(at("11:55"), 5 * MIN, incidents)).toBe(true);
-    expect(duringIncident(at("11:50"), 5 * MIN, incidents)).toBe(false);
+    expect(incidentDuring(at("11:55"), 5 * MIN, incidents)?.id).toBe("i1");
+    expect(incidentDuring(at("11:50"), 5 * MIN, incidents)).toBeUndefined();
   });
 
   it("ends at the report that resolved the incident", () => {
-    expect(duringIncident(at("12:15"), 5 * MIN, incidents)).toBe(true);
-    expect(duringIncident(at("12:20"), 5 * MIN, incidents)).toBe(false);
+    expect(incidentDuring(at("12:15"), 5 * MIN, incidents)?.id).toBe("i1");
+    expect(incidentDuring(at("12:20"), 5 * MIN, incidents)).toBeUndefined();
   });
 
   it("keeps an open incident running", () => {
-    expect(duringIncident(at("15:00"), 5 * MIN, incidents)).toBe(true);
+    expect(incidentDuring(at("15:00"), 5 * MIN, incidents)?.id).toBe("i2");
   });
 
   it("treats a failure with no incident as brief", () => {
-    expect(duringIncident(at("12:00"), 5 * MIN, [])).toBe(false);
+    expect(incidentDuring(at("12:00"), 5 * MIN, [])).toBeUndefined();
   });
 });
 
@@ -332,5 +334,29 @@ describe("uptime tooltip", () => {
       "Since at 06:10\n1 of 1 reports up\nNo downtime recorded",
     );
     expect(uptimeTip([], clock)).toBe("No reports yet");
+  });
+});
+
+describe("bar tooltips", () => {
+  const clock = () => "06:10";
+  const result = (status: "UP" | "DOWN", latencyMs: number | null) => ({
+    t: "2026-09-30T06:10:00.000Z",
+    status,
+    latencyMs,
+    message:
+      status === "DOWN"
+        ? "dial tcp 10.0.0.5:443: connect: connection refused"
+        : null,
+  });
+
+  it("shows a failed window like a good one, without its error", () => {
+    expect(slotTip(0, result("UP", 41), false, clock)).toBe(
+      "06:10 · UP · 41ms",
+    );
+    expect(slotTip(0, result("DOWN", null), false, clock)).toBe("06:10 · DOWN");
+    expect(slotTip(0, result("DOWN", null), true, clock)).toBe(
+      "06:10 · DOWN, no incident",
+    );
+    expect(slotTip(0, null, false, clock)).toBe("06:10 · no result");
   });
 });

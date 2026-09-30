@@ -1,3 +1,5 @@
+import { ArrowUpRight, ChevronRight } from "lucide-react";
+import { useState } from "react";
 import { Link } from "react-router";
 
 import { RowMenu } from "@/components/row-menu";
@@ -5,7 +7,7 @@ import { StatusDot } from "@/components/status";
 import { Button } from "@/components/ui/button";
 import { useSignedAction } from "@/features/deploy/use-signed-action";
 import { useCancelActions } from "@/lib/api";
-import { nodeState } from "@/lib/format";
+import { capitalize, nodeState } from "@/lib/format";
 import {
   actionText,
   displayName,
@@ -31,11 +33,14 @@ const TONE: Record<ServiceState, "ok" | "bad" | "warn" | "idle"> = {
 const ROW =
   "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 px-3 py-2 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1.2fr)_7.5rem]";
 
+const BRANCH =
+  "relative pl-10 before:absolute before:top-0 before:bottom-0 before:left-5 before:w-px before:bg-border-strong last:before:bottom-1/2 after:absolute after:top-1/2 after:left-5 after:h-px after:w-3 after:bg-border-strong";
+
 const offline = (member: ServiceMember, seen: number) =>
   nodeState(member.node, seen) === "offline";
 
 function stateLabel(member: ServiceMember): string {
-  return `${member.entry.kind} · ${member.entry.state}`;
+  return `${capitalize(member.entry.kind)} · ${member.entry.state}`;
 }
 
 export function ActionOutcome({
@@ -134,24 +139,32 @@ function MemberControls({
 }
 
 export function ServiceRows({
+  id,
   members,
   seen,
   trusted,
+  branch = false,
   onRequest,
 }: {
+  id?: string;
   members: ServiceMember[];
   seen: number;
   trusted: boolean;
+  branch?: boolean;
   onRequest: (request: ActionRequest) => void;
 }) {
   return (
-    <ul className="divide-y">
+    <ul id={id} className={branch ? "py-1" : "divide-y"}>
       {members.map((member) => {
         const label = stateLabel(member);
         return (
           <li
             key={`${member.entry.kind}:${member.entry.name}`}
-            className={cn(ROW, offline(member, seen) && "opacity-60")}
+            className={cn(
+              ROW,
+              branch && BRANCH,
+              offline(member, seen) && "opacity-60",
+            )}
           >
             <span className="flex min-h-8 min-w-0 items-center gap-2">
               <StatusDot tone={TONE[member.entry.state]} />
@@ -208,15 +221,28 @@ export function TrustLink() {
 export function ServerServiceList({
   groups,
   seen,
+  filtering,
   onRequest,
 }: {
   groups: ServerGroup[];
   seen: number;
+  filtering: boolean;
   onRequest: (request: ActionRequest) => void;
 }) {
+  const [flipped, setFlipped] = useState<ReadonlySet<string>>(() => new Set());
+  const openByDefault = filtering || groups.length === 1;
+  const toggle = (id: string) =>
+    setFlipped((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {groups.map((group) => {
+        const id = group.node.id;
+        const open = openByDefault !== flipped.has(id);
         const down = group.members.filter(
           (member) => member.entry.state !== "running",
         ).length;
@@ -224,40 +250,61 @@ export function ServerServiceList({
         const count = group.members.length;
         return (
           <section
-            key={group.node.id}
-            aria-labelledby={`server-${group.node.id}`}
+            key={id}
+            aria-labelledby={`server-${id}`}
             className="rounded-lg border bg-card"
           >
-            <div className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-0.5 border-b px-3 py-2">
-              <StatusDot tone={away ? "idle" : "ok"} />
-              <h2
-                id={`server-${group.node.id}`}
-                className="min-w-0 truncate font-medium"
-              >
-                <Link
-                  to={`/nodes/${group.node.id}`}
-                  className="underline-offset-4 hover:underline"
-                >
-                  {group.node.name}
-                </Link>
-              </h2>
-              <span className="font-mono text-xs text-muted-foreground">
-                {count} {count === 1 ? "service" : "services"}
-                {down > 0 && ` · ${down} not running`}
-                {away && " · offline"}
-              </span>
-              {!group.trusted && (
-                <span className="ml-auto">
-                  <TrustLink />
-                </span>
+            <div
+              className={cn(
+                "flex min-h-11 items-center gap-2 px-3",
+                open && "border-b",
               )}
+            >
+              <h2 id={`server-${id}`} className="min-w-0 flex-1">
+                <button
+                  type="button"
+                  aria-expanded={open}
+                  aria-controls={`services-${id}`}
+                  onClick={() => toggle(id)}
+                  className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 rounded-sm py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <ChevronRight
+                    aria-hidden="true"
+                    className={cn(
+                      "size-4 shrink-0 text-muted-foreground transition-transform",
+                      open && "rotate-90",
+                    )}
+                  />
+                  <StatusDot tone={away ? "idle" : "ok"} />
+                  <span className="min-w-0 truncate font-medium">
+                    {group.node.name}
+                  </span>
+                  <span className="font-mono text-xs font-normal text-muted-foreground">
+                    {count} {count === 1 ? "service" : "services"}
+                    {down > 0 && ` · ${down} not running`}
+                    {away && " · offline"}
+                  </span>
+                </button>
+              </h2>
+              {!group.trusted && <TrustLink />}
+              <Link
+                to={`/nodes/${id}`}
+                aria-label={`Open ${group.node.name}`}
+                className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <ArrowUpRight aria-hidden="true" className="size-4" />
+              </Link>
             </div>
-            <ServiceRows
-              members={group.members}
-              seen={seen}
-              trusted={group.trusted}
-              onRequest={onRequest}
-            />
+            {open && (
+              <ServiceRows
+                id={`services-${id}`}
+                members={group.members}
+                seen={seen}
+                trusted={group.trusted}
+                branch
+                onRequest={onRequest}
+              />
+            )}
           </section>
         );
       })}

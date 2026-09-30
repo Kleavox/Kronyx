@@ -22,12 +22,23 @@ export async function fingerprint(publicKey: string): Promise<string> {
     .slice(0, 16);
 }
 
+const RESTART_SINCE = "0.2.2";
+
+const atLeast = (version: string | null, since: string) =>
+  version !== null &&
+  VERSION.test(version) &&
+  compareVersions(version, since) >= 0;
+
 export function canDeploy(node: Pick<NodeRecord, "agent_version">): boolean {
-  const version = node.agent_version;
+  return atLeast(node.agent_version, DEPLOY_SINCE);
+}
+
+export function canRestartServer(
+  node: Pick<NodeRecord, "agent_version">,
+  trust: NodeTrust | null,
+): boolean {
   return (
-    version !== null &&
-    VERSION.test(version) &&
-    compareVersions(version, DEPLOY_SINCE) >= 0
+    atLeast(node.agent_version, RESTART_SINCE) && (trust?.keys.length ?? 0) > 0
   );
 }
 

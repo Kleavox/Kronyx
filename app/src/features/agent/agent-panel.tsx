@@ -37,19 +37,23 @@ export function AgentPanel({
       aria-labelledby="node-agent"
       className="rounded-lg border bg-card p-4"
     >
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2
-          id="node-agent"
-          className="text-[11px] tracking-wider text-muted-foreground uppercase"
-        >
-          Agent
-        </h2>
-        <p className="font-mono text-[11px] text-muted-foreground">
-          {release.version ? `latest ${release.version}` : "latest unknown"}
-          {release.checkedAt && ` · checked ${timeAgo(release.checkedAt, now)}`}
-        </p>
-      </div>
+      <h2
+        id="node-agent"
+        className="text-[11px] tracking-wider text-muted-foreground uppercase"
+      >
+        Agent
+      </h2>
       <p className="mt-2 font-mono text-xl">{node.agent_version ?? "--"}</p>
+      <p
+        className="font-mono text-[11px] text-muted-foreground"
+        title={
+          release.checkedAt
+            ? `Checked ${timeAgo(release.checkedAt, now)}`
+            : undefined
+        }
+      >
+        {release.version ? `Latest ${release.version}` : "Latest unknown"}
+      </p>
 
       <div className="mt-3 space-y-3 text-sm">
         {state === "current" && (

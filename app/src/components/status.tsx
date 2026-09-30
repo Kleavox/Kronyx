@@ -1,4 +1,4 @@
-import type { CheckDisplay, NodeState } from "@/lib/format";
+import { capitalize, type CheckDisplay, type NodeState } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 type Tone = "ok" | "bad" | "warn" | "idle";
@@ -54,7 +54,7 @@ export function StatusChip({
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[11px] whitespace-nowrap text-muted-foreground">
       <StatusDot tone={tone} />
-      <span className="text-foreground">{label}</span>
+      <span className="text-foreground">{capitalize(label)}</span>
       {detail && <span>· {detail}</span>}
     </span>
   );

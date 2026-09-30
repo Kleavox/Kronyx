@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   b64url,
   createSession,
+  registerDevice,
   actionCommand,
   fromB64url,
   signCommand,
@@ -18,7 +19,13 @@ const decode = (text: string) =>
     unknown
   >;
 
-function authenticator() {
+const authData = (flags: number) => {
+  const bytes = new Uint8Array(37);
+  bytes[32] = flags;
+  return bytes.buffer;
+};
+
+function authenticator(flags = 0x05) {
   const seen: Uint8Array[] = [];
   vi.stubGlobal("navigator", {
     credentials: {
@@ -26,8 +33,9 @@ function authenticator() {
         seen.push(new Uint8Array(options.publicKey!.challenge as ArrayBuffer));
         return {
           id: "ZGV2aWNl",
+          authenticatorAttachment: "platform",
           response: {
-            authenticatorData: new Uint8Array([1, 2, 3]).buffer,
+            authenticatorData: authData(flags),
             clientDataJSON: new TextEncoder().encode("{}").buffer,
             signature: new Uint8Array([4, 5]).buffer,
           },
@@ -65,7 +73,7 @@ describe("passkeys", () => {
     });
     expect(session.grant).toMatchObject({
       credentialId: "ZGV2aWNl",
-      authenticatorData: "AQID",
+      authenticatorData: b64url(authData(0x05)),
       clientDataJSON: "e30",
       signature: "BAU",
     });
@@ -182,5 +190,34 @@ describe("passkeys", () => {
       name: "adguard",
       action: "restart",
     });
+  });
+
+  it("stops at once when the passkey did not verify the user", async () => {
+    authenticator(0x01);
+    await expect(
+      createSession(["ZGV2aWNl"], "kry.example.test", T),
+    ).rejects.toThrow(/fingerprint, face or PIN.*flags 0x01, platform/u);
+  });
+
+  it("refuses to set up a passkey that does not verify the user", async () => {
+    const created = (flags: number) => ({
+      create: async () => ({
+        id: "bmV3",
+        response: {
+          getAuthenticatorData: () => authData(flags),
+          getPublicKey: () => new Uint8Array([9, 9]).buffer,
+          getPublicKeyAlgorithm: () => -7,
+        },
+      }),
+    });
+    const user = { id: "operator", name: "operator" };
+    vi.stubGlobal("navigator", { credentials: created(0x41) });
+    await expect(
+      registerDevice("Laptop", "kry.example.test", user, []),
+    ).rejects.toThrow(/fingerprint, face or PIN/u);
+    vi.stubGlobal("navigator", { credentials: created(0x45) });
+    await expect(
+      registerDevice("Laptop", "kry.example.test", user, []),
+    ).resolves.toMatchObject({ id: "bmV3", alg: -7 });
   });
 });

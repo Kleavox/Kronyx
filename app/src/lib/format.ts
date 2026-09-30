@@ -90,6 +90,10 @@ export function formatUptime(seconds: number | null): string {
   return seconds === null ? "--" : formatDuration(seconds * 1000);
 }
 
+export function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 export function timeAgo(value: string | null, now = Date.now()): string {
   if (!value) return "never";
   const elapsed = now - parseTimestamp(value);

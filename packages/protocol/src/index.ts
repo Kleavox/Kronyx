@@ -76,9 +76,17 @@ export const signedTrustSchema = z.strictObject({
 export const agentActionSchema = z
   .strictObject({
     id: z.string().uuid(),
-    kind: z.enum(["systemd", "docker", "compose", "trust"]),
+    kind: z.enum(["systemd", "docker", "compose", "trust", "host"]),
     name: z.string(),
-    action: z.enum(["start", "stop", "restart", "deploy", "rollback", "trust"]),
+    action: z.enum([
+      "start",
+      "stop",
+      "restart",
+      "deploy",
+      "rollback",
+      "trust",
+      "reboot",
+    ]),
     expiresAt: z.string().datetime(),
     signed: z.union([signedCommandSchema, signedTrustSchema]).optional(),
   })
@@ -93,7 +101,9 @@ export const agentActionSchema = z
     const allowed =
       action.kind === "compose"
         ? ["deploy", "rollback"]
-        : ["start", "stop", "restart"];
+        : action.kind === "host"
+          ? ["reboot"]
+          : ["start", "stop", "restart"];
     return (
       allowed.includes(action.action) &&
       signedCommandSchema.safeParse(action.signed).success

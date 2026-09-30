@@ -69,6 +69,7 @@ func (e Executor) Execute(ctx context.Context) error {
 	if ledger == nil {
 		ledger = map[string]time.Time{}
 	}
+	reboot := false
 	for {
 		batch := e.unprocessed(ledger)
 		if len(batch) == 0 {
@@ -86,6 +87,9 @@ func (e Executor) Execute(ctx context.Context) error {
 					result = e.trustChange(item.request)
 				case "compose":
 					result = e.compose(ctx, item.request, snapshot)
+				case "host":
+					result = e.host(item.request)
+					reboot = reboot || result.OK
 				default:
 					result = e.execute(ctx, item.request, snapshot.Services)
 					if result.OK && item.request.Kind == "systemd" {
@@ -115,7 +119,28 @@ func (e Executor) Execute(ctx context.Context) error {
 	if err := writeJSON(e.StateDir, "inventory.json", inventory, 0o640); err != nil {
 		return err
 	}
-	return e.pruneResults()
+	if err := e.pruneResults(); err != nil {
+		return err
+	}
+	if reboot {
+		if _, _, err := e.Run(ctx, "systemctl", "reboot", "--no-block"); err != nil {
+			return fmt.Errorf("reboot: %w", err)
+		}
+	}
+	return nil
+}
+
+func (e Executor) host(request Request) Result {
+	if request.Action != "reboot" || !ValidTarget(request.Kind, request.Name) {
+		return e.refuse(request.ID, fmt.Errorf("unknown action %q", request.Action))
+	}
+	if err := expired(request, e.Now()); err != nil {
+		return e.refuse(request.ID, err)
+	}
+	if err := e.authorize(request); err != nil {
+		return e.refuse(request.ID, err)
+	}
+	return Result{ID: request.ID, OK: true, Output: "restarting the server", FinishedAt: e.stamp()}
 }
 
 func (e Executor) unprocessed(ledger map[string]time.Time) []pending {

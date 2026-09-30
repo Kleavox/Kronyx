@@ -24,6 +24,7 @@ const PROTECTED_UNITS = [
 export function isValidTarget(kind: string, name: string): boolean {
   if (kind === "compose") return PROJECT_NAME.test(name);
   if (kind === "trust") return name === "devices";
+  if (kind === "host") return name === "server";
   if (!TARGET_NAME.test(name)) return false;
   if (kind === "systemd") return name.endsWith(".service");
   return kind === "docker";

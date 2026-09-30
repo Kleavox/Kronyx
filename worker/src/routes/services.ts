@@ -24,14 +24,14 @@ import {
 const RECENT_MS = 24 * 3_600_000;
 
 const actionRequestSchema = z.object({
-  action: z.enum(["start", "stop", "restart", "deploy", "rollback"]),
+  action: z.enum(["start", "stop", "restart", "deploy", "rollback", "reboot"]),
   mode: z.enum(["rolling", "parallel"]).default("rolling"),
   targets: z
     .array(
       z.object({
         id: z.string().uuid().optional(),
         nodeId: z.string().uuid(),
-        kind: z.enum(["systemd", "docker", "compose"]),
+        kind: z.enum(["systemd", "docker", "compose", "host"]),
         name: z.string().min(1).max(128),
         signed: signedCommandSchema.optional(),
       }),
@@ -199,12 +199,14 @@ export function registerServiceRoutes(
     if (!parsed.success) return invalidRequest(context);
     const { action, mode, targets } = parsed.data;
     const compose = action === "deploy" || action === "rollback";
+    const reboot = action === "reboot";
     if (
       new Set(targets.map(targetKey)).size !== targets.length ||
       targets.some(
         (target) =>
           !isValidTarget(target.kind, target.name) ||
           (target.kind === "compose") !== compose ||
+          (target.kind === "host") !== reboot ||
           target.signed === undefined ||
           target.id === undefined,
       )
@@ -265,22 +267,31 @@ export function registerServiceRoutes(
     }
 
     await db.batch(sweepStatements(db, now));
+    const servers = {
+      results: nodes.results.map((node) => ({
+        nodeId: node.id,
+        kind: "host",
+        name: "server",
+      })),
+    };
     const [known, pending] = await Promise.all([
-      (compose
-        ? db
-            .prepare(
-              `SELECT node_id AS nodeId, 'compose' AS kind, project AS name FROM stacks
+      reboot
+        ? servers
+        : (compose
+            ? db
+                .prepare(
+                  `SELECT node_id AS nodeId, 'compose' AS kind, project AS name FROM stacks
                WHERE node_id IN (SELECT value FROM json_each(?)) AND compose = 1
                  AND (? = 'deploy' OR rollback = 1)`,
-            )
-            .bind(nodeIds, action)
-        : db
-            .prepare(
-              `SELECT node_id AS nodeId, kind, name FROM services
+                )
+                .bind(nodeIds, action)
+            : db
+                .prepare(
+                  `SELECT node_id AS nodeId, kind, name FROM services
                WHERE node_id IN (SELECT value FROM json_each(?))`,
-            )
-            .bind(nodeIds)
-      ).all<{ nodeId: string; kind: string; name: string }>(),
+                )
+                .bind(nodeIds)
+          ).all<{ nodeId: string; kind: string; name: string }>(),
       db
         .prepare(
           `SELECT node_id AS nodeId, kind, name FROM actions

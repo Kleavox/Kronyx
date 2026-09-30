@@ -28,6 +28,7 @@ const WORDS: Record<ActionVerb, { verb: string; doing: string; done: string }> =
       done: "Rolled back",
     },
     trust: { verb: "Update", doing: "Updating…", done: "Updated" },
+    reboot: { verb: "Restart", doing: "Restarting…", done: "Restarted" },
   };
 
 export interface ActionTarget {
@@ -52,6 +53,7 @@ export interface ServerGroup {
 
 export function displayName(kind: ActionKind, name: string): string {
   if (kind === "trust") return "Trusted devices";
+  if (kind === "host") return "server";
   return kind === "systemd" ? name.replace(/\.service$/u, "") : name;
 }
 
@@ -216,7 +218,10 @@ export function outcomeText(
   if (action.status === "done") {
     return {
       ok: true,
-      text: `${name} ${words.done.toLowerCase()} on ${nodeName}`,
+      text:
+        action.kind === "host"
+          ? `${nodeName} ${words.done.toLowerCase()}`
+          : `${name} ${words.done.toLowerCase()} on ${nodeName}`,
     };
   }
   if (action.status === "failed" || action.status === "expired") {

@@ -95,16 +95,16 @@ function ConfirmList({
                   {device.name}
                 </span>
                 {added && (
-                  <span className="font-mono text-xs text-success">added</span>
+                  <span className="font-mono text-xs text-success">Added</span>
                 )}
                 {removed && (
                   <span className="font-mono text-xs text-destructive">
-                    removed
+                    Removed
                   </span>
                 )}
               </div>
               <div className="font-mono text-xs text-muted-foreground">
-                added {shortDate(device.createdAt)} · {prints?.[index] ?? "…"}
+                Added {shortDate(device.createdAt)} · {prints?.[index] ?? "…"}
               </div>
             </li>
           );
@@ -388,7 +388,7 @@ export function DevicesPage() {
         title="Trusted devices"
         meta={
           <span className="font-mono text-xs text-muted-foreground">
-            trusted on {summary.trusted.length}/{summary.total} servers
+            Trusted on {summary.trusted.length}/{summary.total} servers
           </span>
         }
       />
@@ -439,7 +439,7 @@ export function DevicesPage() {
                   {device.name}
                 </span>
                 <span className="font-mono text-xs text-muted-foreground">
-                  added {shortDate(device.createdAt)} · used{" "}
+                  Added {shortDate(device.createdAt)} · used{" "}
                   {timeAgo(device.lastUsedAt)}
                 </span>
                 <Button

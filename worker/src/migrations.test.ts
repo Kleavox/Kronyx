@@ -123,3 +123,36 @@ describe("migration 0014", () => {
     });
   });
 });
+
+describe("migration 0015", () => {
+  it("keeps every action and index and accepts a server restart", () => {
+    const sqlite = before0014();
+    apply(sqlite, (name) => name >= "0014" && name < "0015");
+    sqlite.exec(action("c1", "compose", "listmonk", "deploy", "done", "{}"));
+    apply(sqlite, (name) => name.startsWith("0015"));
+    expect(
+      sqlite.prepare("SELECT id, kind, signed FROM actions ORDER BY id").all(),
+    ).toEqual([
+      { id: "a1", kind: "docker", signed: null },
+      { id: "a2", kind: "systemd", signed: null },
+      { id: "c1", kind: "compose", signed: "{}" },
+    ]);
+    sqlite.exec(action("h1", "host", "server", "reboot", "queued", "{}"));
+    expect(() =>
+      sqlite.exec(action("h2", "host", "server", "exec", "queued", "{}")),
+    ).toThrow();
+    expect(
+      sqlite
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'actions' AND name LIKE 'idx_%' ORDER BY name",
+        )
+        .all()
+        .map((row) => (row as { name: string }).name),
+    ).toEqual([
+      "idx_actions_batch",
+      "idx_actions_node_requested",
+      "idx_actions_one_pending",
+      "idx_actions_status_node",
+    ]);
+  });
+});

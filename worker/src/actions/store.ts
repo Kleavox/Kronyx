@@ -4,9 +4,9 @@ const ACTION_TTL_MS = 10 * 60_000;
 const ABANDON_MS = 15 * 60_000;
 const COMPOSE_ABANDON_MS = 30 * 60_000;
 
-export type ActionKind = "systemd" | "docker" | "compose" | "trust";
+export type ActionKind = "systemd" | "docker" | "compose" | "trust" | "host";
 export type ActionVerb =
-  "start" | "stop" | "restart" | "deploy" | "rollback" | "trust";
+  "start" | "stop" | "restart" | "deploy" | "rollback" | "trust" | "reboot";
 export type BatchMode = "rolling" | "parallel";
 type ActionStatus =
   "queued" | "sent" | "done" | "failed" | "expired" | "cancelled" | "skipped";

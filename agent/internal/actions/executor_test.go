@@ -500,3 +500,37 @@ func TestASignatureForAnotherActionIsRefused(t *testing.T) {
 	writeRequest(t, executor.RequestDir, idA+".json", restart)
 	refusedWithoutRunning(t, executor, run, "does not match the request")
 }
+
+func TestARestartOfTheServerIsReportedBeforeItReboots(t *testing.T) {
+	executor, run := newTrustedExecutor(t)
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "host", "server", "reboot", executorNow.Add(time.Minute)))
+	resultWritten := false
+	run.during = func() {
+		_, err := os.Stat(filepath.Join(executor.StateDir, "results", idA+".json"))
+		resultWritten = err == nil
+	}
+	if err := executor.Execute(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	result := readResult(t, executor, idA)
+	if !result.OK || result.Output != "restarting the server" {
+		t.Fatalf("result %+v", result)
+	}
+	if !slices.Equal(run.calls, []string{"systemctl reboot --no-block"}) || !resultWritten {
+		t.Fatalf("calls %q, result written first: %v", run.calls, resultWritten)
+	}
+}
+
+func TestAnUnsignedServerRestartIsRefused(t *testing.T) {
+	executor, run := newTrustedExecutor(t)
+	unsigned := request(t, idA, "host", "server", "reboot", executorNow.Add(time.Minute))
+	unsigned.Signed = nil
+	writeRequest(t, executor.RequestDir, idA+".json", unsigned)
+	refusedWithoutRunning(t, executor, run, "refused: the request is not signed")
+}
+
+func TestAServerRestartWithAnotherActionIsRefused(t *testing.T) {
+	executor, run := newTrustedExecutor(t)
+	writeRequest(t, executor.RequestDir, idA+".json", request(t, idA, "host", "server", "stop", executorNow.Add(time.Minute)))
+	refusedWithoutRunning(t, executor, run, "refused: ")
+}

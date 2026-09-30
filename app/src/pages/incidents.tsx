@@ -151,13 +151,18 @@ function OpenIncident({ incident, now }: { incident: Incident; now: number }) {
       <div className="flex flex-wrap items-center gap-2 font-medium">
         <StatusDot tone="bad" />
         <span className="sr-only">Open:</span>
-        <span className="min-w-0 break-words">{incident.check_name}</span>
+        <Link
+          to={`/incidents/${incident.id}`}
+          className="min-w-0 break-words hover:underline"
+        >
+          {incident.check_name}
+        </Link>
         <span className="ml-auto font-mono text-xs text-destructive">
-          ongoing {formatDuration(now - parseTimestamp(incident.started_at))}
+          Ongoing {formatDuration(now - parseTimestamp(incident.started_at))}
         </span>
       </div>
       <p className="mt-1.5 text-xs text-muted-foreground">
-        node{" "}
+        Node{" "}
         <Link
           to={`/nodes/${incident.node_id}`}
           className="text-foreground hover:underline"
@@ -187,7 +192,9 @@ function ResolvedRow({ incident }: { incident: Incident }) {
         title={incident.summary ?? incident.check_name}
       >
         <span className="sr-only">Resolved: </span>
-        {incident.check_name}
+        <Link to={`/incidents/${incident.id}`} className="hover:underline">
+          {incident.check_name}
+        </Link>
       </span>
       <Link
         to={`/nodes/${incident.node_id}`}

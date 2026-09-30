@@ -15,6 +15,7 @@ import type {
   DeviceRecord,
   Enrollment,
   EnrollmentStatus,
+  IncidentDetail,
   MetricRange,
   NodeMetrics,
   Overview,
@@ -71,6 +72,19 @@ export function useNodeMetrics(id: string, range: MetricRange) {
       ),
     refetchInterval: RANGE_REFRESH[range],
     placeholderData: keepWhileSameNode(id),
+  });
+}
+
+export function useIncident(id: string) {
+  return useQuery({
+    queryKey: queryKeys.incident(id),
+    queryFn: () =>
+      apiFetch<IncidentDetail>(`/api/incidents/${encodeURIComponent(id)}`),
+    refetchInterval: (query) =>
+      query.state.data?.incident.status === "OPEN"
+        ? untilWindowSettles(Date.now())
+        : false,
+    retry: false,
   });
 }
 

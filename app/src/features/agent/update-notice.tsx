@@ -18,7 +18,6 @@ export function UpdateNotice({
   onShow: () => void;
 }) {
   const request = useRequestAgentUpdate();
-  const check = useCheckAgentRelease();
   const states = nodes.map((node) => ({
     node,
     state: agentState(node, release.version, now),
@@ -29,27 +28,7 @@ export function UpdateNotice({
   );
   const updating = states.filter((item) => item.state === "updating").length;
 
-  if (behind.length === 0) {
-    return (
-      <p className="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-muted-foreground">
-        <span>
-          {release.version
-            ? `Agent ${release.version} is the latest`
-            : "No agent release checked yet"}
-          {release.checkedAt && ` · checked ${timeAgo(release.checkedAt, now)}`}
-          {updating > 0 && ` · ${updating} updating`}
-        </span>
-        <button
-          type="button"
-          onClick={() => check.mutate()}
-          disabled={check.isPending}
-          className="rounded-sm text-primary underline-offset-4 hover:underline disabled:opacity-50"
-        >
-          {check.isPending ? "Checking…" : "Check now"}
-        </button>
-      </p>
-    );
-  }
+  if (behind.length === 0) return null;
 
   return (
     <div
@@ -87,5 +66,35 @@ export function UpdateNotice({
         )}
       </div>
     </div>
+  );
+}
+
+export function LatestAgent({
+  release,
+  now,
+}: {
+  release: AgentRelease;
+  now: number;
+}) {
+  const check = useCheckAgentRelease();
+  return (
+    <span
+      className="flex items-center gap-2 font-mono text-[11px] whitespace-nowrap text-muted-foreground"
+      title={
+        release.checkedAt
+          ? `Checked ${timeAgo(release.checkedAt, now)}`
+          : undefined
+      }
+    >
+      {release.version ? `Latest ${release.version}` : "No release checked"}
+      <button
+        type="button"
+        onClick={() => check.mutate()}
+        disabled={check.isPending}
+        className="rounded-sm text-primary underline-offset-4 hover:underline disabled:opacity-50"
+      >
+        {check.isPending ? "Checking…" : "Check"}
+      </button>
+    </span>
   );
 }

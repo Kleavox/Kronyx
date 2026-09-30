@@ -34,7 +34,8 @@
     ["docker", "my_app.web-1"],
     ["compose", "listmonk"],
     ["compose", "my_stack-2"],
-    ["trust", "devices"]
+    ["trust", "devices"],
+    ["host", "server"]
   ],
   "invalid": [
     ["systemd", "nginx"],
@@ -50,6 +51,8 @@
     ["compose", "Listmonk"],
     ["compose", "-x"],
     ["compose", "a/b"],
-    ["trust", "other"]
+    ["trust", "other"],
+    ["host", "other"],
+    ["host", "Server"]
   ]
 }

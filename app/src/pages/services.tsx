@@ -209,7 +209,12 @@ export function ServicesPage() {
           }
         />
       ) : (
-        <ServerServiceList groups={groups} seen={seen} onRequest={setRequest} />
+        <ServerServiceList
+          groups={groups}
+          seen={seen}
+          filtering={query.trim() !== "" || notRunning}
+          onRequest={setRequest}
+        />
       )}
 
       <DeployDialog

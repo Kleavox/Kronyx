@@ -68,6 +68,11 @@ export interface Incident {
   node_name: string;
 }
 
+export interface IncidentDetail {
+  incident: Incident & { check_kind: string; check_target: string };
+  results: CheckResult[];
+}
+
 export interface AgentRelease {
   version: string | null;
   checkedAt: string | null;
@@ -153,8 +158,9 @@ export interface CheckResults {
 export type ServiceKind = "systemd" | "docker";
 export type ServiceState = "running" | "stopped" | "failed" | "starting";
 export type ServiceAction = "start" | "stop" | "restart";
-export type ActionKind = ServiceKind | "compose" | "trust";
-export type ActionVerb = ServiceAction | "deploy" | "rollback" | "trust";
+export type ActionKind = ServiceKind | "compose" | "trust" | "host";
+export type ActionVerb =
+  ServiceAction | "deploy" | "rollback" | "trust" | "reboot";
 export type BatchMode = "rolling" | "parallel";
 type ActionStatus =
   "queued" | "sent" | "done" | "failed" | "expired" | "cancelled" | "skipped";

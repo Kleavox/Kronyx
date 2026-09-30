@@ -25,7 +25,8 @@ export function AgentVersion({
         className,
       )}
     >
-      agent {version}
+      <span className="sr-only">Agent </span>
+      {version}
       {state === "available" && (
         <span
           className="inline-flex items-center gap-0.5 text-primary"
@@ -42,7 +43,7 @@ export function AgentVersion({
         </span>
       )}
       {state === "failed" && (
-        <span className="text-destructive">update failed</span>
+        <span className="text-destructive">Update failed</span>
       )}
     </span>
   );

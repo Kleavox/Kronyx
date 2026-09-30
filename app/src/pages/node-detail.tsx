@@ -139,6 +139,17 @@ export function NodeDetailPage() {
             <NodeActions
               node={node}
               onDeleted={() => void navigate("/", { replace: true })}
+              restart={params.get("restart") === "1"}
+              onRestartClosed={() =>
+                setParams(
+                  (current) => {
+                    const next = new URLSearchParams(current);
+                    next.delete("restart");
+                    return next;
+                  },
+                  { replace: true },
+                )
+              }
             />
           </>
         }
@@ -160,7 +171,7 @@ export function NodeDetailPage() {
               <Fact label="Architecture" value={node.architecture} />
               <Fact
                 label="Interval"
-                value={`every ${formatDuration(node.interval_seconds * 1000)}`}
+                value={`Every ${formatDuration(node.interval_seconds * 1000)}`}
               />
               <Fact label="Uptime" value={formatUptime(node.uptime_seconds)} />
               <Fact
@@ -181,16 +192,13 @@ export function NodeDetailPage() {
         </aside>
       </div>
 
-      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] lg:items-start">
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
         <div className="contents lg:flex lg:flex-col lg:gap-6">
           <div className="order-1 empty:hidden lg:order-none">
             <NodeServices node={node} seen={overview.dataUpdatedAt} />
           </div>
           <div className="order-2 empty:hidden lg:order-none">
             <NodeStacks node={node} seen={overview.dataUpdatedAt} />
-          </div>
-          <div className="order-5 empty:hidden lg:order-none">
-            <RecentActions node={node} />
           </div>
         </div>
         <div className="contents lg:flex lg:flex-col lg:gap-6">
@@ -274,7 +282,12 @@ export function NodeDetailPage() {
                           <span className="sr-only">
                             {open ? "Open: " : "Resolved: "}
                           </span>
-                          {incident.check_name}
+                          <Link
+                            to={`/incidents/${incident.id}`}
+                            className="hover:underline"
+                          >
+                            {incident.check_name}
+                          </Link>
                           {incident.summary && (
                             <span className="text-muted-foreground">
                               {" "}
@@ -284,7 +297,7 @@ export function NodeDetailPage() {
                         </span>
                         <span className="shrink-0 font-mono text-xs text-muted-foreground">
                           {open
-                            ? `ongoing ${formatDuration(end - start)}`
+                            ? `Ongoing ${formatDuration(end - start)}`
                             : `${shortDate(start)} · ${formatDuration(end - start)}`}
                         </span>
                       </li>
@@ -293,6 +306,9 @@ export function NodeDetailPage() {
                 </ul>
               )}
             </section>
+          </div>
+          <div className="order-5 lg:relative lg:order-none lg:min-h-40 lg:flex-1">
+            <RecentActions node={node} />
           </div>
         </div>
       </div>

@@ -52,6 +52,8 @@ func ValidTarget(kind, name string) bool {
 		return projectName.MatchString(name)
 	case "trust":
 		return name == "devices"
+	case "host":
+		return name == "server"
 	}
 	if !targetName.MatchString(name) {
 		return false

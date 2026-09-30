@@ -11,22 +11,33 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { AddCheckDialog } from "@/features/checks/add-check-dialog";
-import { useDeleteNode } from "@/lib/api";
+import { useSignedAction } from "@/features/deploy/use-signed-action";
+import { useDeleteNode, useServices } from "@/lib/api";
+import { canRestartServer } from "@/lib/devices";
 import type { NodeRecord } from "@/types";
 
 import { EditNodeDialog } from "./edit-node-dialog";
 
-type OpenDialog = "add-check" | "edit" | "delete" | null;
+type OpenDialog = "add-check" | "edit" | "delete" | "restart" | null;
 
 export function NodeActions({
   node,
   onDeleted,
+  restart = false,
+  onRestartClosed,
 }: {
   node: NodeRecord;
   onDeleted?: () => void;
+  restart?: boolean;
+  onRestartClosed?: () => void;
 }) {
-  const [dialog, setDialog] = useState<OpenDialog>(null);
+  const [dialog, setDialog] = useState<OpenDialog>(restart ? "restart" : null);
   const remove = useDeleteNode();
+  const reboot = useSignedAction(false);
+  const services = useServices();
+  const trust =
+    services.data?.nodes.find((entry) => entry.id === node.id)?.trust ?? null;
+  const restartable = canRestartServer(node, trust);
 
   return (
     <>
@@ -45,6 +56,14 @@ export function NodeActions({
             Rename node
           </DropdownMenuItem>
           <DropdownMenuSeparator />
+          {restartable && (
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={() => setDialog("restart")}
+            >
+              Restart server
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem
             variant="destructive"
             onSelect={() => setDialog("delete")}
@@ -65,6 +84,22 @@ export function NodeActions({
         node={node}
         open={dialog === "edit"}
         onOpenChange={(open) => setDialog(open ? "edit" : null)}
+      />
+
+      <ConfirmDialog
+        open={dialog === "restart" && restartable}
+        onOpenChange={(open) => {
+          setDialog(open ? "restart" : null);
+          if (!open) onRestartClosed?.();
+        }}
+        title={`Restart ${node.name}?`}
+        description="The server goes offline for a minute or two. Services that don't start on boot stay stopped."
+        confirmLabel="Restart server"
+        mutation={reboot}
+        variables={{
+          action: "reboot",
+          targets: [{ nodeId: node.id, kind: "host", name: "server" }],
+        }}
       />
 
       <ConfirmDialog

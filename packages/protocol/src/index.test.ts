@@ -459,3 +459,33 @@ describe("deploy messages", () => {
     expect(TRUST_CHANGE_MS).toBe(10 * 60_000);
   });
 });
+
+describe("server restart messages", () => {
+  const reboot = {
+    id: "0b4f4f53-7d1c-4b55-9a39-2f0a0d6c1a04",
+    kind: "host",
+    name: "server",
+    action: "reboot",
+    expiresAt: "2026-09-29T10:10:00.000Z",
+    signed: signedCommand,
+  };
+
+  it("carries a signed restart of the server and nothing else for host", () => {
+    expect(agentActionSchema.safeParse(reboot).success).toBe(true);
+    const { signed: _, ...unsigned } = reboot;
+    expect(agentActionSchema.safeParse(unsigned).success).toBe(false);
+    expect(
+      agentActionSchema.safeParse({ ...reboot, action: "restart" }).success,
+    ).toBe(false);
+    expect(
+      agentActionSchema.safeParse({ ...reboot, name: "other" }).success,
+    ).toBe(false);
+    expect(
+      agentActionSchema.safeParse({
+        ...reboot,
+        kind: "docker",
+        name: "adguard",
+      }).success,
+    ).toBe(false);
+  });
+});

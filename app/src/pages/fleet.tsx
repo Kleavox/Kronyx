@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AgentVersion } from "@/features/agent/agent-version";
-import { UpdateNotice } from "@/features/agent/update-notice";
+import { LatestAgent, UpdateNotice } from "@/features/agent/update-notice";
 import { EnrollDialog } from "@/features/nodes/enroll-dialog";
 import { NodeActions } from "@/features/nodes/node-actions";
 import { useOverview, useRecentMetrics } from "@/lib/api";
@@ -300,31 +300,34 @@ export function FleetPage() {
               ]}
             />
             {desktop && (
-              <div
-                role="group"
-                aria-label="Layout"
-                className="ml-auto flex rounded-md border p-0.5"
-              >
-                {(
-                  [
-                    ["cards", "Cards", LayoutGrid],
-                    ["list", "List", List],
-                  ] as const
-                ).map(([value, label, Icon]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    aria-pressed={view === value}
-                    aria-label={label}
-                    title={label}
-                    onClick={() =>
-                      setParam("view", value === "list" ? "list" : null)
-                    }
-                    className="grid size-7 place-items-center rounded-[5px] text-muted-foreground hover:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground"
-                  >
-                    <Icon aria-hidden="true" className="size-4" />
-                  </button>
-                ))}
+              <div className="ml-auto flex items-center gap-3">
+                <LatestAgent release={agentRelease} now={now} />
+                <div
+                  role="group"
+                  aria-label="Layout"
+                  className="flex rounded-md border p-0.5"
+                >
+                  {(
+                    [
+                      ["cards", "Cards", LayoutGrid],
+                      ["list", "List", List],
+                    ] as const
+                  ).map(([value, label, Icon]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      aria-pressed={view === value}
+                      aria-label={label}
+                      title={label}
+                      onClick={() =>
+                        setParam("view", value === "list" ? "list" : null)
+                      }
+                      className="grid size-7 place-items-center rounded-[5px] text-muted-foreground hover:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground"
+                    >
+                      <Icon aria-hidden="true" className="size-4" />
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -550,7 +553,7 @@ function FleetSummary({
         value={String(open.length)}
         detail={
           open.length > 0
-            ? `longest ${timeAgo(open.at(-1)!.started_at, now).replace(" ago", "")}`
+            ? `Longest ${timeAgo(open.at(-1)!.started_at, now).replace(" ago", "")}`
             : "all quiet"
         }
         tone={open.length > 0 ? "bad" : "ok"}
@@ -792,7 +795,7 @@ function FleetTable({
                   )}
                 >
                   {state === "offline"
-                    ? "offline"
+                    ? "Offline"
                     : reasons.length > 0
                       ? reasons.join(" · ")
                       : systemLine(node)}

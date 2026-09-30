@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import { app } from "../app";
 import type { Env } from "../env";
-import { OWNER, seedCheck, seedNode, seedResult } from "../test/seed";
+import {
+  OWNER,
+  seedCheck,
+  seedIncident,
+  seedNode,
+  seedResult,
+  sqliteTime,
+} from "../test/seed";
 import { createTestDb } from "../test/sqlite-d1";
 import { CHECK_RESULTS_SQL } from "./check-results";
 
@@ -98,5 +105,67 @@ describe("GET /api/checks/results", () => {
         detail.includes("idx_check_results_check_id_checked_at"),
       ),
     ).toBe(true);
+  });
+});
+
+describe("GET /api/incidents/:id", () => {
+  const open = (db: D1Database, id: string) =>
+    app.request(`https://kry.example.test/api/incidents/${id}`, {}, {
+      DB: db,
+    } as unknown as Env);
+
+  it("returns the incident with the results around it, newest first", async () => {
+    const { db, sqlite } = setup();
+    seedIncident(sqlite, {
+      id: "i1",
+      checkId: "c1",
+      status: "OPEN",
+      startedAt: sqliteTime(new Date(Date.now() - 30 * 60_000)),
+    });
+    seedResult(sqlite, "c1", ago(2 * 3_600_000), "UP");
+    seedResult(sqlite, "c1", ago(35 * 60_000), "DOWN", null);
+    seedResult(sqlite, "c1", ago(20 * 60_000), "DOWN", null);
+    seedResult(sqlite, "c1", ago(10 * 60_000), "UP", 42);
+    const response = await open(db, "i1");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      incident: Record<string, unknown>;
+      results: {
+        status: string;
+        latencyMs: number | null;
+        message: string | null;
+      }[];
+    };
+    expect(body.incident).toMatchObject({
+      id: "i1",
+      status: "OPEN",
+      check_name: "c1",
+      check_kind: "HTTP",
+      check_target: "https://example.com/health",
+      node_id: "n1",
+    });
+    expect(body.results.map((result) => result.status)).toEqual([
+      "UP",
+      "DOWN",
+      "DOWN",
+    ]);
+    expect(body.results[1]).toMatchObject({
+      latencyMs: null,
+      message: "timeout",
+    });
+  });
+
+  it("answers 404 for an unknown incident or someone else's", async () => {
+    const { db, sqlite } = setup();
+    seedNode(sqlite, { id: "n2", owner: "someone-else" });
+    seedCheck(sqlite, { id: "c2", nodeId: "n2" });
+    seedIncident(sqlite, {
+      id: "i2",
+      checkId: "c2",
+      status: "RESOLVED",
+      startedAt: sqliteTime(new Date()),
+    });
+    expect((await open(db, "missing")).status).toBe(404);
+    expect((await open(db, "i2")).status).toBe(404);
   });
 });

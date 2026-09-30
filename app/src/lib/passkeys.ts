@@ -65,6 +65,22 @@ const sha256 = async (bytes: Uint8Array<ArrayBuffer>) =>
 const random = (length: number) =>
   crypto.getRandomValues(new Uint8Array(length));
 
+const NOT_VERIFIED =
+  "This passkey did not ask for your fingerprint, face or PIN. Use one that does, such as Windows Hello or your phone, or turn on verification in your password manager.";
+
+function requireVerified(
+  authenticatorData: ArrayBuffer,
+  attachment: string | null | undefined,
+) {
+  const flags = new Uint8Array(authenticatorData)[32] ?? 0;
+  if ((flags & 0x05) === 0x05) return;
+  const detail = [
+    `flags 0x${flags.toString(16).padStart(2, "0")}`,
+    attachment ?? "unknown authenticator",
+  ].join(", ");
+  throw new Error(`${NOT_VERIFIED} (${detail})`);
+}
+
 export async function registerDevice(
   name: string,
   rpId: string,
@@ -98,6 +114,10 @@ export async function registerDevice(
   })) as PublicKeyCredential | null;
   if (!credential) throw new Error("No passkey was created.");
   const response = credential.response as AuthenticatorAttestationResponse;
+  requireVerified(
+    response.getAuthenticatorData(),
+    credential.authenticatorAttachment,
+  );
   const publicKey = response.getPublicKey();
   if (!publicKey)
     throw new Error("This browser does not share the passkey's public key.");
@@ -128,6 +148,10 @@ async function assert(
   })) as PublicKeyCredential | null;
   if (!credential) throw new Error("The passkey did not answer.");
   const response = credential.response as AuthenticatorAssertionResponse;
+  requireVerified(
+    response.authenticatorData,
+    credential.authenticatorAttachment,
+  );
   return {
     credentialId: credential.id,
     authenticatorData: b64url(response.authenticatorData),

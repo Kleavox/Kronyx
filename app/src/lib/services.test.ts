@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ActionRecord, NodeRecord, ServicesResponse } from "../types";
 import {
   actionText,
+  displayName,
   durationText,
   groupByServer,
   isPending,
@@ -12,6 +13,7 @@ import {
   primaryAction,
   refreshPending,
   serviceForCheck,
+  verb,
 } from "./services";
 
 const node = (id: string, name: string, agent = "0.1.0") =>
@@ -319,4 +321,18 @@ describe("polling, checks and outcomes", () => {
   });
 });
 
-describe("announcements and bulk order", () => {});
+describe("announcements and bulk order", () => {
+  it("names a server restart", () => {
+    const reboot = action({ kind: "host", name: "server", action: "reboot" });
+    expect(`${verb("reboot")} ${displayName("host", "server")}`).toBe(
+      "Restart server",
+    );
+    expect(actionText({ ...reboot, status: "sent" }, "PIVOX")).toBe(
+      "Restarting…",
+    );
+    expect(outcomeText({ ...reboot, status: "done" }, "PIVOX")).toEqual({
+      ok: true,
+      text: "PIVOX restarted",
+    });
+  });
+});

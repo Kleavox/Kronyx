@@ -16,6 +16,7 @@ export const queryKeys = {
   checkResults: ["checks", "results"],
   services: ["services"],
   nodeActions: (id: string) => ["actions", "node", id],
+  incident: (id: string) => ["incidents", id],
   enrollment: (id: string) => ["enrollments", id],
   devices: ["devices"],
 } as const;

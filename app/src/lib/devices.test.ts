@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { DeviceRecord, NodeRecord, NodeTrust } from "../types";
 import {
+  canRestartServer,
   fingerprint,
   initialChanges,
   nextVersion,
@@ -141,5 +142,16 @@ describe("deploy devices", () => {
       "phone",
     ]);
     expect(synced.added).toEqual(["stray", "phone"]);
+  });
+
+  it("offers a server restart only from agent 0.2.2 on a trusted server", () => {
+    const trust = { version: 1, keys: ["0123456789abcdef"] };
+    expect(canRestartServer(node("n1", "0.2.2"), trust)).toBe(true);
+    expect(canRestartServer(node("n1", "0.3.0"), trust)).toBe(true);
+    expect(canRestartServer(node("n1", "0.2.1"), trust)).toBe(false);
+    expect(canRestartServer(node("n1", "0.2.2"), null)).toBe(false);
+    expect(
+      canRestartServer(node("n1", "0.2.2"), { version: 0, keys: [] }),
+    ).toBe(false);
   });
 });

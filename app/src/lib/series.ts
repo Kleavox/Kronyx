@@ -99,12 +99,10 @@ export function untilWindowSettles(
 
 const FIRST_FAILURE_LEAD_MS = 60_000;
 
-export function duringIncident(
-  start: number,
-  windowMs: number,
-  incidents: { started_at: string; resolved_at: string | null }[],
-): boolean {
-  return incidents.some((incident) => {
+export function incidentDuring<
+  T extends { started_at: string; resolved_at: string | null },
+>(start: number, windowMs: number, incidents: T[]): T | undefined {
+  return incidents.find((incident) => {
     const from = parseTimestamp(incident.started_at) - FIRST_FAILURE_LEAD_MS;
     const to =
       incident.resolved_at === null
@@ -112,6 +110,22 @@ export function duringIncident(
         : parseTimestamp(incident.resolved_at);
     return from < start + windowMs && to > start;
   });
+}
+
+export function slotTip(
+  start: number,
+  result: { status: "UP" | "DOWN"; latencyMs: number | null } | null,
+  brief: boolean,
+  clock: (value: number) => string,
+): string {
+  if (!result) return `${clock(start)} · no result`;
+  return [
+    clock(start),
+    brief ? "DOWN, no incident" : result.status,
+    result.latencyMs === null ? null : `${result.latencyMs}ms`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 export function heartbeatSummary(

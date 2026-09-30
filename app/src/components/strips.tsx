@@ -1,8 +1,11 @@
+import { Link } from "react-router";
+
 import { clockTime } from "@/lib/format";
 import {
-  duringIncident,
   heartbeatSummary,
+  incidentDuring,
   layoutReportSlots,
+  slotTip,
   type SlotState,
 } from "@/lib/series";
 import { cn } from "@/lib/utils";
@@ -54,22 +57,6 @@ export function ReportStrip({
   );
 }
 
-function windowTitle(
-  start: number,
-  result: CheckResult | null,
-  brief: boolean,
-): string {
-  if (!result) return `${clockTime(start)} · no result`;
-  return [
-    clockTime(start),
-    brief ? "DOWN, no incident" : result.status,
-    result.latencyMs === null ? "--" : `${result.latencyMs}ms`,
-    result.message ?? "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-}
-
 export function newestLatency(
   history: { results: CheckResult[] } | undefined,
 ): string {
@@ -94,7 +81,7 @@ export function HeartbeatStrip({
   className,
 }: {
   results: CheckResult[] | undefined;
-  incidents: Pick<Incident, "started_at" | "resolved_at">[];
+  incidents: Pick<Incident, "id" | "started_at" | "resolved_at">[];
   windowSeconds: number;
   graceSeconds: number;
   now: number;
@@ -115,35 +102,45 @@ export function HeartbeatStrip({
     laid.map((slot) => slot.sample?.status ?? null),
     spanText(count * windowSeconds),
   );
-  const brief = (start: number, result: CheckResult | null) =>
-    result?.status === "DOWN" &&
-    !duringIncident(start, windowSeconds * 1000, incidents);
   return (
     <div
-      role="img"
+      role="group"
       aria-label={summary}
       className={cn("flex h-[18px] min-w-0 gap-0.5", className)}
     >
-      {laid.map((slot) => (
-        <span
-          key={slot.start}
-          data-tip={windowTitle(
-            slot.start,
-            slot.sample,
-            brief(slot.start, slot.sample),
-          )}
-          className={cn(
-            "bar-tip flex-1 rounded-[2px]",
-            !slot.sample
-              ? "bg-border"
-              : slot.sample.status === "UP"
-                ? "bg-success/85"
-                : brief(slot.start, slot.sample)
-                  ? "bg-warning"
-                  : "bg-destructive",
-          )}
-        />
-      ))}
+      {laid.map((slot) => {
+        const down = slot.sample?.status === "DOWN";
+        const incident = down
+          ? incidentDuring(slot.start, windowSeconds * 1000, incidents)
+          : undefined;
+        const tip = slotTip(
+          slot.start,
+          slot.sample,
+          down && !incident,
+          clockTime,
+        );
+        const tone = cn(
+          "bar-tip flex-1 rounded-[2px]",
+          !slot.sample
+            ? "bg-border"
+            : !down
+              ? "bg-success/85"
+              : incident
+                ? "bg-destructive"
+                : "bg-warning",
+        );
+        return incident ? (
+          <Link
+            key={slot.start}
+            to={`/incidents/${incident.id}`}
+            data-tip={tip}
+            aria-label={`${tip}. Open the incident`}
+            className={tone}
+          />
+        ) : (
+          <span key={slot.start} data-tip={tip} className={tone} />
+        );
+      })}
     </div>
   );
 }

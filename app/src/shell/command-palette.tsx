@@ -16,6 +16,7 @@ import {
   verb,
   type ActionTarget,
 } from "@/lib/services";
+import { canRestartServer } from "@/lib/devices";
 import { deployBlocker, groupStacks } from "@/lib/stacks";
 import type { NodeRecord, ServiceAction, ServicesResponse } from "@/types";
 
@@ -47,6 +48,12 @@ export function CommandPalette({
       }).filter((group) => group.trusted)
     : [];
   const stacks = services ? groupStacks(services, nodes, "") : [];
+  const trustById = new Map(
+    (services?.nodes ?? []).map((entry) => [entry.id, entry.trust]),
+  );
+  const restartable = nodes.filter((node) =>
+    canRestartServer(node, trustById.get(node.id) ?? null),
+  );
 
   return (
     <CommandDialog
@@ -77,6 +84,19 @@ export function CommandPalette({
             </CommandItem>
           ))}
         </CommandGroup>
+        {restartable.length > 0 && (
+          <CommandGroup heading="Servers">
+            {restartable.map((node) => (
+              <CommandItem
+                key={`restart|${node.id}`}
+                value={`restart server reboot ${node.name}`}
+                onSelect={() => go(`/nodes/${node.id}?restart=1`)}
+              >
+                Restart server · {node.name}
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
         {nodes.length > 0 && (
           <CommandGroup heading="Nodes">
             {nodes.map((node) => (

@@ -259,6 +259,49 @@ describe("POST /api/actions", () => {
     expect((await reply(stop)).code).toBe("SIGNATURE_MISMATCH");
   });
 
+  it("queues a signed restart of a server and refuses a mismatched one", async () => {
+    const { call, sqlite } = setup();
+    const target = {
+      id: crypto.randomUUID(),
+      nodeId: A,
+      kind: "host",
+      name: "server",
+    };
+    const ok = await call("POST", "/api/actions", {
+      action: "reboot",
+      targets: [
+        { ...target, signed: signedFor({ ...target, action: "reboot" }) },
+      ],
+    });
+    expect(ok.status).toBe(201);
+    expect(
+      sqlite.prepare("SELECT kind, name, action FROM actions").all(),
+    ).toEqual([{ kind: "host", name: "server", action: "reboot" }]);
+    const restart = await call("POST", "/api/actions", {
+      action: "restart",
+      targets: [
+        {
+          ...target,
+          id: crypto.randomUUID(),
+          signed: signedFor({ ...target, action: "restart" }),
+        },
+      ],
+    });
+    expect(restart.status).toBe(400);
+    const other = await call("POST", "/api/actions", {
+      action: "reboot",
+      targets: [
+        {
+          ...target,
+          id: crypto.randomUUID(),
+          name: "other",
+          signed: signedFor({ ...target, name: "other", action: "reboot" }),
+        },
+      ],
+    });
+    expect(other.status).toBe(400);
+  });
+
   it("answers ACTION_PENDING when two requests race for one service", async () => {
     const { restart } = setup();
     const statuses = (

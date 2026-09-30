@@ -117,6 +117,10 @@ page and Ctrl K offer the same actions, and a SERVICE check's menu has
 **Restart service**. From agent 0.2.1 every one of them needs a fingerprint,
 like a deploy (see below): a server that trusts no device refuses them.
 
+From agent 0.2.2 the node page's **Actions** menu (and Ctrl K) also has
+**Restart server**: after a confirmation and the same fingerprint, `kry exec`
+reports "restarting the server" and then runs `systemctl reboot --no-block`.
+
 The agent never runs anything itself:
 
 - It drops each request in `/var/lib/kry/actions`.

@@ -93,7 +93,10 @@ export function RecentActions({ node }: { node: NodeRecord }) {
   const actions = useNodeActions(node.id);
   const list = actions.data?.actions ?? [];
   return (
-    <section aria-labelledby="node-recent-actions">
+    <section
+      aria-labelledby="node-recent-actions"
+      className="flex max-h-[28rem] flex-col lg:absolute lg:inset-0 lg:max-h-none"
+    >
       <h2
         id="node-recent-actions"
         className={`mb-2 flex min-h-8 items-center ${SECTION_TITLE}`}
@@ -105,7 +108,7 @@ export function RecentActions({ node }: { node: NodeRecord }) {
           {actions.data ? "No actions yet." : "Loading actions…"}
         </p>
       ) : (
-        <ul className="divide-y rounded-lg border bg-card">
+        <ul className="min-h-0 divide-y overflow-y-auto rounded-lg border bg-card">
           {list.map((action) => {
             const duration = durationText(action);
             return (

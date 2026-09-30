@@ -41,7 +41,7 @@ function stackLabel(member: StackMember, seen: number, server: boolean) {
 
 function LastDeploy({ member }: { member: StackMember }) {
   const action = member.action;
-  if (!action) return <span>no deploy yet</span>;
+  if (!action) return <span>No deploy yet</span>;
   return isPending(action) ? (
     <PendingText action={action} nodeName={member.node.name} />
   ) : (
@@ -226,7 +226,7 @@ export function StackList({
               <span className="col-span-2 font-mono text-xs text-muted-foreground md:col-span-1">
                 {single
                   ? stackLabel(single, seen, showServer)
-                  : `compose · ${healthy}/${group.members.length} fully running`}
+                  : `Compose · ${healthy}/${group.members.length} fully running`}
               </span>
               <span
                 className="col-span-2 min-w-0 font-mono text-xs text-muted-foreground md:col-span-1"
