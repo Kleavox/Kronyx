@@ -10,10 +10,12 @@ import { registerAdminRoutes } from "./routes/admin";
 import { registerAgentRoutes } from "./routes/agent";
 import { registerAgentUpdateRoutes } from "./routes/agent-updates";
 import { registerDeviceRoutes } from "./routes/devices";
+import { registerProposalRoutes } from "./routes/proposals";
 import { registerCheckResultRoutes } from "./routes/check-results";
 import { registerEnrollmentRoutes } from "./routes/enrollments";
 import { registerMetricRoutes } from "./routes/metrics";
 import { registerServiceRoutes } from "./routes/services";
+import { registerUsageRoutes } from "./usage/usage";
 import type { KrynodesEnv } from "./routes/shared";
 
 const app = new Hono<KrynodesEnv>();
@@ -52,6 +54,8 @@ registerEnrollmentRoutes(app, requireOperator);
 registerAgentUpdateRoutes(app, requireOperator);
 registerServiceRoutes(app, requireOperator);
 registerDeviceRoutes(app, requireOperator);
+registerProposalRoutes(app, requireOperator);
+registerUsageRoutes(app, requireOperator);
 registerAgentRoutes(app);
 
 app.all("/api/*", (context) =>

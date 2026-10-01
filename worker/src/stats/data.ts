@@ -1,3 +1,5 @@
+import { expandResults, staleAfterMs, type WindowRow } from "../agent/windows";
+
 const DAY = 86_400_000;
 const WINDOW_DAYS = 90;
 const INCIDENT_DAYS = 30;
@@ -77,19 +79,14 @@ interface CheckRow {
   status: string;
   last_seen_at: string | null;
   created_at: string;
-  latency_ms: number | null;
+  transport: string | null;
+  interval_seconds: number | null;
 }
 
 interface IncidentRow {
   check_id: string;
   started_at: string;
   resolved_at: string | null;
-}
-
-interface ResultRow {
-  check_id: string;
-  status: "UP" | "DOWN";
-  checked_at: string;
 }
 
 function toMs(value: string): number {
@@ -216,8 +213,9 @@ export function serviceState(
   status: string,
   lastSeenAt: string | null,
   now: number,
+  staleMs = STALE_MS,
 ): ServiceState {
-  if (!lastSeenAt || now - toMs(lastSeenAt) > STALE_MS) return "nodata";
+  if (!lastSeenAt || now - toMs(lastSeenAt) > staleMs) return "nodata";
   if (status === "UP") return "up";
   return status === "DOWN" ? "down" : "nodata";
 }
@@ -243,9 +241,7 @@ export async function loadStatus(
     db
       .prepare(
         `SELECT c.id, c.name, c.public_note, c.status, n.last_seen_at, c.created_at,
-                (SELECT r.latency_ms FROM check_results r
-                 WHERE r.check_id = c.id
-                 ORDER BY r.checked_at DESC LIMIT 1) AS latency_ms
+                n.transport, n.interval_seconds
          FROM checks c LEFT JOIN nodes n ON n.id = c.node_id
          WHERE c.public = 1 AND c.enabled = 1 ORDER BY c.name`,
       )
@@ -261,13 +257,13 @@ export async function loadStatus(
       .all<IncidentRow>(),
     db
       .prepare(
-        `SELECT check_id, status, checked_at
-         FROM check_results
-         WHERE check_id IN (SELECT id FROM checks WHERE public = 1 AND enabled = 1)
-           AND checked_at >= ?`,
+        `SELECT w.window_start, w.checks
+         FROM node_windows w
+         WHERE w.node_id IN (SELECT node_id FROM checks WHERE public = 1 AND enabled = 1)
+           AND w.window_start >= ?`,
       )
       .bind(recentSince)
-      .all<ResultRow>(),
+      .all<WindowRow>(),
   ]);
 
   const spans = new Map<string, Span[]>();
@@ -279,12 +275,18 @@ export async function loadStatus(
       { start, end },
     ]);
   }
+  const expanded = expandResults(
+    results.results,
+    new Set(checks.results.map((row) => row.id)),
+  );
   const outcomes = new Map<string, Result[]>();
-  for (const row of results.results) {
-    outcomes.set(row.check_id, [
-      ...(outcomes.get(row.check_id) ?? []),
-      { at: toMs(row.checked_at), status: row.status },
-    ]);
+  const latency = new Map<string, number | null>();
+  for (const [checkId, list] of expanded) {
+    outcomes.set(
+      checkId,
+      list.map((result) => ({ at: toMs(result.t), status: result.status })),
+    );
+    latency.set(checkId, list.at(-1)?.latencyMs ?? null);
   }
   const names = new Map(checks.results.map((row) => [row.id, row.name]));
 
@@ -298,9 +300,18 @@ export async function loadStatus(
       return {
         name: row.name,
         note: row.public_note,
-        state: serviceState(row.status, row.last_seen_at, now),
+        state: serviceState(
+          row.status,
+          row.last_seen_at,
+          now,
+          staleAfterMs(
+            row.transport ?? "http",
+            row.interval_seconds ?? 60,
+            STALE_MS,
+          ),
+        ),
         uptime: uptime(own, createdAt, now),
-        latencyMs: row.latency_ms,
+        latencyMs: latency.get(row.id) ?? null,
         days: dayBars(own, createdAt, now),
         recent,
         recentUptime: info.total > 0 ? (info.up / info.total) * 100 : null,

@@ -26,6 +26,10 @@
     },
   ],
   "send_email": [{ "name": "EMAIL" }],
+  "durable_objects": {
+    "bindings": [{ "name": "FLEET", "class_name": "FleetHub" }],
+  },
+  "migrations": [{ "tag": "fleet-v1", "new_sqlite_classes": ["FleetHub"] }],
   "ratelimits": [
     {
       "name": "AGENT_RATE_LIMIT",
@@ -60,6 +64,10 @@
         },
       ],
       "send_email": [{ "name": "EMAIL" }],
+      "durable_objects": {
+        "bindings": [{ "name": "FLEET", "class_name": "FleetHub" }],
+      },
+      "migrations": [{ "tag": "fleet-v1", "new_sqlite_classes": ["FleetHub"] }],
       "ratelimits": [
         {
           "name": "AGENT_RATE_LIMIT",

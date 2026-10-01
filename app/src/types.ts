@@ -34,6 +34,8 @@ export interface NodeRecord {
   update_requested_version: string | null;
   update_requested_at: string | null;
   auto_update: number;
+  transport: "http" | "stream";
+  grace_seconds?: number;
 }
 
 export type CheckKind = "HTTP" | "TCP" | "SERVICE";
@@ -185,7 +187,9 @@ export interface StackEntry {
 
 export interface NodeTrust {
   version: number;
-  keys: string[];
+  core: string[];
+  access: string[];
+  passphrase: boolean;
 }
 
 interface ServiceNode {
@@ -204,6 +208,36 @@ export interface DeviceRecord {
   publicKey: string;
   createdAt: string;
   lastUsedAt: string | null;
+  verifies: boolean | null;
+  fingerprint: string;
+  core: boolean;
+}
+
+export interface PassphraseKey {
+  salt: string;
+  iterations: number;
+  publicKey: string;
+}
+
+export interface DevicesResponse {
+  devices: DeviceRecord[];
+  passphrase: PassphraseKey | null;
+}
+
+type ProposalStatus =
+  "open" | "applied" | "expired" | "cancelled" | "superseded";
+
+export interface ProposalRecord {
+  id: string;
+  change: string;
+  title: string;
+  status: ProposalStatus;
+  approvals: string[];
+  openedBy: string;
+  openedAt: string;
+  expiresAt: string;
+  closedAt: string | null;
+  missing: string | null;
 }
 
 export interface ActionRecord {
@@ -222,9 +256,28 @@ export interface ActionRecord {
   finishedAt: string | null;
   exitCode: number | null;
   output: string | null;
+  deviceId: string | null;
 }
 
 export interface ServicesResponse {
   nodes: ServiceNode[];
   actions: ActionRecord[];
+}
+
+export interface UsageShare {
+  requests: number;
+  reads: number;
+  writes: number;
+}
+
+export interface UsageResponse {
+  source: "cloudflare" | "estimate";
+  configured: boolean;
+  fetchedAt: string | null;
+  error: string | null;
+  account: (UsageShare & { objects: number }) | null;
+  krynodes: UsageShare | null;
+  budget: UsageShare;
+  quotas: UsageShare & { objects: number };
+  resetAt: string;
 }

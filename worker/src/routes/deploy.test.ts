@@ -150,72 +150,6 @@ describe("deploy devices", () => {
   });
 });
 
-describe("POST /api/trust", () => {
-  it("queues the first trust only to servers that trust nothing yet", async () => {
-    const { sqlite, call, change } = setup();
-    sqlite.prepare("UPDATE nodes SET trust_version = 1 WHERE id = ?").run(B);
-    const first = await call("POST", "/api/trust", { changes: [change([A])] });
-    expect(first.status).toBe(202);
-    expect(await reply(first)).toEqual({ queued: 1 });
-    const row = sqlite
-      .prepare(
-        "SELECT kind, name, action, mode, signed FROM actions WHERE node_id = ?",
-      )
-      .get(A) as { signed: string };
-    expect(row).toMatchObject({
-      kind: "trust",
-      name: "devices",
-      action: "trust",
-      mode: "parallel",
-    });
-    expect(JSON.parse(row.signed)).toEqual({
-      change: change([A]),
-      assertion: null,
-    });
-    const trusted = await call("POST", "/api/trust", {
-      changes: [change([B])],
-    });
-    expect(trusted.status).toBe(409);
-    expect((await reply(trusted)).code).toBe("TRUST_EXISTS");
-    expect(
-      (await call("POST", "/api/trust", { changes: [change([A, B])] })).status,
-    ).toBe(400);
-    expect(
-      (await call("POST", "/api/trust", { changes: [change([FOREIGN])] }))
-        .status,
-    ).toBe(404);
-  });
-
-  it("queues a signed change to every listed server and retires removed devices", async () => {
-    const { sqlite, call, device, change } = setup();
-    await device("ZGV2aWNlLTE", "Laptop");
-    await device("ZGV2aWNlLTI", "Phone");
-    const signed = { change: change([A, B], 2), assertion };
-    const response = await call("POST", "/api/trust", signed);
-    expect(response.status).toBe(202);
-    expect(await reply(response)).toEqual({ queued: 2 });
-    expect(
-      sqlite
-        .prepare(
-          "SELECT node_id, signed FROM actions WHERE kind = 'trust' ORDER BY node_id",
-        )
-        .all()
-        .map((row) => JSON.parse((row as { signed: string }).signed)),
-    ).toEqual([signed, signed]);
-    expect(
-      sqlite.prepare("SELECT id FROM devices WHERE removed_at IS NULL").all(),
-    ).toEqual([{ id: "ZGV2aWNlLTE" }]);
-    expect(
-      (
-        await call("POST", "/api/trust", {
-          change: change([FOREIGN], 2),
-          assertion,
-        })
-      ).status,
-    ).toBe(404);
-  });
-});
-
 describe("compose actions", () => {
   it("queues a signed deploy under the browser's id", async () => {
     const { sqlite, device, command, deploy } = setup();
@@ -279,11 +213,15 @@ describe("compose actions", () => {
 
   it("lists stacks and trust with the services", async () => {
     const { sqlite, call } = setup();
-    sqlite
-      .prepare(
-        "UPDATE nodes SET trust_version = 2, trust_keys = ? WHERE id = ?",
-      )
-      .run('["0123456789abcdef"]', A);
+    sqlite.prepare("UPDATE nodes SET trust_report = ? WHERE id = ?").run(
+      JSON.stringify({
+        version: 2,
+        core: ["0123456789abcdef"],
+        access: [],
+        passphrase: true,
+      }),
+      A,
+    );
     const body = await reply(call("GET", "/api/services"));
     const a = body.nodes!.find((node) => node.id === A)!;
     expect(a.stacks).toEqual([
@@ -296,20 +234,48 @@ describe("compose actions", () => {
         rollback: false,
       },
     ]);
-    expect(a.trust).toEqual({ version: 2, keys: ["0123456789abcdef"] });
+    expect(a.trust).toEqual({
+      version: 2,
+      core: ["0123456789abcdef"],
+      access: [],
+      passphrase: true,
+    });
     expect(body.nodes!.find((node) => node.id === B)!.trust).toBeNull();
   });
 });
 
 describe("enroll command", () => {
-  it("carries the deploy devices when there are some", async () => {
-    const { call, device } = setup();
+  it("carries the core devices once servers report some", async () => {
+    const { call, device, sqlite } = setup();
+    await device();
     expect(
       (await reply(call("POST", "/api/enrollments"))).command,
     ).not.toContain("--trust");
-    await device();
+    const digest = new Uint8Array(
+      await crypto.subtle.digest(
+        "SHA-256",
+        Uint8Array.from(
+          atob("TUZrd0V3WUhLb1pJemowQ0FRWUlLb1pJemowREFRY0RRZ0FF"),
+          (char) => char.charCodeAt(0),
+        ),
+      ),
+    );
+    const print = Array.from(digest, (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    )
+      .join("")
+      .slice(0, 16);
+    sqlite.prepare("UPDATE nodes SET trust_report = ? WHERE id = ?").run(
+      JSON.stringify({
+        version: 1,
+        core: [print],
+        access: [print],
+        passphrase: false,
+      }),
+      A,
+    );
     expect((await reply(call("POST", "/api/enrollments"))).command).toMatch(
-      / --trust https:\/\/kry\.example\.test ZGV2aWNlLTE\.-7\.TUZrd0V3WUhLb1pJemowQ0FRWUlLb1pJemowREFRY0RRZ0FF$/u,
+      / --trust https:\/\/kry\.example\.test --grant -- ZGV2aWNlLTE\.-7\.TUZrd0V3WUhLb1pJemowQ0FRWUlLb1pJemowREFRY0RRZ0FF$/u,
     );
   });
 });

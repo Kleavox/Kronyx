@@ -119,7 +119,7 @@ export function groupByServer(
     if (members.length === 0) continue;
     groups.push({
       node,
-      trusted: (inventory.trust?.keys.length ?? 0) > 0,
+      trusted: (inventory.trust?.access.length ?? 0) > 0,
       members,
     });
   }

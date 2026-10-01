@@ -1,9 +1,11 @@
-import { assertionSchema } from "@krynodes/protocol";
+import { trustChangeSchema, type TrustChange } from "@krynodes/protocol";
 import type { MiddlewareHandler } from "hono";
 import { z } from "zod";
 
 import { createBatch, sweepStatements } from "../actions/store";
-import { decodeJson } from "../lib/b64url";
+import { pokeSoon } from "../fleet/client";
+import { fromB64url } from "../lib/b64url";
+import { loadFleet, speaksQuorum, type Fleet } from "../trust/fleet";
 import {
   invalidRequest,
   readJson,
@@ -14,7 +16,7 @@ import {
 const b64url = z
   .string()
   .min(1)
-  .max(4096)
+  .max(65536)
   .regex(/^[A-Za-z0-9_-]+$/u);
 
 const deviceSchema = z.strictObject({
@@ -26,46 +28,57 @@ const deviceSchema = z.strictObject({
   name: z.string().trim().min(1).max(40),
   alg: z.union([z.literal(-7), z.literal(-257)]),
   publicKey: b64url,
+  verifies: z.boolean().optional(),
 });
 
-const changeSchema = z.object({
-  v: z.literal(1),
-  nodeIds: z.array(z.string().uuid()).min(1).max(100),
-  version: z.number().int().positive(),
-  keys: z
-    .array(z.object({ id: z.string().min(1) }))
-    .min(1)
-    .max(20),
+const renameSchema = z.strictObject({
+  name: z.string().trim().min(1).max(40),
 });
 
-const trustSchema = z.union([
-  z.strictObject({ changes: z.array(b64url).min(1).max(100) }),
-  z.strictObject({ change: b64url, assertion: assertionSchema }),
-]);
+const firstSchema = z.strictObject({
+  changes: z.array(b64url).min(1).max(100),
+});
 
-interface DeviceRow {
-  id: string;
-  name: string;
-  alg: number;
-  public_key: string;
-  created_at: string;
-  last_used_at: string | null;
+function readChange(text: string): TrustChange | null {
+  try {
+    const parsed = trustChangeSchema.safeParse(
+      JSON.parse(new TextDecoder().decode(fromB64url(text))),
+    );
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 
-function readChange(text: string) {
-  const parsed = changeSchema.safeParse(decodeJson(text));
-  return parsed.success ? parsed.data : null;
-}
+const sameIds = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((id) => b.includes(id));
 
-export async function activeDevices(db: D1Database, ownerId: string) {
-  const rows = await db
-    .prepare(
-      `SELECT id, name, alg, public_key, created_at, last_used_at FROM devices
-       WHERE owner_user_id = ? AND removed_at IS NULL ORDER BY created_at, id`,
-    )
-    .bind(ownerId)
-    .all<DeviceRow>();
-  return rows.results;
+function firstTrustAllowed(fleet: Fleet, change: TrustChange): boolean {
+  const [nodeId, ...others] = Object.keys(change.access);
+  if (!nodeId || others.length > 0 || !change.core) return false;
+  const core = change.core.map((key) => key.id);
+  const access = change.access[nodeId] ?? [];
+  const active = fleet.devices.filter((device) => device.removedAt === null);
+  const known = change.core.every((key) =>
+    active.some(
+      (device) =>
+        device.id === key.id &&
+        device.publicKey === key.publicKey &&
+        device.alg === key.alg,
+    ),
+  );
+  if (!known) return false;
+  const expected =
+    fleet.core.length > 0 ? fleet.core : core.length === 1 ? core : null;
+  if (!expected || !sameIds(core, expected)) return false;
+  const founding = expected.length < 2;
+  if (!sameIds(access, founding ? core : [])) return false;
+  const passphrase = fleet.passphrase;
+  return passphrase
+    ? change.passphrase?.salt === passphrase.salt &&
+        change.passphrase.iterations === passphrase.iterations &&
+        change.passphrase.publicKey === passphrase.publicKey
+    : change.passphrase === null;
 }
 
 export function registerDeviceRoutes(
@@ -73,19 +86,22 @@ export function registerDeviceRoutes(
   requireOperator: MiddlewareHandler<KrynodesEnv>,
 ): void {
   app.get("/api/devices", requireOperator, async (context) => {
-    const devices = await activeDevices(
-      context.env.DB,
-      context.get("identity").id,
-    );
+    const fleet = await loadFleet(context.env.DB, context.get("identity").id);
     return context.json({
-      devices: devices.map((device) => ({
-        id: device.id,
-        name: device.name,
-        alg: device.alg,
-        publicKey: device.public_key,
-        createdAt: device.created_at,
-        lastUsedAt: device.last_used_at,
-      })),
+      devices: fleet.devices
+        .filter((device) => device.removedAt === null)
+        .map((device) => ({
+          id: device.id,
+          name: device.name,
+          alg: device.alg,
+          publicKey: device.publicKey,
+          createdAt: device.createdAt,
+          lastUsedAt: device.lastUsedAt,
+          verifies: device.verifies,
+          fingerprint: device.fingerprint,
+          core: fleet.core.includes(device.id),
+        })),
+      passphrase: fleet.passphrase,
     });
   });
 
@@ -95,8 +111,8 @@ export function registerDeviceRoutes(
     const device = parsed.data;
     try {
       await context.env.DB.prepare(
-        `INSERT INTO devices (id, owner_user_id, name, alg, public_key, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO devices (id, owner_user_id, name, alg, public_key, created_at, verifies)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
         .bind(
           device.id,
@@ -105,6 +121,7 @@ export function registerDeviceRoutes(
           device.alg,
           device.publicKey,
           new Date().toISOString(),
+          device.verifies === undefined ? null : device.verifies ? 1 : 0,
         )
         .run();
     } catch (error) {
@@ -120,92 +137,126 @@ export function registerDeviceRoutes(
     return context.json({ id: device.id }, 201);
   });
 
-  app.post("/api/trust", requireOperator, async (context) => {
-    const parsed = trustSchema.safeParse(await readJson(context));
+  app.patch("/api/devices/:id", requireOperator, async (context) => {
+    const parsed = renameSchema.safeParse(await readJson(context));
     if (!parsed.success) return invalidRequest(context);
-    const db = context.env.DB;
-    const identity = context.get("identity");
-    const now = Date.now();
-    const body = parsed.data;
-
-    const first = "changes" in body;
-    const changes = first
-      ? body.changes.map((text) => ({ text, change: readChange(text) }))
-      : [{ text: body.change, change: readChange(body.change) }];
-    if (
-      changes.some(
-        ({ change }) => !change || (first && change.nodeIds.length !== 1),
+    const result = await context.env.DB.prepare(
+      "UPDATE devices SET name = ? WHERE id = ? AND owner_user_id = ? AND removed_at IS NULL",
+    )
+      .bind(
+        parsed.data.name,
+        context.req.param("id"),
+        context.get("identity").id,
       )
-    ) {
-      return invalidRequest(context);
-    }
-    const nodeIds = changes.flatMap(({ change }) => change!.nodeIds);
-    if (new Set(nodeIds).size !== nodeIds.length) {
-      return invalidRequest(context);
-    }
-    const nodes = await db
-      .prepare(
-        `SELECT id, trust_version FROM nodes
-         WHERE owner_user_id = ? AND enrolled_at IS NOT NULL AND disabled_at IS NULL
-           AND id IN (SELECT value FROM json_each(?))`,
-      )
-      .bind(identity.id, JSON.stringify(nodeIds))
-      .all<{ id: string; trust_version: number | null }>();
-    if (nodes.results.length !== nodeIds.length) {
+      .run();
+    if (result.meta.changes === 0) {
       return context.json(
-        { code: "NOT_FOUND", message: "A server was not found." },
+        { code: "NOT_FOUND", message: "The device was not found." },
         404,
       );
     }
-    if (first && nodes.results.some((node) => (node.trust_version ?? 0) > 0)) {
+    return context.json({ name: parsed.data.name });
+  });
+
+  app.delete("/api/devices/:id", requireOperator, async (context) => {
+    const ownerId = context.get("identity").id;
+    const id = context.req.param("id");
+    const fleet = await loadFleet(context.env.DB, ownerId);
+    if (fleet.core.includes(id)) {
       return context.json(
         {
-          code: "TRUST_EXISTS",
-          message:
-            "A server already trusts devices. Change them with a trusted device.",
+          code: "CORE_DEVICE",
+          message: "A core device leaves only through an approved change.",
         },
         409,
       );
     }
+    const result = await context.env.DB.prepare(
+      "UPDATE devices SET removed_at = ? WHERE id = ? AND owner_user_id = ? AND removed_at IS NULL",
+    )
+      .bind(new Date().toISOString(), id, ownerId)
+      .run();
+    if (result.meta.changes === 0) {
+      return context.json(
+        { code: "NOT_FOUND", message: "The device was not found." },
+        404,
+      );
+    }
+    return context.json({ removed: true });
+  });
 
-    const targets = first
-      ? changes.map(({ text, change }) => ({
-          nodeId: change!.nodeIds[0]!,
-          kind: "trust" as const,
-          name: "devices",
-          signed: { change: text, assertion: null },
-        }))
-      : nodeIds.map((nodeId) => ({
-          nodeId,
-          kind: "trust" as const,
-          name: "devices",
-          signed: { change: body.change, assertion: body.assertion },
-        }));
+  app.post("/api/trust", requireOperator, async (context) => {
+    const parsed = firstSchema.safeParse(await readJson(context));
+    if (!parsed.success) return invalidRequest(context);
+    const db = context.env.DB;
+    const identity = context.get("identity");
+    const now = Date.now();
+    const fleet = await loadFleet(db, identity.id);
+    const origin = new URL(context.env.PUBLIC_ORIGIN);
+    const changes = parsed.data.changes.map((text) => ({
+      text,
+      change: readChange(text),
+    }));
+    if (
+      changes.some(
+        ({ change }) =>
+          !change ||
+          change.origin !== origin.origin ||
+          change.rpId !== origin.hostname ||
+          !firstTrustAllowed(fleet, change),
+      )
+    ) {
+      return invalidRequest(context);
+    }
+    const nodeIds = changes.map(
+      ({ change }) => Object.keys(change!.access)[0]!,
+    );
+    if (new Set(nodeIds).size !== nodeIds.length) {
+      return invalidRequest(context);
+    }
+    for (const nodeId of nodeIds) {
+      const node = fleet.nodes.find((entry) => entry.id === nodeId);
+      if (!node) {
+        return context.json(
+          { code: "NOT_FOUND", message: "A server was not found." },
+          404,
+        );
+      }
+      if (!speaksQuorum(node)) {
+        return context.json(
+          {
+            code: "NEEDS_AGENT",
+            message: `${node.name} needs agent 0.3.0 or later.`,
+          },
+          422,
+        );
+      }
+      if ((node.report?.core.length ?? 0) > 0) {
+        return context.json(
+          {
+            code: "TRUST_EXISTS",
+            message:
+              "A server already trusts devices. Change them with an approved change.",
+          },
+          409,
+        );
+      }
+    }
     const batch = createBatch(db, {
       action: "trust",
       mode: "parallel",
-      targets,
+      targets: changes.map(({ text }, index) => ({
+        nodeId: nodeIds[index]!,
+        kind: "trust" as const,
+        name: "devices",
+        signed: { change: text, approvals: [] },
+      })),
       requestedBy: identity.email,
       now,
     });
-    const retire = first
-      ? []
-      : [
-          db
-            .prepare(
-              `UPDATE devices SET removed_at = ?
-               WHERE owner_user_id = ? AND removed_at IS NULL
-                 AND id NOT IN (SELECT value FROM json_each(?))`,
-            )
-            .bind(
-              new Date(now).toISOString(),
-              identity.id,
-              JSON.stringify(changes[0]!.change!.keys.map((key) => key.id)),
-            ),
-        ];
     await db.batch(sweepStatements(db, now));
     try {
-      await db.batch([...batch.statements, ...retire]);
+      await db.batch(batch.statements);
     } catch (error) {
       if (!String(error).includes("UNIQUE")) throw error;
       return context.json(
@@ -216,6 +267,7 @@ export function registerDeviceRoutes(
         409,
       );
     }
-    return context.json({ queued: targets.length }, 202);
+    pokeSoon(context, identity.id, nodeIds);
+    return context.json({ queued: changes.length }, 202);
   });
 }

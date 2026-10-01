@@ -12,22 +12,25 @@ import type {
   BatchMode,
   CheckKind,
   CheckResults,
-  DeviceRecord,
+  DevicesResponse,
   Enrollment,
   EnrollmentStatus,
   IncidentDetail,
   MetricRange,
   NodeMetrics,
   Overview,
+  ProposalRecord,
   RecentMetrics,
   ServicesResponse,
   SessionResponse,
+  UsageResponse,
+  UsageShare,
 } from "../types";
 import { pollEnrollment } from "./enrollment";
 import { apiFetch, errorMessage } from "./http";
 import { keepWhileSameNode, queryKeys } from "./query-client";
 import { untilWindowSettles } from "./series";
-import type { Assertion, DeviceInput, SignedTarget } from "./passkeys";
+import type { Approval, DeviceInput, SignedTarget } from "./passkeys";
 import { pollServices } from "./services";
 
 const MINUTE = 60_000;
@@ -127,6 +130,7 @@ interface NewCheck {
   name: string;
   kind: CheckKind;
   target: string;
+  timeoutSeconds: number;
 }
 
 export const useCreateEnrollment = () =>
@@ -182,8 +186,7 @@ export const useDeleteNode = () =>
 
 export const useCreateCheck = () =>
   useApiMutation(
-    (check: NewCheck) =>
-      apiFetch("/api/checks", send("POST", { ...check, timeoutSeconds: 10 })),
+    (check: NewCheck) => apiFetch("/api/checks", send("POST", check)),
     [queryKeys.overview, queryKeys.checkResults],
   );
 
@@ -194,10 +197,16 @@ export const useUpdateCheck = () =>
       ...change
     }: {
       id: string;
+      name?: string;
+      nodeId?: string;
+      kind?: CheckKind;
+      target?: string;
+      timeoutSeconds?: number;
+      enabled?: boolean;
       public?: boolean;
       publicNote?: string;
     }) => apiFetch(`/api/checks/${id}`, send("PATCH", change)),
-    [queryKeys.overview],
+    [queryKeys.overview, queryKeys.checkResults],
   );
 
 export const useDeleteCheck = () =>
@@ -265,24 +274,106 @@ export const useRefreshServices = () =>
     true,
   );
 
-export function useDevices() {
+export function useDevices(poll = false) {
   return useQuery({
     queryKey: queryKeys.devices,
-    queryFn: () => apiFetch<{ devices: DeviceRecord[] }>("/api/devices"),
+    queryFn: () => apiFetch<DevicesResponse>("/api/devices"),
+    refetchInterval: poll ? 5_000 : false,
   });
 }
+
+const DEVICE_QUERIES = [
+  queryKeys.devices,
+  queryKeys.services,
+  queryKeys.proposals,
+  ["actions"],
+] as const;
 
 export const useRegisterDevice = () =>
   useApiMutation(
     (device: DeviceInput) => apiFetch("/api/devices", send("POST", device)),
     [queryKeys.devices],
+  );
+
+export const useRenameDevice = () =>
+  useApiMutation(
+    ({ id, name }: { id: string; name: string }) =>
+      apiFetch(
+        `/api/devices/${encodeURIComponent(id)}`,
+        send("PATCH", { name }),
+      ),
+    [queryKeys.devices],
     true,
   );
 
-export const useTrust = () =>
+export const useForgetDevice = () =>
   useApiMutation(
-    (body: { changes: string[] } | { change: string; assertion: Assertion }) =>
-      apiFetch<{ queued: number }>("/api/trust", send("POST", body)),
-    [queryKeys.devices, queryKeys.services, ["actions"]],
+    (id: string) =>
+      apiFetch(`/api/devices/${encodeURIComponent(id)}`, send("DELETE")),
+    [queryKeys.devices],
     true,
+  );
+
+export const useFirstTrust = () =>
+  useApiMutation(
+    (changes: string[]) =>
+      apiFetch<{ queued: number }>("/api/trust", send("POST", { changes })),
+    DEVICE_QUERIES,
+  );
+
+export function useProposals() {
+  return useQuery({
+    queryKey: queryKeys.proposals,
+    queryFn: () => apiFetch<{ proposals: ProposalRecord[] }>("/api/proposals"),
+    refetchInterval: (query) =>
+      query.state.data?.proposals.some((proposal) => proposal.status === "open")
+        ? 10_000
+        : 5 * MINUTE,
+  });
+}
+
+export interface ProposalReply {
+  id: string;
+  status: "open" | "applied";
+  missing?: string;
+}
+
+export const useOpenProposal = () =>
+  useApiMutation(
+    (body: { change: string; approval: Approval }) =>
+      apiFetch<ProposalReply>("/api/proposals", send("POST", body)),
+    DEVICE_QUERIES,
+  );
+
+export const useApproveProposal = () =>
+  useApiMutation(
+    ({ id, approval }: { id: string; approval: Approval }) =>
+      apiFetch<ProposalReply>(
+        `/api/proposals/${encodeURIComponent(id)}/approvals`,
+        send("POST", { approval }),
+      ),
+    DEVICE_QUERIES,
+  );
+
+export const useCancelProposal = () =>
+  useApiMutation(
+    (id: string) =>
+      apiFetch(`/api/proposals/${encodeURIComponent(id)}/cancel`, send("POST")),
+    [queryKeys.proposals],
+    true,
+  );
+
+export function useUsage() {
+  return useQuery({
+    queryKey: queryKeys.usage,
+    queryFn: () => apiFetch<UsageResponse>("/api/usage"),
+    refetchInterval: 15 * MINUTE,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export const useSaveBudget = () =>
+  useApiMutation(
+    (budget: UsageShare) => apiFetch("/api/usage/budget", send("PUT", budget)),
+    [queryKeys.usage],
   );

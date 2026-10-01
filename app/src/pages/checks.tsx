@@ -4,21 +4,15 @@ import { Link, useSearchParams } from "react-router";
 import { EmptyState } from "@/components/empty-state";
 import { FilterChips } from "@/components/filter-chips";
 import { PageHeader } from "@/components/page-header";
-import { RowMenu } from "@/components/row-menu";
 import { StatusDot, checkTone } from "@/components/status";
 import { HeartbeatStrip, newestLatency } from "@/components/strips";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AddCheckDialog } from "@/features/checks/add-check-dialog";
-import { StatusPageDialog } from "@/features/checks/status-page-dialog";
+import { CheckDialog } from "@/features/checks/check-dialog";
+import { CheckMenu } from "@/features/checks/check-menu";
 import { useSignedAction } from "@/features/deploy/use-signed-action";
-import {
-  useCheckResults,
-  useDeleteCheck,
-  useOverview,
-  useServices,
-} from "@/lib/api";
+import { useCheckResults, useOverview, useServices } from "@/lib/api";
 import { isPending, serviceForCheck } from "@/lib/services";
 import {
   checkDisplayStatus,
@@ -64,7 +58,7 @@ export function ChecksPage() {
 
   const nodes = overview.data?.nodes ?? [];
   const dialog = (
-    <AddCheckDialog
+    <CheckDialog
       open={params.get("add") === "1"}
       onOpenChange={(open) => setParam("add", open ? "1" : null)}
       nodes={nodes}
@@ -89,6 +83,7 @@ export function ChecksPage() {
     return checkDisplayStatus(
       check.status,
       node ? nodeState(node, seen) : "offline",
+      check.enabled,
     );
   };
   const down = checks.filter(
@@ -171,6 +166,7 @@ export function ChecksPage() {
               <CheckRow
                 key={check.id}
                 check={check}
+                nodes={nodes}
                 node={nodeById.get(check.node_id)}
                 history={results.data?.checks[check.id]}
                 incidents={overview.data.incidents.filter(
@@ -185,7 +181,7 @@ export function ChecksPage() {
                   const trusted =
                     (services.data?.nodes.find(
                       (entry) => entry.id === check.node_id,
-                    )?.trust?.keys.length ?? 0) > 0;
+                    )?.trust?.access.length ?? 0) > 0;
                   const busy = services.data?.actions.some(
                     (action) =>
                       isPending(action) &&
@@ -227,6 +223,7 @@ export function ChecksPage() {
 
 function CheckRow({
   check,
+  nodes,
   node,
   history,
   incidents,
@@ -236,6 +233,7 @@ function CheckRow({
   restart,
 }: {
   check: CheckRecord;
+  nodes: NodeRecord[];
   node: NodeRecord | undefined;
   history: CheckHistory | undefined;
   incidents: Incident[];
@@ -244,17 +242,17 @@ function CheckRow({
   restart: (() => void) | undefined;
   asOf: number | undefined;
 }) {
-  const remove = useDeleteCheck();
-  const [publishing, setPublishing] = useState(false);
   const windowSeconds = Math.max(300, node?.interval_seconds ?? 0);
   const status = checkDisplayStatus(
     check.status,
     node ? nodeState(node, seen) : "offline",
+    check.enabled,
   );
   return (
     <li
       className={cn(
         "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-3 py-2.5 transition-colors hover:bg-card-hover",
+        !check.enabled && "text-muted-foreground",
         COLUMNS,
       )}
     >
@@ -323,25 +321,7 @@ function CheckRow({
         {newestLatency(history)}
       </span>
       <span className="col-start-3 row-start-1 md:col-start-auto md:row-start-auto">
-        <RowMenu
-          label={`${check.name} actions`}
-          items={[
-            ...(restart
-              ? [{ label: "Restart service", onSelect: restart }]
-              : []),
-            { label: "Status page", onSelect: () => setPublishing(true) },
-            {
-              label: "Remove",
-              destructive: true,
-              onSelect: () => remove.mutate(check.id),
-            },
-          ]}
-        />
-        <StatusPageDialog
-          check={check}
-          open={publishing}
-          onOpenChange={setPublishing}
-        />
+        <CheckMenu check={check} nodes={nodes} restart={restart} />
       </span>
     </li>
   );

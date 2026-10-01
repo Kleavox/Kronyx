@@ -1,8 +1,10 @@
-import { Fingerprint, KeyRound } from "lucide-react";
-import { useState } from "react";
+import { Fingerprint } from "lucide-react";
+import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { PageHeader } from "@/components/page-header";
+import { RowMenu } from "@/components/row-menu";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -12,173 +14,644 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useFingerprints } from "@/features/deploy/use-fingerprints";
+import { AccessEditor } from "@/features/devices/access-editor";
 import {
+  ApprovalDialog,
+  approvalLine,
+  type Review,
+} from "@/features/devices/approval-dialog";
+import { PassphraseForm } from "@/features/devices/passphrase-dialogs";
+import { BigPrint, failure, plural, when } from "@/features/devices/parts";
+import { useFleet, type Fleet } from "@/features/devices/use-fleet";
+import {
+  useCancelProposal,
   useDevices,
-  useOverview,
+  useFirstTrust,
+  useForgetDevice,
   useRegisterDevice,
+  useRenameDevice,
   useServices,
   useSession,
-  useTrust,
 } from "@/lib/api";
-import { withPrompt } from "@/lib/deploy-session";
 import {
-  DEPLOY_SINCE,
-  initialChanges,
-  nextVersion,
-  proposal,
-  signersFor,
-  trustChange,
-  trustedDeviceIds,
-  trustSummary,
-  type Proposal,
-  type TrustSummary,
+  accessIds,
+  admitChange,
+  buildChange,
+  decodeChange,
+  describeChange,
+  fingerprint,
+  firstTrusts,
+  formatPrint,
+  removeChange,
+  serverState,
+  speaksQuorum,
+  syncChange,
+  type FleetServer,
+  type ServerState,
 } from "@/lib/devices";
-import { shortDate, timeAgo } from "@/lib/format";
-import { errorMessage } from "@/lib/http";
-import { registerDevice, signTrustChange } from "@/lib/passkeys";
+import { timeAgo } from "@/lib/format";
+import { registerDevice, thisBrowser } from "@/lib/passkeys";
 import { cn } from "@/lib/utils";
-import type { DeviceRecord, NodeRecord, NodeTrust } from "@/types";
+import type { DeviceRecord, ProposalRecord } from "@/types";
 
 const SECTION = "rounded-lg border bg-card";
+const DAY_MS = 24 * 3_600_000;
+
+const STATE: Record<ServerState, { label: string; tone: string }> = {
+  update: { label: "Needs agent 0.3.0", tone: "text-muted-foreground" },
+  empty: { label: "Not trusted yet", tone: "text-warning" },
+  behind: { label: "Behind", tone: "text-warning" },
+  current: { label: "Up to date", tone: "text-success" },
+};
 
 function guessName(): string {
-  const agent = navigator.userAgent;
-  if (/Android|iPhone|iPad/u.test(agent)) return "Phone";
-  return "Laptop";
+  return /Android|iPhone|iPad/u.test(navigator.userAgent) ? "Phone" : "Laptop";
 }
 
-interface Pending {
-  title: string;
-  rows: DeviceRecord[];
-  proposal: Proposal;
-  signed: boolean;
-  apply: () => Promise<void>;
+function useSetUp(fleet: Fleet, onAdmit: (device: DeviceRecord) => void) {
+  const register = useRegisterDevice();
+  const identity = useSession().data?.identity;
+  const [name, setName] = useState(guessName);
+  const [working, setWorking] = useState(false);
+  const setUp = async () => {
+    setWorking(true);
+    try {
+      const input = await registerDevice(
+        name.trim() || guessName(),
+        window.location.hostname,
+        {
+          id: identity?.id ?? "operator",
+          name: identity?.email ?? "Krynodes",
+        },
+        fleet.devices.map((device) => device.id),
+      );
+      await register.mutateAsync(input);
+      const hasCore = fleet.core.some((device) =>
+        fleet.mine.includes(device.id),
+      );
+      if (fleet.core.length > 0 && hasCore) {
+        onAdmit({
+          ...input,
+          createdAt: new Date().toISOString(),
+          lastUsedAt: null,
+          fingerprint: await fingerprint(input.publicKey),
+          core: false,
+        });
+      }
+    } catch (error) {
+      toast.error(failure(error));
+    } finally {
+      setWorking(false);
+    }
+  };
+  return { name, setName, working, setUp };
 }
 
-function ConfirmList({
-  pending,
-  working,
-  onConfirm,
+function SetUpForm({
+  setup,
+  label,
 }: {
-  pending: Pending;
-  working: boolean;
-  onConfirm: () => void;
+  setup: ReturnType<typeof useSetUp>;
+  label: string;
 }) {
-  const prints = useFingerprints(pending.rows);
   return (
-    <AlertDialogContent className="max-sm:top-auto max-sm:bottom-0 max-sm:translate-y-0 max-sm:rounded-b-none">
-      <AlertDialogHeader>
-        <AlertDialogTitle>{pending.title}</AlertDialogTitle>
-        <AlertDialogDescription>
-          Servers will trust exactly the devices below. Check each fingerprint
-          before you approve.
-        </AlertDialogDescription>
-      </AlertDialogHeader>
-      <ul className="max-h-64 divide-y overflow-y-auto rounded-md border text-sm">
-        {pending.rows.map((device, index) => {
-          const removed = pending.proposal.removed.includes(device.id);
-          const added = pending.proposal.added.includes(device.id);
-          return (
-            <li key={device.id} className="px-3 py-2">
-              <div className="flex items-center gap-2">
-                <span
-                  className={cn(
-                    "min-w-0 flex-1 truncate font-medium",
-                    removed && "text-muted-foreground line-through",
-                  )}
-                >
-                  {device.name}
-                </span>
-                {added && (
-                  <span className="font-mono text-xs text-success">Added</span>
-                )}
-                {removed && (
-                  <span className="font-mono text-xs text-destructive">
-                    Removed
-                  </span>
-                )}
-              </div>
-              <div className="font-mono text-xs text-muted-foreground">
-                Added {shortDate(device.createdAt)} · {prints?.[index] ?? "…"}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-      <AlertDialogFooter>
-        <AlertDialogCancel>Cancel</AlertDialogCancel>
-        <Button disabled={working || !prints} onClick={onConfirm}>
-          {pending.signed && <Fingerprint aria-hidden="true" />}
-          {working
-            ? pending.signed
-              ? "Waiting for the fingerprint…"
-              : "Sending…"
-            : pending.signed
-              ? "Approve with fingerprint"
-              : "Trust these devices"}
-        </Button>
-      </AlertDialogFooter>
-    </AlertDialogContent>
+    <form
+      className="flex flex-wrap items-end gap-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void setup.setUp();
+      }}
+    >
+      <div className="grid gap-1.5">
+        <Label htmlFor="device-name">Device name</Label>
+        <Input
+          id="device-name"
+          value={setup.name}
+          maxLength={40}
+          onChange={(event) => setup.setName(event.target.value)}
+          className="h-9 w-full sm:w-56"
+        />
+      </div>
+      <Button type="submit" className="h-9" disabled={setup.working}>
+        <Fingerprint aria-hidden="true" />
+        {setup.working ? "Waiting for the fingerprint…" : label}
+      </Button>
+    </form>
   );
 }
 
-function statusOf(node: NodeRecord, summary: TrustSummary) {
-  if (summary.needsUpdate.includes(node)) {
-    return {
-      label: `Needs agent ${DEPLOY_SINCE}`,
-      tone: "text-muted-foreground",
-    };
-  }
-  if (summary.needsTrust.includes(node)) {
-    return { label: "Not trusted yet", tone: "text-warning" };
-  }
-  if (summary.stale.includes(node)) {
-    return { label: "Trusts other devices", tone: "text-warning" };
-  }
-  return { label: "Trusted", tone: "text-success" };
-}
-
-function NameField({
-  value,
-  onChange,
+function Notice({
+  children,
+  action,
+  tone = "info",
 }: {
-  value: string;
-  onChange: (value: string) => void;
+  children: ReactNode;
+  action?: ReactNode;
+  tone?: "info" | "warning";
 }) {
   return (
-    <div className="grid gap-1.5">
-      <Label htmlFor="device-name">Device name</Label>
-      <Input
-        id="device-name"
-        value={value}
-        maxLength={40}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-9 md:h-8 md:w-56"
-      />
+    <div
+      role="status"
+      className={cn(
+        "mb-5 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border px-4 py-3 text-sm",
+        tone === "warning"
+          ? "border-warning/40 bg-warning/10"
+          : "border-primary/30 bg-primary/5",
+      )}
+    >
+      <p className="min-w-0 flex-1 basis-64">{children}</p>
+      {action}
     </div>
   );
 }
 
-export function DevicesPage() {
-  const session = useSession();
-  const devices = useDevices();
-  const overview = useOverview();
-  const services = useServices();
-  const register = useRegisterDevice();
-  const trust = useTrust();
-  const [name, setName] = useState(guessName);
-  const [adding, setAdding] = useState(false);
-  const [working, setWorking] = useState(false);
-  const [pending, setPending] = useState<Pending | null>(null);
-  const list = devices.data?.devices;
-  const prints = useFingerprints(list);
+function FirstDevice({ fleet }: { fleet: Fleet }) {
+  const setup = useSetUp(fleet, () => undefined);
+  return (
+    <>
+      <PageHeader title="Trusted devices" />
+      <section className={cn(SECTION, "max-w-xl p-5")}>
+        <Fingerprint aria-hidden="true" className="mb-3 size-6 text-primary" />
+        <h2 className="font-medium">Control servers with your fingerprint</h2>
+        <p className="mt-1.5 text-sm text-muted-foreground">
+          Start, stop, restart and deploy need a fingerprint from a core device.
+          Servers keep the keys themselves, so nothing on Cloudflare can act on
+          its own.
+        </p>
+        <p className="my-4 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
+          Set up this device first. Share the admin login only after your own
+          devices are set up.
+        </p>
+        <SetUpForm setup={setup} label="Set up this device" />
+      </section>
+    </>
+  );
+}
 
-  if (!list || !overview.data || !services.data || !prints) {
+function NewDevice({ fleet, device }: { fleet: Fleet; device: DeviceRecord }) {
+  const forget = useForgetDevice();
+  const [confirm, setConfirm] = useState(false);
+  const joining = fleet.joining.includes(device.id);
+  return (
+    <>
+      <PageHeader title="Trusted devices" />
+      <section
+        aria-labelledby="new-device"
+        className={cn(SECTION, "max-w-xl p-5")}
+      >
+        <p
+          className={cn(
+            "text-sm font-medium",
+            joining ? "text-success" : "text-warning",
+          )}
+        >
+          {joining
+            ? "Approved, your servers are taking it"
+            : "Waiting for approval"}
+        </p>
+        <h2 id="new-device" className="mt-1 text-lg font-semibold">
+          {device.name}
+        </h2>
+        <BigPrint publicKey={device.publicKey} className="my-4 sm:text-3xl" />
+        <p className="text-sm">
+          Open Trusted devices on one of your core devices and approve it. Check
+          that it shows this code.
+        </p>
+        <p className="mt-2 text-xs text-muted-foreground">
+          {fleet.core.length >= 2
+            ? "Two core devices approve a new one. "
+            : "Your core device approves it on its own. "}
+          This page updates by itself once your servers take it.
+        </p>
+        {!joining && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="mt-4 h-9 text-destructive"
+            onClick={() => setConfirm(true)}
+          >
+            Forget this device
+          </Button>
+        )}
+      </section>
+      <ConfirmDialog
+        open={confirm}
+        onOpenChange={setConfirm}
+        title={`Forget ${device.name}?`}
+        description="No server knows it yet. You can set it up again later."
+        confirmLabel="Forget"
+        mutation={forget}
+        variables={device.id}
+      />
+    </>
+  );
+}
+
+function serversText(fleet: Fleet, device: DeviceRecord): string {
+  const total = fleet.trusted.length;
+  const count = fleet.trusted.filter((server) =>
+    server.trust?.access.includes(device.fingerprint),
+  ).length;
+  if (count === 0) return "No servers";
+  return count === total
+    ? `All ${plural(total, "server")}`
+    : `${count} of ${plural(total, "server")}`;
+}
+
+function proofText(fleet: Fleet, device: DeviceRecord): string | null {
+  if (device.verifies === null) return null;
+  if (device.verifies) return "Fingerprint";
+  return fleet.view.passphrase ? "Needs passphrase" : "Touch only";
+}
+
+function DeviceRow({
+  fleet,
+  device,
+  onRename,
+  onAccess,
+  onRemove,
+  onForget,
+}: {
+  fleet: Fleet;
+  device: DeviceRecord;
+  onRename: () => void;
+  onAccess: () => void;
+  onRemove: () => void;
+  onForget: () => void;
+}) {
+  const items: {
+    label: string;
+    onSelect: () => void;
+    destructive?: boolean;
+  }[] = [{ label: "Rename", onSelect: onRename }];
+  if (device.core) {
+    items.push({ label: "Change access", onSelect: onAccess });
+    if (fleet.core.length > 1) {
+      items.push({ label: "Remove", onSelect: onRemove, destructive: true });
+    }
+  } else {
+    items.push({ label: "Forget", onSelect: onForget, destructive: true });
+  }
+  const facts = [
+    formatPrint(device.fingerprint),
+    proofText(fleet, device),
+    device.core ? serversText(fleet, device) : null,
+    device.lastUsedAt ? `Used ${timeAgo(device.lastUsedAt)}` : "Never used",
+  ].filter(Boolean);
+  return (
+    <li className="flex items-start gap-3 px-4 py-3 text-sm">
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="min-w-0 truncate font-medium">{device.name}</span>
+          {fleet.mine.includes(device.id) && (
+            <Badge variant="outline">This device</Badge>
+          )}
+          <Badge
+            variant="secondary"
+            className={cn(!device.core && "text-warning")}
+          >
+            {device.core
+              ? "Core"
+              : fleet.joining.includes(device.id)
+                ? "Joining"
+                : "Waiting for approval"}
+          </Badge>
+        </div>
+        <p className="mt-1 font-mono text-xs text-muted-foreground">
+          {facts.join(" · ")}
+        </p>
+      </div>
+      <RowMenu label={`Options for ${device.name}`} items={items} />
+    </li>
+  );
+}
+
+function ServerRow({ fleet, server }: { fleet: Fleet; server: FleetServer }) {
+  const state = STATE[serverState(fleet.view, server)];
+  const names = accessIds(fleet.devices, server.trust).map(fleet.name);
+  return (
+    <li className="px-4 py-3 text-sm">
+      <div className="flex items-center gap-3">
+        <span className="min-w-0 flex-1 truncate font-medium">
+          {server.node.name}
+        </span>
+        <span className={cn("shrink-0 font-mono text-xs", state.tone)}>
+          {state.label}
+        </span>
+      </div>
+      {(server.trust?.core.length ?? 0) > 0 && (
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">
+          {names.length > 0 ? `Access: ${names.join(", ")}` : "No access"}
+        </p>
+      )}
+    </li>
+  );
+}
+
+function RecentChanges({ fleet }: { fleet: Fleet }) {
+  const services = useServices();
+  const now = Date.now();
+  const recent = fleet.proposals
+    .filter(
+      (proposal) =>
+        proposal.status === "applied" &&
+        proposal.closedAt !== null &&
+        now - Date.parse(proposal.closedAt) < DAY_MS,
+    )
+    .reverse()
+    .slice(0, 3);
+  if (recent.length === 0) return null;
+  return (
+    <div className="border-t px-4 py-3">
+      <h3 className="mb-2 text-xs font-medium text-muted-foreground">
+        Recent changes
+      </h3>
+      <ul className="space-y-2 text-sm">
+        {recent.map((proposal) => {
+          const change = decodeChange(proposal.change);
+          if (!change) return null;
+          const targets = Object.keys(change.access);
+          const done = targets.filter(
+            (id) =>
+              (fleet.servers.find((server) => server.node.id === id)?.trust
+                ?.version ?? 0) >= change.version,
+          ).length;
+          const refused = (services.data?.actions ?? []).filter(
+            (action) =>
+              action.kind === "trust" &&
+              action.status === "failed" &&
+              targets.includes(action.nodeId) &&
+              action.requestedAt >= (proposal.closedAt ?? ""),
+          );
+          return (
+            <li key={proposal.id}>
+              <p className="truncate">
+                {proposal.title || describeChange(fleet.view, change).title}
+              </p>
+              <p className="font-mono text-xs text-muted-foreground">
+                Applied on {done} of {plural(targets.length, "server")}
+              </p>
+              {refused.map((action) => (
+                <p key={action.id} className="text-xs text-destructive">
+                  Refused on{" "}
+                  {fleet.servers.find(
+                    (server) => server.node.id === action.nodeId,
+                  )?.node.name ?? "a server"}
+                  : {action.output ?? "no reason given"}
+                </p>
+              ))}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function ProposalCard({
+  fleet,
+  proposal,
+  onReview,
+  onCancel,
+}: {
+  fleet: Fleet;
+  proposal: ProposalRecord;
+  onReview: () => void;
+  onCancel: () => void;
+}) {
+  const change = decodeChange(proposal.change);
+  const title = change
+    ? describeChange(fleet.view, change).title
+    : "Unreadable change";
+  const mineApproved = fleet.mine.some((id) => proposal.approvals.includes(id));
+  return (
+    <li className={cn(SECTION, "p-4")}>
+      <p className="font-medium">{title}</p>
+      <p className="mt-0.5 text-xs text-muted-foreground">
+        Opened by {fleet.name(proposal.openedBy)} · Expires{" "}
+        {when(proposal.expiresAt)}
+      </p>
+      <p className="mt-2 font-mono text-xs">{approvalLine(fleet, proposal)}</p>
+      {mineApproved && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          You approved this. Approve on another core device.
+        </p>
+      )}
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button size="sm" className="h-9 md:h-8" onClick={onReview}>
+          Review
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-9 md:h-8"
+          onClick={onCancel}
+        >
+          Cancel
+        </Button>
+      </div>
+    </li>
+  );
+}
+
+function PendingCard({
+  device,
+  onReview,
+  onForget,
+}: {
+  device: DeviceRecord;
+  onReview: () => void;
+  onForget: () => void;
+}) {
+  return (
+    <li className={cn(SECTION, "p-4")}>
+      <p className="font-medium">Admit {device.name}</p>
+      <p className="mt-0.5 text-xs text-muted-foreground">
+        Registered {when(device.createdAt)} · Not approved yet
+      </p>
+      <p className="mt-2 font-mono text-xs">
+        {formatPrint(device.fingerprint)}
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button size="sm" className="h-9 md:h-8" onClick={onReview}>
+          Review
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-9 text-destructive md:h-8"
+          onClick={onForget}
+        >
+          Forget
+        </Button>
+      </div>
+    </li>
+  );
+}
+
+function RenameDialog({
+  device,
+  onClose,
+}: {
+  device: DeviceRecord | null;
+  onClose: () => void;
+}) {
+  const rename = useRenameDevice();
+  const [name, setName] = useState("");
+  return (
+    <Dialog
+      open={device !== null}
+      onOpenChange={(open) => {
+        if (open) return;
+        rename.reset();
+        onClose();
+      }}
+    >
+      {device && (
+        <DialogContent className="sm:max-w-sm">
+          <form
+            className="grid gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              rename.mutate(
+                { id: device.id, name: name.trim() || device.name },
+                { onSuccess: onClose },
+              );
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>Rename {device.name}</DialogTitle>
+            </DialogHeader>
+            <div className="grid gap-1.5">
+              <Label htmlFor="rename-device">Name</Label>
+              <Input
+                id="rename-device"
+                defaultValue={device.name}
+                maxLength={40}
+                autoFocus
+                onChange={(event) => setName(event.target.value)}
+              />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={rename.isPending}>
+                {rename.isPending ? "Saving…" : "Save"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      )}
+    </Dialog>
+  );
+}
+
+function FirstTrustDialog({
+  fleet,
+  servers,
+  open,
+  onClose,
+}: {
+  fleet: Fleet;
+  servers: FleetServer[];
+  open: boolean;
+  onClose: () => void;
+}) {
+  const trust = useFirstTrust();
+  const founder =
+    fleet.devices.find((device) => fleet.mine.includes(device.id)) ??
+    fleet.devices[0];
+  const core = fleet.core.length > 0 ? fleet.core : founder ? [founder] : [];
+  const founding = core.length < 2;
+  const send = () =>
+    trust.mutate(
+      firstTrusts(
+        fleet.view,
+        servers.map((server) => server.node.id),
+        founder?.id ?? "",
+      ),
+      {
+        onSuccess: () => {
+          toast.success("Sent to your servers. They apply it within a minute.");
+          onClose();
+        },
+      },
+    );
+  return (
+    <AlertDialog
+      open={open}
+      onOpenChange={(next) => {
+        if (next) return;
+        trust.reset();
+        onClose();
+      }}
+    >
+      <AlertDialogContent className="max-sm:top-auto max-sm:bottom-0 max-sm:translate-y-0 max-sm:rounded-b-none">
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            Trust {core.map((device) => device.name).join(", ")} on{" "}
+            {plural(servers.length, "server")}?
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {servers.map((server) => server.node.name).join(", ")}{" "}
+            {servers.length === 1 ? "trusts" : "trust"} no device yet.{" "}
+            {founding
+              ? "They take this device as their first core device, with access."
+              : "They take your core devices with no access; give access afterwards with Change access."}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <ul className="divide-y rounded-md border text-sm">
+          {core.map((device) => (
+            <li key={device.id} className="px-3 py-2">
+              <span className="font-medium">{device.name}</span>
+              <span className="ml-2 font-mono text-xs text-muted-foreground">
+                {formatPrint(device.fingerprint)}
+              </span>
+            </li>
+          ))}
+        </ul>
+        {trust.error && (
+          <p role="alert" className="text-sm text-destructive">
+            {failure(trust.error)}
+          </p>
+        )}
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <Button
+            disabled={trust.isPending || core.length === 0}
+            onClick={send}
+          >
+            {trust.isPending ? "Sending…" : "Trust"}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+export function DevicesPage() {
+  const probe = useDevices();
+  const known = thisBrowser();
+  const list = probe.data?.devices ?? [];
+  const waitingHere =
+    list.some((device) => !device.core && known.includes(device.id)) &&
+    !list.some((device) => device.core && known.includes(device.id));
+  const fleet = useFleet(waitingHere);
+
+  if (!fleet) {
     return (
       <>
         <PageHeader title="Trusted devices" />
@@ -186,201 +659,142 @@ export function DevicesPage() {
       </>
     );
   }
+  if (fleet.devices.length === 0) return <FirstDevice fleet={fleet} />;
+  const mineWaiting = fleet.pending.find((device) =>
+    fleet.mine.includes(device.id),
+  );
+  if (fleet.core.length > 0 && waitingHere && mineWaiting) {
+    return <NewDevice fleet={fleet} device={mineWaiting} />;
+  }
+  return <Manage fleet={fleet} />;
+}
 
-  const identity = session.data?.identity;
-  const origin = window.location.origin;
-  const rpId = window.location.hostname;
-  const nodes = overview.data.nodes.filter(
-    (node) => node.enrolled_at !== null && node.disabled_at === null,
+function Manage({ fleet }: { fleet: Fleet }) {
+  const cancel = useCancelProposal();
+  const forget = useForgetDevice();
+  const [review, setReview] = useState<Review | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [passphrase, setPassphrase] = useState(false);
+  const [renaming, setRenaming] = useState<DeviceRecord | null>(null);
+  const [forgetting, setForgetting] = useState<DeviceRecord | null>(null);
+  const [cancelling, setCancelling] = useState<ProposalRecord | null>(null);
+  const [trusting, setTrusting] = useState(false);
+  const setup = useSetUp(fleet, (device) =>
+    openReview(
+      buildChange(fleet.view, admitChange(fleet.view, device)),
+      undefined,
+      () => setAdding(false),
+    ),
   );
-  const trustById: Record<string, NodeTrust | null> = Object.fromEntries(
-    services.data.nodes.map((node) => [node.id, node.trust]),
-  );
-  const summary = trustSummary(nodes, trustById, prints);
-  const signedTargets = [...summary.trusted, ...summary.stale].map(
-    (node) => node.id,
-  );
-  const trustedIds = trustedDeviceIds(list, prints, trustById);
-  const common = signersFor(
-    list,
-    prints,
-    signedTargets.map((id) => trustById[id]?.keys ?? []),
-  );
-  const signers = common.length > 0 ? common : trustedIds;
 
-  const run = async (work: () => Promise<void>) => {
-    setWorking(true);
-    try {
-      await work();
-    } catch (error) {
-      toast.error(
-        error instanceof DOMException && error.name === "NotAllowedError"
-          ? "The fingerprint was cancelled."
-          : errorMessage(error),
-      );
-    } finally {
-      setWorking(false);
-    }
-  };
-
-  async function approve(keys: DeviceRecord[], signers: string[]) {
-    if (signedTargets.length === 0) return;
-    if (signers.length === 0) {
-      throw new Error("No device the servers trust can approve this change.");
-    }
-    const signed = await withPrompt(() =>
-      signTrustChange(
-        trustChange(signedTargets, keys, origin, nextVersion(trustById)),
-        signers,
-        rpId,
-      ),
-    );
-    await trust.mutateAsync({
-      change: signed.change,
-      assertion: signed.assertion!,
-    });
-    toast.success("Sent to the servers. They apply it within a minute.");
+  function openReview(
+    text: string,
+    proposal?: ProposalRecord,
+    before?: () => void,
+  ) {
+    before?.();
+    setEditing(false);
+    setPassphrase(false);
+    setReview({ text, proposal });
   }
 
-  const ask = (
-    title: string,
-    devices: DeviceRecord[],
-    change: { add?: string; remove?: string },
-  ) => {
-    const next = proposal(devices, trustedIds, change);
-    setPending({
-      title,
-      rows: [
-        ...next.keys,
-        ...devices.filter((device) => next.removed.includes(device.id)),
-      ],
-      proposal: next,
-      signed: true,
-      apply: () =>
-        approve(
-          next.keys,
-          signers.filter((id) => !next.removed.includes(id)),
-        ),
-    });
-  };
-
-  const confirm = (current: Pending) =>
-    run(async () => {
-      await current.apply();
-      setPending(null);
-    });
-
-  const setUp = () =>
-    run(async () => {
-      const input = await withPrompt(() =>
-        registerDevice(
-          name.trim() || guessName(),
-          rpId,
-          {
-            id: identity?.id ?? "operator",
-            name: identity?.email ?? "operator",
-          },
-          list.map((device) => device.id),
-        ),
-      );
-      await register.mutateAsync(input);
-      setAdding(false);
-      const added: DeviceRecord = {
-        ...input,
-        createdAt: new Date().toISOString(),
-        lastUsedAt: null,
-      };
-      if (list.length > 0 && signedTargets.length > 0) {
-        ask(`Trust ${added.name} on your servers?`, [...list, added], {
-          add: added.id,
-        });
-      }
-    });
-
-  const trustFirst = () => {
-    const nodeIds = summary.needsTrust.map((node) => node.id);
-    setPending({
-      title: `Trust these devices on ${nodeIds.length} ${nodeIds.length === 1 ? "server" : "servers"}?`,
-      rows: list,
-      proposal: proposal(list, [], {}),
-      signed: false,
-      apply: async () => {
-        const changes = await Promise.all(
-          initialChanges(nodeIds, list, origin).map((change) =>
-            signTrustChange(change, null),
-          ),
-        );
-        await trust.mutateAsync({
-          changes: changes.map((change) => change.change),
-        });
-        toast.success("Sent to the servers. They apply it within a minute.");
-      },
-    });
-  };
-
-  const remove = (device: DeviceRecord) =>
-    ask(`Remove ${device.name} from your servers?`, list, {
-      remove: device.id,
-    });
-
-  const updateServers = () =>
-    ask("Update the trusted devices on your servers?", list, {});
-
-  const dialog = (
-    <AlertDialog
-      open={pending !== null}
-      onOpenChange={(open) => !open && !working && setPending(null)}
-    >
-      {pending && (
-        <ConfirmList
-          pending={pending}
-          working={working}
-          onConfirm={() => void confirm(pending)}
-        />
-      )}
-    </AlertDialog>
+  const states = new Map(
+    fleet.servers.map((server) => [
+      server.node.id,
+      serverState(fleet.view, server),
+    ]),
+  );
+  const empty = fleet.servers.filter(
+    (server) => states.get(server.node.id) === "empty",
+  );
+  const behind = fleet.servers.filter(
+    (server) => states.get(server.node.id) === "behind",
+  );
+  const old = fleet.trusted.filter((server) => !speaksQuorum(server.node));
+  const admitting = new Set(
+    fleet.open.flatMap((proposal) =>
+      (decodeChange(proposal.change)?.core ?? []).map((key) => key.id),
+    ),
+  );
+  const unasked = fleet.pending.filter(
+    (device) => !admitting.has(device.id) && !fleet.joining.includes(device.id),
+  );
+  const founder =
+    fleet.devices.find((device) => fleet.mine.includes(device.id)) ??
+    fleet.devices[0];
+  const hasPass = fleet.view.passphrase !== null;
+  const passphraseWaiting = fleet.open.some(
+    (proposal) => decodeChange(proposal.change)?.passphrase,
   );
 
-  if (list.length === 0) {
-    return (
-      <>
-        <PageHeader title="Trusted devices" />
-        <section className={cn(SECTION, "max-w-xl p-5")}>
-          <Fingerprint
-            aria-hidden="true"
-            className="mb-3 size-6 text-primary"
-          />
-          <h2 className="font-medium">Control servers with your fingerprint</h2>
-          <p className="mt-1.5 text-sm text-muted-foreground">
-            Start, stop, restart and deploy need a fingerprint from a device you
-            trust. Servers keep that device's public key, so nothing on
-            Cloudflare can run them on its own.
-          </p>
-          <ol className="mt-4 space-y-4 text-sm">
-            <li className="space-y-2">
-              <p className="font-medium">1. Set up this device</p>
-              <div className="flex flex-wrap items-end gap-2">
-                <NameField value={name} onChange={setName} />
-                <Button
-                  className="h-9 md:h-8"
-                  disabled={working}
-                  onClick={() => void setUp()}
-                >
-                  <Fingerprint aria-hidden="true" />
-                  {working
-                    ? "Waiting for the fingerprint…"
-                    : "Set up with fingerprint"}
-                </Button>
-              </div>
-            </li>
-            <li className="text-muted-foreground">
-              2. Trust on servers: available once this device is set up.
-            </li>
-          </ol>
-        </section>
-      </>
+  const addButton = (
+    <Button size="sm" className="h-9 md:h-8" onClick={() => setAdding(true)}>
+      Add device
+    </Button>
+  );
+  let notice: ReactNode = null;
+  if (fleet.core.length === 0) {
+    notice =
+      empty.length > 0 ? (
+        <Notice
+          action={
+            <Button
+              size="sm"
+              className="h-9 md:h-8"
+              onClick={() => setTrusting(true)}
+            >
+              Trust on {plural(empty.length, "server")}
+            </Button>
+          }
+        >
+          Trust {founder?.name ?? "this device"} on your servers. It becomes
+          your first core device.
+        </Notice>
+      ) : (
+        <Notice tone="warning">
+          Update your servers to agent 0.3.0, then trust this device on them.
+        </Notice>
+      );
+  } else if (old.length > 0) {
+    notice = (
+      <Notice tone="warning">
+        Update {old.map((server) => server.node.name).join(", ")} to agent
+        0.3.0. Devices and access cannot change until every server speaks it.
+      </Notice>
+    );
+  } else if (fleet.core.length === 1 && fleet.pending.length === 0) {
+    notice = (
+      <Notice action={addButton}>
+        Add a second device, such as your phone. It gets access to your servers.
+      </Notice>
+    );
+  } else if (fleet.core.length >= 2 && !hasPass && !passphraseWaiting) {
+    notice = (
+      <Notice
+        action={
+          <Button
+            size="sm"
+            className="h-9 md:h-8"
+            onClick={() => setPassphrase(true)}
+          >
+            Set passphrase
+          </Button>
+        }
+      >
+        Servers accept a touch until you set a passphrase.
+      </Notice>
+    );
+  } else if (fleet.core.length === 2 && fleet.pending.length === 0) {
+    notice = (
+      <Notice action={addButton}>
+        Add a third device as a backup. With two, losing one needs SSH to
+        recover.
+      </Notice>
     );
   }
+
+  const waiting = fleet.open.length + unasked.length;
 
   return (
     <>
@@ -388,15 +802,63 @@ export function DevicesPage() {
         title="Trusted devices"
         meta={
           <span className="font-mono text-xs text-muted-foreground">
-            Trusted on {summary.trusted.length}/{summary.total} servers
+            {plural(fleet.core.length, "core device")} · Passphrase{" "}
+            {hasPass ? "on" : "off"}
           </span>
         }
+        actions={
+          fleet.core.length >= 2 &&
+          !passphraseWaiting &&
+          (hasPass || notice === null) ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 md:h-8"
+              onClick={() => setPassphrase(true)}
+            >
+              {hasPass ? "Change passphrase" : "Set passphrase"}
+            </Button>
+          ) : undefined
+        }
       />
-      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-2">
+      {notice}
+
+      {waiting > 0 && (
+        <section aria-labelledby="waiting-heading" className="mb-5">
+          <h2 id="waiting-heading" className="mb-2 text-sm font-medium">
+            Waiting for approval · {waiting}
+          </h2>
+          <ul className="grid gap-3 md:grid-cols-2">
+            {fleet.open.map((proposal) => (
+              <ProposalCard
+                key={proposal.id}
+                fleet={fleet}
+                proposal={proposal}
+                onReview={() => openReview(proposal.change, proposal)}
+                onCancel={() => setCancelling(proposal)}
+              />
+            ))}
+            {unasked.map((device) => (
+              <PendingCard
+                key={device.id}
+                device={device}
+                onReview={() =>
+                  openReview(
+                    buildChange(fleet.view, admitChange(fleet.view, device)),
+                  )
+                }
+                onForget={() => setForgetting(device)}
+              />
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
         <section aria-labelledby="devices-heading" className={SECTION}>
           <div className="flex min-h-12 items-center gap-2 border-b px-4">
             <h2 id="devices-heading" className="text-sm font-medium">
-              Devices · {list.length}
+              Devices · {fleet.devices.length}
             </h2>
             <Button
               variant="outline"
@@ -404,63 +866,37 @@ export function DevicesPage() {
               className="ml-auto h-9 md:h-8"
               onClick={() => setAdding((value) => !value)}
             >
-              Add device
+              {adding ? "Close" : "Add device"}
             </Button>
           </div>
           {adding && (
-            <div className="flex flex-wrap items-end gap-2 border-b px-4 py-3">
-              <NameField value={name} onChange={setName} />
-              <Button
-                className="h-9 md:h-8"
-                disabled={working}
-                onClick={() => void setUp()}
-              >
-                <Fingerprint aria-hidden="true" />
-                {working ? "Waiting…" : "Set up"}
-              </Button>
-              <p className="w-full text-xs text-muted-foreground">
-                To add your phone from here, choose "use a phone" in the
-                browser's passkey window. A device you already trust then
-                approves it.
+            <div className="space-y-2 border-b px-4 py-3">
+              <SetUpForm setup={setup} label="Set up with fingerprint" />
+              <p className="text-xs text-muted-foreground">
+                To add your phone from here, choose "Use a phone" in the passkey
+                window. It joins as waiting; core devices approve it.
               </p>
             </div>
           )}
           <ul className="divide-y">
-            {list.map((device) => (
-              <li
+            {fleet.devices.map((device) => (
+              <DeviceRow
                 key={device.id}
-                className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-sm"
-              >
-                <KeyRound
-                  aria-hidden="true"
-                  className="size-4 text-muted-foreground"
-                />
-                <span className="min-w-0 flex-1 truncate font-medium">
-                  {device.name}
-                </span>
-                <span className="font-mono text-xs text-muted-foreground">
-                  Added {shortDate(device.createdAt)} · used{" "}
-                  {timeAgo(device.lastUsedAt)}
-                </span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-9 text-destructive md:h-8"
-                  disabled={
-                    working || list.length === 1 || signedTargets.length === 0
-                  }
-                  onClick={() => remove(device)}
-                >
-                  Remove
-                </Button>
-              </li>
+                fleet={fleet}
+                device={device}
+                onRename={() => setRenaming(device)}
+                onAccess={() => setEditing(true)}
+                onRemove={() =>
+                  openReview(
+                    buildChange(fleet.view, removeChange(fleet.view, device)),
+                  )
+                }
+                onForget={() => setForgetting(device)}
+              />
             ))}
           </ul>
           <p className="border-t px-4 py-3 text-xs text-muted-foreground">
-            {list.length === 1
-              ? "Add a second device, such as your phone, so losing one never needs SSH. "
-              : ""}
-            Removing the last device needs SSH:{" "}
+            The last core device leaves only over SSH:{" "}
             <code className="font-mono">sudo kry trust --reset</code>.
           </p>
         </section>
@@ -468,57 +904,93 @@ export function DevicesPage() {
         <section aria-labelledby="servers-heading" className={SECTION}>
           <div className="flex min-h-12 flex-wrap items-center gap-2 border-b px-4 py-2">
             <h2 id="servers-heading" className="text-sm font-medium">
-              Servers · {summary.total}
+              Servers · {fleet.servers.length}
             </h2>
             <div className="ml-auto flex flex-wrap gap-2">
-              {summary.needsTrust.length > 0 && (
+              {fleet.core.length > 0 && empty.length > 0 && (
                 <Button
                   size="sm"
                   className="h-9 md:h-8"
-                  disabled={working}
-                  onClick={trustFirst}
+                  onClick={() => setTrusting(true)}
                 >
-                  Trust on {summary.needsTrust.length}{" "}
-                  {summary.needsTrust.length === 1 ? "server" : "servers"}
+                  Trust on {plural(empty.length, "server")}
                 </Button>
               )}
-              {summary.stale.length > 0 && (
+              {behind.length > 0 && old.length === 0 && (
                 <Button
-                  variant="outline"
                   size="sm"
+                  variant="outline"
                   className="h-9 md:h-8"
-                  disabled={working}
-                  onClick={updateServers}
+                  onClick={() =>
+                    openReview(buildChange(fleet.view, syncChange(fleet.view)))
+                  }
                 >
-                  Update servers
+                  Sync {plural(behind.length, "server")}
+                </Button>
+              )}
+              {fleet.core.length > 0 && fleet.trusted.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-9 md:h-8"
+                  onClick={() => setEditing(true)}
+                >
+                  Change access
                 </Button>
               )}
             </div>
           </div>
           <ul className="divide-y">
-            {nodes.map((node) => {
-              const status = statusOf(node, summary);
-              return (
-                <li
-                  key={node.id}
-                  className="flex items-center gap-3 px-4 py-3 text-sm"
-                >
-                  <span className="min-w-0 flex-1 truncate">{node.name}</span>
-                  <span className={cn("font-mono text-xs", status.tone)}>
-                    {status.label}
-                  </span>
-                </li>
-              );
-            })}
+            {fleet.servers.map((server) => (
+              <ServerRow key={server.node.id} fleet={fleet} server={server} />
+            ))}
           </ul>
-          {summary.needsUpdate.length > 0 && (
-            <p className="border-t px-4 py-3 text-xs text-muted-foreground">
-              Update these servers' agent from their node page first.
-            </p>
-          )}
+          <RecentChanges fleet={fleet} />
         </section>
       </div>
-      {dialog}
+
+      <ApprovalDialog
+        fleet={fleet}
+        review={review}
+        onClose={() => setReview(null)}
+      />
+      <AccessEditor
+        fleet={fleet}
+        open={editing}
+        onClose={() => setEditing(false)}
+        onReview={(text) => openReview(text)}
+      />
+      <PassphraseForm
+        fleet={fleet}
+        open={passphrase}
+        onClose={() => setPassphrase(false)}
+        onReview={(text) => openReview(text)}
+      />
+      <RenameDialog device={renaming} onClose={() => setRenaming(null)} />
+      <FirstTrustDialog
+        fleet={fleet}
+        servers={empty}
+        open={trusting}
+        onClose={() => setTrusting(false)}
+      />
+      <ConfirmDialog
+        open={forgetting !== null}
+        onOpenChange={(open) => !open && setForgetting(null)}
+        title={`Forget ${forgetting?.name ?? "this device"}?`}
+        description="It never joined the core, so no server knows it. It can be set up again later."
+        confirmLabel="Forget"
+        mutation={forget}
+        variables={forgetting?.id ?? ""}
+      />
+      <ConfirmDialog
+        open={cancelling !== null}
+        onOpenChange={(open) => !open && setCancelling(null)}
+        title="Cancel this change?"
+        description="The approvals collected so far are dropped. Nothing reaches your servers."
+        confirmLabel="Cancel change"
+        mutation={cancel}
+        variables={cancelling?.id ?? ""}
+      />
     </>
   );
 }

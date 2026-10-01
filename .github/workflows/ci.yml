@@ -136,6 +136,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       KRY_D1_ID: ${{ secrets.KRY_D1_ID }}
+      CF_ANALYTICS_TOKEN: ${{ secrets.CF_ANALYTICS_TOKEN }}
       ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
       ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
       ACCESS_AUD: ${{ vars.ACCESS_AUD }}
@@ -177,10 +178,12 @@ jobs:
       - name: Deploy the Worker
         run: |
           secrets="$RUNNER_TEMP/kry-secrets.json"
-          node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ ALERT_EMAIL: process.env.ALERT_EMAIL }))' "$secrets"
+          node -e 'const env = process.env; require("fs").writeFileSync(process.argv[1], JSON.stringify({ ALERT_EMAIL: env.ALERT_EMAIL, ...(env.CF_ANALYTICS_TOKEN ? { CF_ANALYTICS_TOKEN: env.CF_ANALYTICS_TOKEN } : {}) }))' "$secrets"
           pnpm exec wrangler deploy --config worker/wrangler.jsonc --env production \
             --var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" \
             --var "ACCESS_AUD:${ACCESS_AUD}" \
+            --var "CF_ACCOUNT_ID:${CLOUDFLARE_ACCOUNT_ID}" \
+            --var "KRY_D1_ID:${KRY_D1_ID}" \
             --secrets-file "$secrets"
           rm -f "$secrets"
 

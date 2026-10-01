@@ -17,13 +17,7 @@ describe("SQLite D1 stand-in", () => {
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
       .all<{ name: string }>();
     expect(tables.results.map((row) => row.name)).toEqual(
-      expect.arrayContaining([
-        "nodes",
-        "checks",
-        "incidents",
-        "node_metrics",
-        "check_results",
-      ]),
+      expect.arrayContaining(["nodes", "checks", "incidents", "node_windows"]),
     );
   });
 
@@ -52,12 +46,7 @@ describe("SQLite D1 stand-in", () => {
 
     await db.prepare("DELETE FROM nodes WHERE id = ?").bind("n1").run();
 
-    for (const table of [
-      "node_metrics",
-      "checks",
-      "check_results",
-      "incidents",
-    ]) {
+    for (const table of ["node_windows", "checks", "incidents"]) {
       const row = sqlite
         .prepare(`SELECT COUNT(*) AS total FROM ${table}`)
         .get() as { total: number };

@@ -1,3 +1,4 @@
+import { staleAfterMs } from "../agent/windows";
 import {
   isProtectedTarget,
   type AgentActionsRequest,
@@ -188,15 +189,19 @@ export async function applyInventory(
       : []),
     ...(inventory.trust
       ? [
-          db
-            .prepare(
-              "UPDATE nodes SET trust_version = ?, trust_keys = ? WHERE id = ?",
-            )
-            .bind(
-              inventory.trust.version,
-              JSON.stringify(inventory.trust.keys),
-              node.id,
+          db.prepare("UPDATE nodes SET trust_report = ? WHERE id = ?").bind(
+            JSON.stringify(
+              "keys" in inventory.trust
+                ? {
+                    version: inventory.trust.version,
+                    core: inventory.trust.keys,
+                    access: inventory.trust.keys,
+                    passphrase: false,
+                  }
+                : inventory.trust,
             ),
+            node.id,
+          ),
         ]
       : []),
     db
@@ -214,20 +219,27 @@ export async function requestRefresh(
   ownerId: string,
   nodeIds: string[] | undefined,
   now: number,
-): Promise<number> {
+): Promise<string[]> {
   const rows = await db
     .prepare(
-      `SELECT id, last_seen_at FROM nodes
-       WHERE owner_user_id = ? AND enrolled_at IS NOT NULL AND disabled_at IS NULL`,
+      `SELECT id, last_seen_at, transport, interval_seconds FROM nodes
+       WHERE owner_user_id = ? AND enrolled_at IS NOT NULL AND disabled_at IS NULL
+       ORDER BY id`,
     )
     .bind(ownerId)
-    .all<{ id: string; last_seen_at: string | null }>();
+    .all<{
+      id: string;
+      last_seen_at: string | null;
+      transport: string;
+      interval_seconds: number;
+    }>();
   const wanted = rows.results.filter(
     (row) =>
-      now - seenAt(row.last_seen_at) <= REPORTING_MS &&
+      now - seenAt(row.last_seen_at) <=
+        staleAfterMs(row.transport, row.interval_seconds, REPORTING_MS) &&
       (!nodeIds || nodeIds.includes(row.id)),
   );
-  if (wanted.length === 0) return 0;
+  if (wanted.length === 0) return [];
   const at = new Date(now).toISOString();
   await db.batch(
     wanted.map((row) =>
@@ -236,5 +248,5 @@ export async function requestRefresh(
         .bind(at, row.id),
     ),
   );
-  return wanted.length;
+  return wanted.map((row) => row.id);
 }

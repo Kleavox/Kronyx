@@ -10,7 +10,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { AddCheckDialog } from "@/features/checks/add-check-dialog";
+import { CheckDialog } from "@/features/checks/check-dialog";
 import { useSignedAction } from "@/features/deploy/use-signed-action";
 import { useDeleteNode, useServices } from "@/lib/api";
 import { canRestartServer } from "@/lib/devices";
@@ -73,7 +73,7 @@ export function NodeActions({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <AddCheckDialog
+      <CheckDialog
         open={dialog === "add-check"}
         onOpenChange={(open) => setDialog(open ? "add-check" : null)}
         nodeId={node.id}

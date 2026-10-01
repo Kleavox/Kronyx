@@ -62,6 +62,21 @@ describe("nodeState", () => {
     expect(graceSeconds(600)).toBe(1800);
   });
 
+  it("honours a wider grace the server sends for a live connection", () => {
+    expect(
+      nodeState(
+        { ...base, last_seen_at: "2026-09-27 11:54:00", grace_seconds: 420 },
+        NOW,
+      ),
+    ).toBe("online");
+    expect(
+      nodeState(
+        { ...base, last_seen_at: "2026-09-27 11:52:59", grace_seconds: 420 },
+        NOW,
+      ),
+    ).toBe("offline");
+  });
+
   it("treats a last_seen_at slightly in the future as online", () => {
     expect(
       nodeState({ ...base, last_seen_at: "2026-09-27 12:00:04" }, NOW),
@@ -147,6 +162,12 @@ describe("checkDisplayStatus", () => {
     expect(checkDisplayStatus("UP", "offline")).toBe("STALE");
     expect(checkDisplayStatus("DOWN", "disabled")).toBe("STALE");
     expect(checkDisplayStatus("UNKNOWN", "pending")).toBe("UNKNOWN");
+  });
+
+  it("shows a paused check as paused whatever it last reported", () => {
+    expect(checkDisplayStatus("DOWN", "online", false)).toBe("PAUSED");
+    expect(checkDisplayStatus("UP", "offline", false)).toBe("PAUSED");
+    expect(checkDisplayStatus("UP", "online", true)).toBe("UP");
   });
 });
 

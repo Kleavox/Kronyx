@@ -1,17 +1,48 @@
-import type { DeviceRecord, NodeRecord, NodeTrust } from "../types";
+import type {
+  PassphraseKeyRecord,
+  TrustChange,
+  TrustKeyRecord,
+} from "@krynodes/protocol";
+import { evaluateQuorum } from "@krynodes/protocol/quorum";
+import {
+  summarizeChange,
+  type ChangeSummary,
+} from "@krynodes/protocol/summary";
+
+import type {
+  DeviceRecord,
+  NodeRecord,
+  NodeTrust,
+  PassphraseKey,
+} from "../types";
 import { compareVersions } from "./agent";
-import { fromB64url, TRUST_CHANGE_MS } from "./passkeys";
+import { b64url, fromB64url } from "./passkeys";
 
 export const DEPLOY_SINCE = "0.2.0";
+const QUORUM_SINCE = "0.3.0";
+const RESTART_SINCE = "0.2.2";
 const VERSION = /^\d+\.\d+\.\d+$/u;
+const CHANGE_MS = 24 * 3_600_000;
 
-export interface TrustSummary {
-  total: number;
-  trusted: NodeRecord[];
-  stale: NodeRecord[];
-  needsTrust: NodeRecord[];
-  needsUpdate: NodeRecord[];
+export interface FleetServer {
+  node: NodeRecord;
+  trust: NodeTrust | null;
 }
+
+export interface FleetView {
+  origin: string;
+  devices: DeviceRecord[];
+  servers: FleetServer[];
+  passphrase: PassphraseKey | null;
+}
+
+export interface Plan {
+  core: TrustKeyRecord[] | null;
+  passphrase: PassphraseKeyRecord | null;
+  access: Record<string, string[]>;
+}
+
+export type ServerState = "update" | "empty" | "behind" | "current";
 
 export async function fingerprint(publicKey: string): Promise<string> {
   const digest = new Uint8Array(
@@ -22,7 +53,8 @@ export async function fingerprint(publicKey: string): Promise<string> {
     .slice(0, 16);
 }
 
-const RESTART_SINCE = "0.2.2";
+export const formatPrint = (print: string) =>
+  (print.toUpperCase().match(/.{1,4}/gu) ?? []).join(" ");
 
 const atLeast = (version: string | null, since: string) =>
   version !== null &&
@@ -33,142 +65,270 @@ export function canDeploy(node: Pick<NodeRecord, "agent_version">): boolean {
   return atLeast(node.agent_version, DEPLOY_SINCE);
 }
 
+export function speaksQuorum(node: Pick<NodeRecord, "agent_version">): boolean {
+  return atLeast(node.agent_version, QUORUM_SINCE);
+}
+
 export function canRestartServer(
   node: Pick<NodeRecord, "agent_version">,
   trust: NodeTrust | null,
 ): boolean {
   return (
-    atLeast(node.agent_version, RESTART_SINCE) && (trust?.keys.length ?? 0) > 0
+    atLeast(node.agent_version, RESTART_SINCE) &&
+    (trust?.access.length ?? 0) > 0
   );
 }
 
-const sameKeys = (a: string[], b: string[]) =>
-  a.length === b.length && [...a].sort().join() === [...b].sort().join();
-
-export function trustSummary(
-  nodes: NodeRecord[],
-  trust: Record<string, NodeTrust | null>,
-  fingerprints: string[],
-): TrustSummary {
-  const summary: TrustSummary = {
-    total: nodes.length,
-    trusted: [],
-    stale: [],
-    needsTrust: [],
-    needsUpdate: [],
-  };
-  for (const node of nodes) {
-    const report = trust[node.id] ?? null;
-    if (!canDeploy(node)) summary.needsUpdate.push(node);
-    else if (!report || report.keys.length === 0) summary.needsTrust.push(node);
-    else if (sameKeys(report.keys, fingerprints)) summary.trusted.push(node);
-    else summary.stale.push(node);
-  }
-  return summary;
-}
-
-export function trustedDeviceIds(
+export function accessIds(
   devices: DeviceRecord[],
-  fingerprints: string[],
-  trust: Record<string, NodeTrust | null>,
+  trust: NodeTrust | null,
 ): string[] {
-  const known = new Set(
-    Object.values(trust).flatMap((report) => report?.keys ?? []),
-  );
   return devices
-    .filter((_, index) => known.has(fingerprints[index] ?? ""))
+    .filter((device) => trust?.access.includes(device.fingerprint))
     .map((device) => device.id);
 }
 
+const coreIds = (devices: DeviceRecord[], trust: NodeTrust | null) =>
+  devices
+    .filter((device) => trust?.core.includes(device.fingerprint))
+    .map((device) => device.id);
+
 export function signersFor(
   devices: DeviceRecord[],
-  fingerprints: string[],
-  targetKeys: string[][],
+  targets: (NodeTrust | null)[],
 ): string[] {
+  if (targets.length === 0) return [];
   return devices
-    .filter(
-      (_, index) =>
-        targetKeys.length > 0 &&
-        targetKeys.every((keys) => keys.includes(fingerprints[index] ?? "")),
+    .filter((device) =>
+      targets.every((trust) => trust?.access.includes(device.fingerprint)),
     )
     .map((device) => device.id);
 }
 
-export interface Proposal {
-  keys: DeviceRecord[];
-  added: string[];
-  removed: string[];
+const coreOf = (view: FleetView) =>
+  view.devices.filter((device) => device.core);
+
+const keyOf = ({ id, name, alg, publicKey }: DeviceRecord): TrustKeyRecord => ({
+  id,
+  name,
+  alg: alg as TrustKeyRecord["alg"],
+  publicKey,
+});
+
+const sameSet = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((item) => b.includes(item));
+
+export const trustedServers = (view: FleetView) =>
+  view.servers.filter((server) => (server.trust?.core.length ?? 0) > 0);
+
+export function serverState(view: FleetView, server: FleetServer): ServerState {
+  if (!speaksQuorum(server.node)) return "update";
+  if (!server.trust || server.trust.core.length === 0) return "empty";
+  const core = coreOf(view).map((device) => device.fingerprint);
+  if (!sameSet(server.trust.core, core)) return "behind";
+  if (view.passphrase && !server.trust.passphrase) return "behind";
+  return "current";
 }
 
-export function proposal(
-  devices: DeviceRecord[],
-  trustedIds: string[],
-  change: { add?: string; remove?: string },
-): Proposal {
-  if (!change.add && !change.remove) {
-    return {
-      keys: devices,
-      added: devices
-        .filter((device) => !trustedIds.includes(device.id))
-        .map((device) => device.id),
-      removed: [],
-    };
-  }
-  return {
-    keys: devices.filter(
-      (device) =>
-        device.id === change.add ||
-        (trustedIds.includes(device.id) && device.id !== change.remove),
-    ),
-    added: change.add ? [change.add] : [],
-    removed: change.remove ? [change.remove] : [],
-  };
+export function nextVersion(view: FleetView): number {
+  return (
+    Math.max(1, ...view.servers.map((server) => server.trust?.version ?? 0)) + 1
+  );
 }
 
-export function nextVersion(trust: Record<string, NodeTrust | null>): number {
-  const versions = Object.values(trust).map((report) => report?.version ?? 1);
-  return Math.max(1, ...versions) + 1;
-}
+const currentAccess = (view: FleetView) =>
+  Object.fromEntries(
+    trustedServers(view).map((server) => [
+      server.node.id,
+      accessIds(view.devices, server.trust),
+    ]),
+  );
 
-function change(
-  nodeIds: string[],
-  devices: DeviceRecord[],
-  origin: string,
-  version: number,
-  now: number,
-) {
-  return {
-    v: 1,
-    nodeIds,
-    origin,
-    rpId: new URL(origin).hostname,
-    version,
-    keys: devices.map(({ id, name, alg, publicKey }) => ({
-      id,
-      name,
-      alg,
-      publicKey,
-    })),
+export function buildChange(
+  view: FleetView,
+  plan: Plan & { now?: number; version?: number },
+): string {
+  const now = plan.now ?? Date.now();
+  const change: TrustChange = {
+    v: 2,
+    origin: view.origin,
+    rpId: new URL(view.origin).hostname,
+    version: plan.version ?? nextVersion(view),
     issuedAt: new Date(now).toISOString(),
-    expiresAt: new Date(now + TRUST_CHANGE_MS).toISOString(),
+    expiresAt: new Date(now + CHANGE_MS).toISOString(),
+    core: plan.core,
+    passphrase: plan.passphrase,
+    access: plan.access,
+  };
+  return b64url(new TextEncoder().encode(JSON.stringify(change)));
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+export function decodeChange(text: string): TrustChange | null {
+  try {
+    const value: unknown = JSON.parse(
+      new TextDecoder().decode(fromB64url(text)),
+    );
+    if (
+      !isObject(value) ||
+      value.v !== 2 ||
+      !isObject(value.access) ||
+      !(value.core === null || Array.isArray(value.core)) ||
+      !(value.passphrase === null || isObject(value.passphrase))
+    ) {
+      return null;
+    }
+    return value as unknown as TrustChange;
+  } catch {
+    return null;
+  }
+}
+
+export function admitChange(view: FleetView, device: DeviceRecord): Plan {
+  const core = coreOf(view);
+  const founding = core.length < 2;
+  return {
+    core: [...core, device].map(keyOf),
+    passphrase: null,
+    access: Object.fromEntries(
+      Object.entries(currentAccess(view)).map(([nodeId, ids]) => [
+        nodeId,
+        founding ? [...ids, device.id] : ids,
+      ]),
+    ),
   };
 }
 
-export function initialChanges(
-  nodeIds: string[],
-  devices: DeviceRecord[],
-  origin: string,
-  now = Date.now(),
-) {
-  return nodeIds.map((id) => change([id], devices, origin, 1, now));
+export function removeChange(view: FleetView, device: DeviceRecord): Plan {
+  return {
+    core: coreOf(view)
+      .filter((entry) => entry.id !== device.id)
+      .map(keyOf),
+    passphrase: null,
+    access: Object.fromEntries(
+      Object.entries(currentAccess(view)).map(([nodeId, ids]) => [
+        nodeId,
+        ids.filter((id) => id !== device.id),
+      ]),
+    ),
+  };
 }
 
-export function trustChange(
+export function passphraseChange(
+  view: FleetView,
+  passphrase: PassphraseKey,
+): Plan {
+  return { core: null, passphrase, access: currentAccess(view) };
+}
+
+export function accessChange(
+  view: FleetView,
+  desired: Record<string, string[]>,
+): Plan {
+  const current = currentAccess(view);
+  return {
+    core: null,
+    passphrase: null,
+    access: Object.fromEntries(
+      Object.entries(desired).filter(
+        ([nodeId, ids]) => !sameSet(ids, current[nodeId] ?? []),
+      ),
+    ),
+  };
+}
+
+export function syncChange(view: FleetView): Plan {
+  const missing = trustedServers(view).some(
+    (server) => view.passphrase && !server.trust?.passphrase,
+  );
+  return {
+    core: coreOf(view).map(keyOf),
+    passphrase: missing ? view.passphrase : null,
+    access: currentAccess(view),
+  };
+}
+
+export function firstTrusts(
+  view: FleetView,
   nodeIds: string[],
-  devices: DeviceRecord[],
-  origin: string,
-  version: number,
+  founder: string,
   now = Date.now(),
-) {
-  return change(nodeIds, devices, origin, version, now);
+): string[] {
+  const known = coreOf(view);
+  const core =
+    known.length > 0
+      ? known
+      : view.devices.filter((device) => device.id === founder);
+  const access = core.length < 2 ? core.map((device) => device.id) : [];
+  return nodeIds.map((nodeId) =>
+    buildChange(view, {
+      core: core.map(keyOf),
+      passphrase: view.passphrase,
+      access: { [nodeId]: access },
+      version: 1,
+      now,
+    }),
+  );
+}
+
+export function describeChange(
+  view: FleetView,
+  change: TrustChange,
+): ChangeSummary {
+  const names = Object.fromEntries(
+    view.devices.map((device) => [device.id, device.name]),
+  );
+  for (const key of change.core ?? []) names[key.id] ??= key.name;
+  const passphrase =
+    change.passphrase !== null &&
+    (view.passphrase === null ||
+      change.passphrase.publicKey !== view.passphrase.publicKey ||
+      change.passphrase.salt !== view.passphrase.salt ||
+      change.passphrase.iterations !== view.passphrase.iterations);
+  return summarizeChange({
+    names,
+    currentCore: coreOf(view).map((device) => device.id),
+    currentAccess: Object.fromEntries(
+      view.servers.map((server) => [
+        server.node.id,
+        accessIds(view.devices, server.trust),
+      ]),
+    ),
+    currentPassphrase: view.passphrase !== null,
+    change: {
+      core: change.core?.map((key) => key.id) ?? null,
+      passphrase,
+      access: change.access,
+    },
+  });
+}
+
+export function predictMissing(
+  view: FleetView,
+  change: TrustChange,
+  approvers: string[],
+): string | null {
+  for (const [nodeId, access] of Object.entries(change.access)) {
+    const trust =
+      view.servers.find((server) => server.node.id === nodeId)?.trust ?? null;
+    const result = evaluateQuorum({
+      current: {
+        core: coreIds(view.devices, trust),
+        access: accessIds(view.devices, trust),
+      },
+      change: {
+        core: change.core?.map((key) => key.id) ?? null,
+        passphraseChanged:
+          change.passphrase !== null &&
+          (!trust?.passphrase ||
+            change.passphrase.publicKey !== view.passphrase?.publicKey),
+        access,
+      },
+      approvals: approvers.map((id) => ({ id, verified: true })),
+    });
+    if (!result.ok) return result.reason;
+  }
+  return null;
 }

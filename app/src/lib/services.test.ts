@@ -35,6 +35,7 @@ const action = (overrides: Partial<ActionRecord>): ActionRecord => ({
   finishedAt: null,
   exitCode: null,
   output: null,
+  deviceId: null,
   ...overrides,
 });
 
@@ -178,7 +179,15 @@ describe("grouping services by server", () => {
       ...data,
       nodes: data.nodes.map((entry) =>
         entry.id === "n3"
-          ? { ...entry, trust: { version: 1, keys: ["0123456789abcdef"] } }
+          ? {
+              ...entry,
+              trust: {
+                version: 1,
+                core: ["0123456789abcdef"],
+                access: ["0123456789abcdef"],
+                passphrase: false,
+              },
+            }
           : entry,
       ),
     };

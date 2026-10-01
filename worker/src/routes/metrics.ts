@@ -34,7 +34,7 @@ interface BucketRow {
 }
 
 const BUCKETS_SQL = `
-  SELECT (CAST(strftime('%s', recorded_at) AS INTEGER) / CAST(?1 AS INTEGER))
+  SELECT (CAST(strftime('%s', window_start) AS INTEGER) / CAST(?1 AS INTEGER))
            * CAST(?1 AS INTEGER) AS bucket,
          AVG(cpu_percent) AS cpu,
          AVG(memory_used_bytes) AS mem_used,
@@ -44,9 +44,9 @@ const BUCKETS_SQL = `
          AVG(load_1) AS load1,
          AVG(load_5) AS load5,
          AVG(load_15) AS load15,
-         COUNT(*) AS samples
-  FROM node_metrics
-  WHERE node_id = ?2 AND recorded_at >= datetime(?3)
+         SUM(samples) AS samples
+  FROM node_windows
+  WHERE node_id = ?2 AND window_start >= ?3 AND samples > 0
   GROUP BY bucket
   ORDER BY bucket`;
 
@@ -73,15 +73,16 @@ interface RecentNode {
 export const RECENT_SQL = `
   SELECT m.node_id,
          MAX(300, n.interval_seconds) AS slot_seconds,
-         CAST(strftime('%s', m.recorded_at) AS INTEGER) / MAX(300, n.interval_seconds) AS slot,
+         CAST(strftime('%s', m.window_start) AS INTEGER) / MAX(300, n.interval_seconds) AS slot,
          AVG(m.cpu_percent) AS cpu,
          AVG(m.memory_used_bytes) AS mem_used,
          MAX(m.memory_total_bytes) AS mem_total,
-         COUNT(*) AS samples
+         SUM(m.samples) AS samples
   FROM nodes n
-  JOIN node_metrics m
+  JOIN node_windows m
     ON m.node_id = n.id
-   AND m.recorded_at >= datetime(?2, '-' || (30 * MAX(300, n.interval_seconds)) || ' seconds')
+   AND m.samples > 0
+   AND m.window_start >= strftime('%Y-%m-%dT%H:%M:%fZ', ?2, '-' || (30 * MAX(300, n.interval_seconds)) || ' seconds')
   WHERE n.owner_user_id = ?1 AND n.disabled_at IS NULL
   GROUP BY m.node_id, slot
   ORDER BY m.node_id, slot`;

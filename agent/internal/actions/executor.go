@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	maxRequestBytes = 8 << 10
+	maxRequestBytes = 64 << 10
 	maxOutputBytes  = 2 << 10
 	commandTimeout  = 2 * time.Minute
 	expirySkew      = time.Minute
@@ -260,7 +260,7 @@ func (e Executor) authorize(request Request) error {
 	if err != nil {
 		return err
 	}
-	if len(trust.Keys) == 0 {
+	if len(trust.Core) == 0 {
 		return errors.New("no trusted devices")
 	}
 	_, err = VerifyCommand(trust, request, e.Now())
@@ -337,7 +337,7 @@ func (e Executor) trustChange(request Request) Result {
 	if err := SaveTrust(e.StateDir, next); err != nil {
 		return e.refuse(request.ID, err)
 	}
-	return Result{ID: request.ID, OK: true, Output: fmt.Sprintf("trusted %d devices, version %d", len(next.Keys), next.Version), FinishedAt: e.stamp()}
+	return Result{ID: request.ID, OK: true, Output: fmt.Sprintf("%d core devices, %d with access, version %d", len(next.Core), len(next.Access), next.Version), FinishedAt: e.stamp()}
 }
 
 func remember(stopped []string, name string, keep bool) []string {

@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { CHECK_LIMIT } from "../agent/ingest";
 import { readAgentRelease } from "../agent/releases";
+import { fleetLive, mergeLive, pokeSoon } from "../fleet/client";
 import { validateCheckTarget } from "../lib/checks";
 import {
   agentOrigin,
@@ -28,7 +29,7 @@ export function registerAdminRoutes(
               cpu_percent, memory_used_bytes, memory_total_bytes,
               disk_used_bytes, disk_total_bytes, load_1, uptime_seconds,
               created_at, update_requested_version, update_requested_at,
-              auto_update
+              auto_update, transport
        FROM nodes WHERE owner_user_id = ? ORDER BY created_at DESC`,
       )
         .bind(ownerId)
@@ -59,8 +60,16 @@ export function registerAdminRoutes(
         .all(),
     ]);
 
+    const rows = nodes.results as {
+      id: string;
+      transport: string;
+      interval_seconds: number;
+    }[];
+    const live = rows.some((row) => row.transport === "stream")
+      ? await fleetLive(context.env, ownerId)
+      : {};
     return context.json({
-      nodes: nodes.results,
+      nodes: mergeLive(rows, live),
       checks: checks.results,
       incidents: incidents.results,
       agentRelease: {
@@ -165,6 +174,7 @@ export function registerAdminRoutes(
         body.data.timeoutSeconds,
       )
       .run();
+    pokeSoon(context, context.get("identity").id, [body.data.nodeId]);
     return context.json({ id }, 201);
   });
 
@@ -175,45 +185,105 @@ export function registerAdminRoutes(
       .object({
         enabled: z.boolean().optional(),
         name: z.string().trim().min(1).max(100).optional(),
+        nodeId: z.string().uuid().optional(),
+        kind: z.enum(["HTTP", "TCP", "SERVICE"]).optional(),
+        target: z.string().trim().min(1).max(2048).optional(),
         timeoutSeconds: z.number().int().min(1).max(30).optional(),
         public: z.boolean().optional(),
         publicNote: z.string().trim().max(200).optional(),
       })
       .safeParse(await readJson(context));
     if (!body.success) return invalidRequest(context);
+    const change = body.data;
+
+    const kind = change.kind ?? check.kind;
+    const target =
+      change.kind !== undefined || change.target !== undefined
+        ? validateCheckTarget(kind, change.target ?? check.target)
+        : check.target;
+    if (!target) {
+      return context.json(
+        { code: "INVALID_TARGET", message: "The check target is invalid." },
+        400,
+      );
+    }
+    const nodeId = change.nodeId ?? check.node_id ?? "";
+    if (nodeId !== check.node_id) {
+      const node = await findOwnedNode(
+        context.env.DB,
+        nodeId,
+        context.get("identity").id,
+      );
+      if (!node) return context.json({ code: "NOT_FOUND" }, 404);
+      const existing = await context.env.DB.prepare(
+        "SELECT COUNT(*) AS total FROM checks WHERE node_id = ?",
+      )
+        .bind(nodeId)
+        .first<{ total: number }>();
+      if ((existing?.total ?? 0) >= CHECK_LIMIT) {
+        return context.json(
+          {
+            code: "CHECK_LIMIT",
+            message: `A node can run at most ${CHECK_LIMIT} checks.`,
+          },
+          400,
+        );
+      }
+    }
+    const pausing = change.enabled === false && check.enabled === 1;
+    const fresh =
+      pausing ||
+      kind !== check.kind ||
+      target !== check.target ||
+      nodeId !== check.node_id;
 
     const updates: string[] = [];
     const values: unknown[] = [];
-    if (body.data.enabled !== undefined) {
-      updates.push("enabled = ?");
-      values.push(body.data.enabled ? 1 : 0);
+    const set = (column: string, value: unknown) => {
+      updates.push(`${column} = ?`);
+      values.push(value);
+    };
+    if (change.enabled !== undefined) set("enabled", change.enabled ? 1 : 0);
+    if (change.name !== undefined) set("name", change.name);
+    if (change.timeoutSeconds !== undefined) {
+      set("timeout_seconds", change.timeoutSeconds);
     }
-    if (body.data.name !== undefined) {
-      updates.push("name = ?");
-      values.push(body.data.name);
+    if (change.public !== undefined) set("public", change.public ? 1 : 0);
+    if (change.publicNote !== undefined) {
+      set("public_note", change.publicNote || null);
     }
-    if (body.data.timeoutSeconds !== undefined) {
-      updates.push("timeout_seconds = ?");
-      values.push(body.data.timeoutSeconds);
+    if (fresh) {
+      set("node_id", nodeId);
+      set("kind", kind);
+      set("target", target);
+      updates.push(
+        "status = 'UNKNOWN'",
+        "consecutive_failures = 0",
+        "latency_ms = NULL",
+        "last_message = NULL",
+        "last_checked_at = NULL",
+      );
     }
-    if (body.data.public !== undefined) {
-      updates.push("public = ?");
-      values.push(body.data.public ? 1 : 0);
-    }
-    if (body.data.publicNote !== undefined) {
-      updates.push("public_note = ?");
-      values.push(body.data.publicNote || null);
-    }
-    if (updates.length > 0) {
-      updates.push("updated_at = datetime('now')");
-      values.push(check.id);
-      await context.env.DB.prepare(
+    if (updates.length === 0) return context.json({ ok: true });
+    updates.push("updated_at = datetime('now')");
+    const statements = [
+      context.env.DB.prepare(
         `UPDATE checks SET ${updates.join(", ")} WHERE id = ?`,
-      )
-        .bind(...values)
-        .run();
+      ).bind(...values, check.id),
+    ];
+    if (fresh) {
+      statements.push(
+        context.env.DB.prepare(
+          `UPDATE incidents SET status = 'RESOLVED', resolved_at = ?
+           WHERE check_id = ? AND status = 'OPEN'`,
+        ).bind(new Date().toISOString(), check.id),
+      );
     }
-    return context.json({ ok: true });
+    await context.env.DB.batch(statements);
+    pokeSoon(context, context.get("identity").id, [
+      ...new Set([check.node_id ?? nodeId, nodeId]),
+    ]);
+    return context.json({ ok: true, fresh });
   });
 
   app.delete("/api/checks/:id", requireAdmin, async (context) => {
@@ -222,6 +292,9 @@ export function registerAdminRoutes(
     await context.env.DB.prepare("DELETE FROM checks WHERE id = ?")
       .bind(check.id)
       .run();
+    if (check.node_id) {
+      pokeSoon(context, context.get("identity").id, [check.node_id]);
+    }
     return context.body(null, 204);
   });
 }

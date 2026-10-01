@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router";
 import { LayoutGrid, List, Search, TriangleAlert, X } from "lucide-react";
 
@@ -23,7 +23,8 @@ import { AgentVersion } from "@/features/agent/agent-version";
 import { LatestAgent, UpdateNotice } from "@/features/agent/update-notice";
 import { EnrollDialog } from "@/features/nodes/enroll-dialog";
 import { NodeActions } from "@/features/nodes/node-actions";
-import { useOverview, useRecentMetrics } from "@/lib/api";
+import { UsageDialog } from "@/features/usage/usage-dialog";
+import { useOverview, useRecentMetrics, useUsage } from "@/lib/api";
 import { agentState, type AgentState } from "@/lib/agent";
 import { budgetLevel, estimateDailyUse, quotaLine } from "@/lib/budget";
 import {
@@ -441,6 +442,7 @@ function SummaryTile({
   detail,
   tone,
   to,
+  onOpen,
   children,
 }: {
   label: string;
@@ -448,6 +450,7 @@ function SummaryTile({
   detail: string;
   tone?: "bad" | "warn" | "ok";
   to?: string;
+  onOpen?: () => void;
   children?: ReactNode;
 }) {
   const body = (
@@ -486,6 +489,17 @@ function SummaryTile({
     >
       {body}
     </Link>
+  ) : onOpen ? (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={cn(
+        frame,
+        "w-full text-left transition-colors hover:border-border-strong hover:bg-card-hover",
+      )}
+    >
+      {body}
+    </button>
   ) : (
     <div className={frame}>{body}</div>
   );
@@ -506,9 +520,18 @@ function FleetSummary({
 }) {
   const summary = fleetSummary(nodes, checks, seen);
   const open = incidents.filter((incident) => incident.status === "OPEN");
-  const use = estimateDailyUse(nodes, checks);
-  const level = budgetLevel(use);
-  const quota = quotaLine(use);
+  const usage = useUsage();
+  const [showUsage, setShowUsage] = useState(false);
+  const estimate = estimateDailyUse(nodes);
+  const real = usage.data?.source === "cloudflare" ? usage.data.krynodes : null;
+  const use = real ?? estimate;
+  const budget = usage.data?.budget ?? {
+    requests: 20_000,
+    writes: 30_000,
+    reads: 1_000_000,
+  };
+  const level = budgetLevel(use, budget);
+  const quota = quotaLine(use, budget);
   return (
     <section
       aria-label="Fleet summary"
@@ -560,10 +583,11 @@ function FleetSummary({
         to={open.length > 0 ? "/incidents?status=open" : "/incidents"}
       />
       <SummaryTile
-        label="Krynodes quota · est."
+        label={real ? "Krynodes quota · today" : "Krynodes quota · est."}
         value={`${quota.percent}%`}
         detail={quota.detail}
         tone={level === "over" ? "bad" : level === "warn" ? "warn" : undefined}
+        onOpen={() => setShowUsage(true)}
       >
         <div
           aria-hidden="true"
@@ -579,6 +603,12 @@ function FleetSummary({
           />
         </div>
       </SummaryTile>
+      <UsageDialog
+        open={showUsage}
+        onOpenChange={setShowUsage}
+        usage={usage.data}
+        estimate={estimate}
+      />
     </section>
   );
 }
@@ -720,15 +750,24 @@ function ChecksCell({
   if (checks.length === 0) {
     return <span className="text-muted-foreground">--</span>;
   }
-  const shown = checks.map((check) => checkDisplayStatus(check.status, state));
+  const shown = checks.map((check) =>
+    checkDisplayStatus(check.status, state, check.enabled),
+  );
+  const paused = shown.filter((status) => status === "PAUSED").length;
+  const active = checks.length - paused;
   const down = shown.filter((status) => status === "DOWN").length;
   if (down > 0) return <span className="text-destructive">{down} down</span>;
+  if (active === 0)
+    return <span className="text-muted-foreground">Paused</span>;
   if (state !== "online") {
-    return <span className="text-muted-foreground">not reporting</span>;
+    return <span className="text-muted-foreground">Not reporting</span>;
   }
   return (
     <span>
-      {shown.filter((status) => status === "UP").length}/{checks.length} up
+      {shown.filter((status) => status === "UP").length}/{active} up
+      {paused > 0 && (
+        <span className="text-muted-foreground"> · {paused} paused</span>
+      )}
     </span>
   );
 }

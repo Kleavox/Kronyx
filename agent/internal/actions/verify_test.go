@@ -3,6 +3,7 @@ package actions
 import (
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -19,8 +20,6 @@ const (
 	testNode   = "22222222-2222-4222-8222-222222222222"
 	testID     = "33333333-3333-4333-8333-333333333333"
 )
-
-const flagVerified = 0x04
 
 var testNow = time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
 
@@ -99,6 +98,8 @@ type deployCase struct {
 	signer       *ecdsa.PrivateKey
 	command      Command
 	extra        bool
+	proof        ed25519.PrivateKey
+	purpose      string
 }
 
 func newDeployCase(t *testing.T, alg int) *deployCase {
@@ -109,7 +110,7 @@ func newDeployCase(t *testing.T, alg int) *deployCase {
 		t.Fatal(err)
 	}
 	return &deployCase{
-		trust:        Trust{NodeID: testNode, Origin: testOrigin, RPID: testRPID, Version: 1, Keys: []TrustKey{key}},
+		trust:        Trust{V: 2, NodeID: testNode, Origin: testOrigin, RPID: testRPID, Version: 1, Core: []TrustKey{key}, Access: []string{"cred-1"}},
 		passkey:      passkey,
 		assertion:    assertionOptions{origin: testOrigin, rpID: testRPID, clientType: "webauthn.get", flags: flagPresent | flagVerified},
 		credentialID: "cred-1",
@@ -152,6 +153,13 @@ func (c *deployCase) request(t *testing.T) Request {
 	grant["authenticatorData"] = assertion.AuthenticatorData
 	grant["clientDataJSON"] = assertion.ClientDataJSON
 	grant["signature"] = assertion.Signature
+	if c.proof != nil {
+		purpose := c.purpose
+		if purpose == "" {
+			purpose = "grant"
+		}
+		grant["proof"] = proofFor(c.proof, purpose, grantBytes)
+	}
 	if c.extra {
 		signed["extra"] = true
 	}
@@ -321,4 +329,35 @@ func TestAnUnsignedRequestIsRefused(t *testing.T) {
 	request.Signed = nil
 	_, err := VerifyCommand(c.trust, request, testNow)
 	refused(t, err, "not signed")
+}
+
+func TestAPasskeyWithoutAccessToThisServerIsRefused(t *testing.T) {
+	c := newDeployCase(t, algES256)
+	c.trust.Access = nil
+	refused(t, c.verify(t, testNow), "no access to this server")
+}
+
+func TestAGrantWithoutFingerprintNeedsThePassphrase(t *testing.T) {
+	c := newDeployCase(t, algES256)
+	pass, private := passphraseKey(t)
+	c.trust.Passphrase = &pass
+	c.assertion.flags = flagPresent
+	refused(t, c.verify(t, testNow), "passphrase is needed")
+
+	c.proof = private
+	if err := c.verify(t, testNow); err != nil {
+		t.Fatal(err)
+	}
+
+	c.purpose = "approve:cred-1"
+	refused(t, c.verify(t, testNow), "passphrase is wrong")
+}
+
+func TestAGrantWithAFingerprintNeedsNoPassphrase(t *testing.T) {
+	c := newDeployCase(t, algES256)
+	pass, _ := passphraseKey(t)
+	c.trust.Passphrase = &pass
+	if err := c.verify(t, testNow); err != nil {
+		t.Fatal(err)
+	}
 }

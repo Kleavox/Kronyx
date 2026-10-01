@@ -20,7 +20,6 @@ import { deployBlocker, deployTargets, type StackMember } from "@/lib/stacks";
 import type { BatchMode } from "@/types";
 
 import { useDeploySession } from "./use-deploy-session";
-import { useFingerprints } from "./use-fingerprints";
 import { useSignedAction } from "./use-signed-action";
 
 const MODES: { value: BatchMode; label: string; detail: string }[] = [
@@ -90,12 +89,10 @@ function DeployForm({
     ? `${word} ${request.project} on ${targets.length} servers?`
     : `${word} ${request.project} on ${first?.node.name ?? request.members[0]?.node.name ?? ""}?`;
   const list = devices.data?.devices;
-  const prints = useFingerprints(list);
   const ids = list?.map((device) => device.id) ?? [];
   const signers = signersFor(
     list ?? [],
-    prints ?? [],
-    targets.map((member) => member.trustKeys),
+    targets.map((member) => member.trust),
   );
   const offline = (member: StackMember) =>
     nodeState(member.node, seen) === "offline";
@@ -124,17 +121,17 @@ function DeployForm({
             : "Pulls new images and restarts the stack. It can take a few minutes."}
         </AlertDialogDescription>
       </AlertDialogHeader>
-      {ids.length === 0 || (prints && signers.length === 0) ? (
+      {list && (ids.length === 0 || signers.length === 0) ? (
         <p className="text-sm">
           {ids.length === 0
             ? "Deploys need a trusted device. "
-            : "No device of yours is trusted by every server here. "}
+            : "None of your devices has access to every server here. "}
           <Link
             to="/devices"
             className="underline underline-offset-4"
             onClick={onClose}
           >
-            {ids.length === 0 ? "Set up trusted devices" : "Update servers"}
+            {ids.length === 0 ? "Set up trusted devices" : "Change access"}
           </Link>
           .
         </p>

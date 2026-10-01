@@ -1,3 +1,4 @@
+import { pokeSoon } from "../fleet/client";
 import {
   isProtectedTarget,
   isValidTarget,
@@ -14,6 +15,7 @@ import {
   type ActionRow,
 } from "../actions/store";
 import { decodeJson } from "../lib/b64url";
+import { readReport } from "../trust/fleet";
 import {
   invalidRequest,
   readJson,
@@ -70,6 +72,7 @@ function toActionRecord(row: ActionRow) {
     finishedAt: row.finished_at,
     exitCode: row.exit_code,
     output: row.output,
+    deviceId: row.device_id,
   };
 }
 
@@ -88,7 +91,7 @@ export function registerServiceRoutes(
     const [nodes, services, actions] = await Promise.all([
       db
         .prepare(
-          `SELECT id, inventory_at, refresh_requested_at, trust_version, trust_keys
+          `SELECT id, inventory_at, refresh_requested_at, trust_report
            FROM nodes WHERE owner_user_id = ? AND enrolled_at IS NOT NULL`,
         )
         .bind(owner)
@@ -96,8 +99,7 @@ export function registerServiceRoutes(
           id: string;
           inventory_at: string | null;
           refresh_requested_at: string | null;
-          trust_version: number | null;
-          trust_keys: string | null;
+          trust_report: string | null;
         }>(),
       db
         .prepare(
@@ -145,13 +147,7 @@ export function registerServiceRoutes(
         id: node.id,
         inventoryAt: node.inventory_at,
         refreshRequestedAt: node.refresh_requested_at,
-        trust:
-          node.trust_version === null
-            ? null
-            : {
-                version: node.trust_version,
-                keys: JSON.parse(node.trust_keys ?? "[]") as string[],
-              },
+        trust: readReport(node.trust_report),
         stacks: stacks.results
           .filter((stack) => stack.node_id === node.id)
           .map((stack) => ({
@@ -328,6 +324,7 @@ export function registerServiceRoutes(
       targets,
       requestedBy: identity.email,
       now,
+      deviceId: targets[0]?.signed?.grant.credentialId,
     });
     const credential = targets[0]?.signed?.grant.credentialId;
     const used = credential
@@ -351,6 +348,11 @@ export function registerServiceRoutes(
         409,
       );
     }
+    pokeSoon(
+      context,
+      identity.id,
+      targets.map((target) => target.nodeId),
+    );
     return context.json(
       { batchId: batch.batchId, actions: batch.actions },
       201,
@@ -375,12 +377,14 @@ export function registerServiceRoutes(
   app.post("/api/services/refresh", requireOperator, async (context) => {
     const parsed = refreshSchema.safeParse((await readJson(context)) ?? {});
     if (!parsed.success) return invalidRequest(context);
+    const ownerId = context.get("identity").id;
     const refreshed = await requestRefresh(
       context.env.DB,
-      context.get("identity").id,
+      ownerId,
       parsed.data.nodeIds,
       Date.now(),
     );
-    return context.json({ refreshed }, 202);
+    pokeSoon(context, ownerId, refreshed);
+    return context.json({ refreshed: refreshed.length }, 202);
   });
 }

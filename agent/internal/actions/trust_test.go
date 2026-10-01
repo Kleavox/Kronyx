@@ -3,6 +3,7 @@ package actions
 import (
 	"context"
 	"crypto"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -15,24 +16,77 @@ import (
 
 const otherNode = "44444444-4444-4444-8444-444444444444"
 
-type changeCase struct {
-	body      map[string]any
-	passkey   crypto.Signer
-	id        string
-	assertion assertionOptions
-	unsigned  bool
+type device struct {
+	key    TrustKey
+	signer crypto.Signer
 }
 
-func newChange(t *testing.T, version int, keys ...TrustKey) *changeCase {
+type changeApproval struct {
+	device     device
+	flags      byte
+	purpose    string
+	challenge  []byte
+	passphrase ed25519.PrivateKey
+}
+
+type changeCase struct {
+	body      map[string]any
+	approvals []changeApproval
+}
+
+func devices(t *testing.T, ids ...string) map[string]device {
 	t.Helper()
-	return &changeCase{
-		body: map[string]any{
-			"v": 1, "nodeIds": []string{testNode}, "origin": testOrigin, "rpId": testRPID,
-			"version": version, "keys": keys,
-			"issuedAt": testNow.Format(time.RFC3339Nano), "expiresAt": testNow.Add(10 * time.Minute).Format(time.RFC3339Nano),
-		},
-		assertion: assertionOptions{origin: testOrigin, rpID: testRPID, clientType: "webauthn.get", flags: flagPresent | flagVerified},
+	found := map[string]device{}
+	for _, id := range ids {
+		key, signer := newPasskey(t, id, algES256)
+		found[id] = device{key: key, signer: signer}
 	}
+	return found
+}
+
+func keysOf(found map[string]device, ids ...string) []TrustKey {
+	keys := make([]TrustKey, 0, len(ids))
+	for _, id := range ids {
+		keys = append(keys, found[id].key)
+	}
+	return keys
+}
+
+func storeOf(found map[string]device, core []string, access []string) Trust {
+	return Trust{V: 2, NodeID: testNode, Origin: testOrigin, RPID: testRPID, Version: 1, Core: keysOf(found, core...), Access: access}
+}
+
+func passphraseKey(t *testing.T) (PassphraseKey, ed25519.PrivateKey) {
+	t.Helper()
+	private := ed25519.NewKeyFromSeed(digest([]byte("correct horse battery staple")))
+	return PassphraseKey{
+		Salt:       b64.EncodeToString(make([]byte, 16)),
+		Iterations: 600000,
+		PublicKey:  b64.EncodeToString(private.Public().(ed25519.PublicKey)),
+	}, private
+}
+
+func proofFor(private ed25519.PrivateKey, purpose string, data []byte) string {
+	return b64.EncodeToString(ed25519.Sign(private, []byte(proofMessage(purpose, data))))
+}
+
+func newChange(version int, core []TrustKey, access map[string][]string) *changeCase {
+	body := map[string]any{
+		"v": 2, "origin": testOrigin, "rpId": testRPID, "version": version,
+		"issuedAt": testNow.Format(time.RFC3339Nano), "expiresAt": testNow.Add(time.Hour).Format(time.RFC3339Nano),
+		"core": nil, "passphrase": nil, "access": access,
+	}
+	if core != nil {
+		body["core"] = core
+	}
+	return &changeCase{body: body}
+}
+
+func (c *changeCase) by(found map[string]device, ids ...string) *changeCase {
+	for _, id := range ids {
+		c.approvals = append(c.approvals, changeApproval{device: found[id], flags: flagPresent | flagVerified})
+	}
+	return c
 }
 
 func (c *changeCase) request(t *testing.T) Request {
@@ -41,111 +95,149 @@ func (c *changeCase) request(t *testing.T) Request {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed := map[string]any{"change": b64.EncodeToString(changeBytes), "assertion": nil}
-	if !c.unsigned {
-		options := c.assertion
-		options.challenge = digest(changeBytes)
-		signed["assertion"] = sign(t, c.passkey, c.id, options)
+	approvals := []map[string]any{}
+	for _, approval := range c.approvals {
+		challenge := approval.challenge
+		if challenge == nil {
+			challenge = digest(changeBytes)
+		}
+		assertion := sign(t, approval.device.signer, approval.device.key.ID, assertionOptions{origin: testOrigin, rpID: testRPID, clientType: "webauthn.get", flags: approval.flags, challenge: challenge})
+		entry := map[string]any{
+			"credentialId": assertion.CredentialID, "authenticatorData": assertion.AuthenticatorData,
+			"clientDataJSON": assertion.ClientDataJSON, "signature": assertion.Signature,
+		}
+		if approval.passphrase != nil {
+			purpose := approval.purpose
+			if purpose == "" {
+				purpose = "approve:" + approval.device.key.ID
+			}
+			entry["proof"] = proofFor(approval.passphrase, purpose, changeBytes)
+		}
+		approvals = append(approvals, entry)
 	}
-	raw, err := json.Marshal(signed)
+	raw, err := json.Marshal(map[string]any{"change": b64.EncodeToString(changeBytes), "approvals": approvals})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return Request{ID: testID, Kind: "trust", Name: "devices", Action: "trust", ExpiresAt: testNow.Add(10 * time.Minute).Format(time.RFC3339Nano), Signed: raw}
 }
 
-func trusted(t *testing.T) (Trust, TrustKey, crypto.Signer) {
+func apply(t *testing.T, current Trust, c *changeCase) (Trust, error) {
 	t.Helper()
-	key, passkey := newPasskey(t, "cred-1", algES256)
-	return Trust{NodeID: testNode, Origin: testOrigin, RPID: testRPID, Version: 1, Keys: []TrustKey{key}}, key, passkey
+	return ApplyTrustChange(current, c.request(t), testNow)
 }
 
 func TestTheFirstTrustIsAcceptedUnsignedOnAnEmptyStore(t *testing.T) {
-	key, _ := newPasskey(t, "cred-1", algES256)
-	c := newChange(t, 1, key)
-	c.unsigned = true
-	next, err := ApplyTrustChange(Trust{}, c.request(t), testNow)
+	found := devices(t, "a")
+	pass, _ := passphraseKey(t)
+	c := newChange(1, keysOf(found, "a"), map[string][]string{testNode: {"a"}})
+	c.body["passphrase"] = pass
+	next, err := apply(t, Trust{}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.NodeID != testNode || next.Origin != testOrigin || next.RPID != testRPID || next.Version != 1 || len(next.Keys) != 1 {
-		t.Fatalf("trust %+v", next)
+	if next.V != 2 || next.NodeID != testNode || len(next.Core) != 1 || len(next.Access) != 1 || next.Passphrase == nil || *next.Passphrase != pass {
+		t.Fatalf("next %+v", next)
 	}
 }
 
-func TestAnUnsignedFirstTrustForSeveralServersIsRefused(t *testing.T) {
-	key, _ := newPasskey(t, "cred-1", algES256)
-	c := newChange(t, 1, key)
-	c.unsigned = true
-	c.body["nodeIds"] = []string{testNode, otherNode}
-	_, err := ApplyTrustChange(Trust{}, c.request(t), testNow)
+func TestAFirstTrustForSeveralServersIsRefused(t *testing.T) {
+	found := devices(t, "a")
+	c := newChange(1, keysOf(found, "a"), map[string][]string{testNode: {}, otherNode: {}})
+	_, err := apply(t, Trust{}, c)
 	refused(t, err, "exactly one server")
 }
 
-func TestAnUnsignedChangeIsRefusedOnceAKeyIsTrusted(t *testing.T) {
-	current, key, _ := trusted(t)
-	c := newChange(t, 2, key)
-	c.unsigned = true
-	_, err := ApplyTrustChange(current, c.request(t), testNow)
-	refused(t, err, "must be signed")
+func TestAnApprovedFirstTrustIsRefused(t *testing.T) {
+	found := devices(t, "a")
+	c := newChange(1, keysOf(found, "a"), map[string][]string{testNode: {}}).by(found, "a")
+	_, err := apply(t, Trust{}, c)
+	refused(t, err, "no device is trusted yet")
 }
 
-func TestASignedChangeWithAHigherVersionReplacesTheKeys(t *testing.T) {
-	current, key, passkey := trusted(t)
-	phone, _ := newPasskey(t, "cred-2", algES256)
-	c := newChange(t, 2, key, phone)
-	c.passkey, c.id = passkey, "cred-1"
-	next, err := ApplyTrustChange(current, c.request(t), testNow)
+func TestAnUnapprovedChangeIsRefusedOnceTrusted(t *testing.T) {
+	found := devices(t, "a")
+	c := newChange(2, nil, map[string][]string{testNode: {"a"}})
+	_, err := apply(t, storeOf(found, []string{"a"}, []string{"a"}), c)
+	refused(t, err, "approved by trusted devices")
+}
+
+func TestTwoApprovalsAdmitACoreDevice(t *testing.T) {
+	found := devices(t, "a", "b", "c")
+	c := newChange(2, keysOf(found, "a", "b", "c"), map[string][]string{testNode: {"a", "b"}}).by(found, "a", "b")
+	next, err := apply(t, storeOf(found, []string{"a", "b"}, []string{"a", "b"}), c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.NodeID != testNode || next.Version != 2 || len(next.Keys) != 2 {
-		t.Fatalf("trust %+v", next)
+	if next.Version != 2 || len(next.Core) != 3 || len(next.Access) != 2 || next.NodeID != testNode {
+		t.Fatalf("next %+v", next)
 	}
 }
 
+func TestOneApprovalCannotAdmitACoreDevice(t *testing.T) {
+	found := devices(t, "a", "b", "c")
+	c := newChange(2, keysOf(found, "a", "b", "c"), map[string][]string{testNode: {"a", "b"}}).by(found, "a")
+	_, err := apply(t, storeOf(found, []string{"a", "b"}, []string{"a", "b"}), c)
+	refused(t, err, "needs 1 more core device")
+}
+
+func TestADeviceCannotGrantItselfAccess(t *testing.T) {
+	found := devices(t, "a", "b", "c")
+	c := newChange(2, nil, map[string][]string{testNode: {"a", "b", "c"}}).by(found, "c")
+	_, err := apply(t, storeOf(found, []string{"a", "b", "c"}, []string{"a", "b"}), c)
+	refused(t, err, "another device with access")
+}
+
+func TestAnApprovalOverOtherBytesIsRefused(t *testing.T) {
+	found := devices(t, "a")
+	c := newChange(2, nil, map[string][]string{testNode: {"a"}}).by(found, "a")
+	c.approvals[0].challenge = digest([]byte("something else"))
+	_, err := apply(t, storeOf(found, []string{"a"}, []string{"a"}), c)
+	refused(t, err, "challenge does not match")
+}
+
+func TestAnApprovalFromOutsideTheCoreIsRefused(t *testing.T) {
+	found := devices(t, "a", "x")
+	c := newChange(2, nil, map[string][]string{testNode: {"a"}}).by(found, "x")
+	_, err := apply(t, storeOf(found, []string{"a"}, []string{"a"}), c)
+	refused(t, err, "passkey is not trusted")
+}
+
 func TestAStaleVersionIsRefused(t *testing.T) {
-	current, key, passkey := trusted(t)
-	c := newChange(t, 1, key)
-	c.passkey, c.id = passkey, "cred-1"
-	_, err := ApplyTrustChange(current, c.request(t), testNow)
+	found := devices(t, "a")
+	c := newChange(1, nil, map[string][]string{testNode: {"a"}}).by(found, "a")
+	_, err := apply(t, storeOf(found, []string{"a"}, []string{"a"}), c)
 	refused(t, err, "version")
 }
 
 func TestAChangeForOtherServersIsRefused(t *testing.T) {
-	current, key, passkey := trusted(t)
-	c := newChange(t, 2, key)
-	c.passkey, c.id = passkey, "cred-1"
-	c.body["nodeIds"] = []string{otherNode}
-	_, err := ApplyTrustChange(current, c.request(t), testNow)
+	found := devices(t, "a")
+	c := newChange(2, nil, map[string][]string{otherNode: {"a"}}).by(found, "a")
+	_, err := apply(t, storeOf(found, []string{"a"}, []string{"a"}), c)
 	refused(t, err, "not for this server")
 }
 
 func TestAnotherOriginIsRefused(t *testing.T) {
-	current, key, passkey := trusted(t)
-	c := newChange(t, 2, key)
-	c.passkey, c.id = passkey, "cred-1"
+	found := devices(t, "a")
+	c := newChange(2, nil, map[string][]string{testNode: {"a"}}).by(found, "a")
 	c.body["origin"] = "https://evil.example"
 	c.body["rpId"] = "evil.example"
-	_, err := ApplyTrustChange(current, c.request(t), testNow)
+	_, err := apply(t, storeOf(found, []string{"a"}, []string{"a"}), c)
 	refused(t, err, "another origin")
 }
 
 func TestARPIDThatIsNotTheOriginHostIsRefused(t *testing.T) {
-	key, _ := newPasskey(t, "cred-1", algES256)
-	c := newChange(t, 1, key)
-	c.unsigned = true
-	c.body["rpId"] = "kleavox.xyz"
-	_, err := ApplyTrustChange(Trust{}, c.request(t), testNow)
+	found := devices(t, "a")
+	c := newChange(1, keysOf(found, "a"), map[string][]string{testNode: {}})
+	c.body["rpId"] = "example.com"
+	_, err := apply(t, Trust{}, c)
 	refused(t, err, "host of the origin")
 }
 
-func TestAnEmptyKeyListIsRefused(t *testing.T) {
-	current, _, passkey := trusted(t)
-	c := newChange(t, 2)
-	c.passkey, c.id = passkey, "cred-1"
-	c.body["keys"] = []TrustKey{}
-	_, err := ApplyTrustChange(current, c.request(t), testNow)
+func TestAnEmptyCoreIsRefused(t *testing.T) {
+	found := devices(t, "a", "b")
+	c := newChange(2, []TrustKey{}, map[string][]string{testNode: {}}).by(found, "a", "b")
+	_, err := apply(t, storeOf(found, []string{"a", "b"}, []string{"a"}), c)
 	refused(t, err, "at least one")
 }
 
@@ -154,51 +246,111 @@ func TestAWeakRSAKeyIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	weak := TrustKey{ID: "cred-9", Name: "Old", Alg: algRS256, PublicKey: spki(t, &private.PublicKey)}
-	c := newChange(t, 1, weak)
-	c.unsigned = true
-	_, err = ApplyTrustChange(Trust{}, c.request(t), testNow)
+	weak := TrustKey{ID: "weak", Name: "Old", Alg: algRS256, PublicKey: spki(t, &private.PublicKey)}
+	c := newChange(1, []TrustKey{weak}, map[string][]string{testNode: {}})
+	_, err = apply(t, Trust{}, c)
 	refused(t, err, "at least 2048 bits")
 }
 
-func TestAChangeSignedByAnUntrustedPasskeyIsRefused(t *testing.T) {
-	current, key, _ := trusted(t)
-	_, stranger := newPasskey(t, "cred-7", algES256)
-	c := newChange(t, 2, key)
-	c.passkey, c.id = stranger, "cred-7"
-	_, err := ApplyTrustChange(current, c.request(t), testNow)
-	refused(t, err, "passkey is not trusted")
-}
-
 func TestAnExpiredChangeIsRefused(t *testing.T) {
-	current, key, passkey := trusted(t)
-	c := newChange(t, 2, key)
-	c.passkey, c.id = passkey, "cred-1"
-	_, err := ApplyTrustChange(current, c.request(t), testNow.Add(12*time.Minute))
+	found := devices(t, "a")
+	c := newChange(2, nil, map[string][]string{testNode: {"a"}}).by(found, "a")
+	c.body["expiresAt"] = testNow.Add(-2 * time.Minute).Format(time.RFC3339Nano)
+	c.body["issuedAt"] = testNow.Add(-time.Hour).Format(time.RFC3339Nano)
+	_, err := apply(t, storeOf(found, []string{"a"}, []string{"a"}), c)
 	refused(t, err, "expired")
 }
 
-func TestAChangeLongerThanTenMinutesIsRefused(t *testing.T) {
-	current, key, passkey := trusted(t)
-	c := newChange(t, 2, key)
-	c.passkey, c.id = passkey, "cred-1"
-	c.body["expiresAt"] = testNow.Add(11 * time.Minute).Format(time.RFC3339Nano)
-	_, err := ApplyTrustChange(current, c.request(t), testNow)
-	refused(t, err, "10 minutes")
+func TestAChangeLongerThanADayIsRefused(t *testing.T) {
+	found := devices(t, "a")
+	c := newChange(2, nil, map[string][]string{testNode: {"a"}}).by(found, "a")
+	c.body["expiresAt"] = testNow.Add(25 * time.Hour).Format(time.RFC3339Nano)
+	_, err := apply(t, storeOf(found, []string{"a"}, []string{"a"}), c)
+	refused(t, err, "24 hours")
+}
+
+func TestAnApprovalWithoutFingerprintNeedsThePassphrase(t *testing.T) {
+	found := devices(t, "a")
+	pass, private := passphraseKey(t)
+	current := storeOf(found, []string{"a"}, []string{"a"})
+	current.Passphrase = &pass
+	c := newChange(2, nil, map[string][]string{testNode: {"a"}}).by(found, "a")
+	c.approvals[0].flags = flagPresent
+	_, err := apply(t, current, c)
+	refused(t, err, "passphrase is needed")
+
+	c.approvals[0].passphrase = private
+	if _, err := apply(t, current, c); err != nil {
+		t.Fatal(err)
+	}
+
+	c.approvals[0].purpose = "grant"
+	_, err = apply(t, current, c)
+	refused(t, err, "passphrase is wrong")
+}
+
+func TestATouchIsEnoughWhileNoPassphraseIsSet(t *testing.T) {
+	found := devices(t, "a")
+	c := newChange(2, nil, map[string][]string{testNode: {"a"}}).by(found, "a")
+	c.approvals[0].flags = flagPresent
+	if _, err := apply(t, storeOf(found, []string{"a"}, []string{"a"}), c); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAPassphraseChangeNeedsTwoApprovals(t *testing.T) {
+	found := devices(t, "a", "b")
+	pass, _ := passphraseKey(t)
+	current := storeOf(found, []string{"a", "b"}, []string{"a", "b"})
+	c := newChange(2, nil, map[string][]string{testNode: {"a", "b"}}).by(found, "a")
+	c.body["passphrase"] = pass
+	_, err := apply(t, current, c)
+	refused(t, err, "needs 1 more core device")
+	next, err := apply(t, current, c.by(found, "b"))
+	if err != nil || next.Passphrase == nil || *next.Passphrase != pass {
+		t.Fatalf("next %+v err %v", next, err)
+	}
+}
+
+func TestAMalformedPassphraseKeyIsRefused(t *testing.T) {
+	found := devices(t, "a")
+	c := newChange(1, keysOf(found, "a"), map[string][]string{testNode: {}})
+	c.body["passphrase"] = PassphraseKey{Salt: "c2FsdA", Iterations: 600000, PublicKey: "c2hvcnQ"}
+	_, err := apply(t, Trust{}, c)
+	refused(t, err, "passphrase key")
+}
+
+func TestAVersionOneStoreBecomesCoreWithAccess(t *testing.T) {
+	dir := t.TempDir()
+	found := devices(t, "a")
+	v1 := map[string]any{"nodeId": testNode, "origin": testOrigin, "rpId": testRPID, "version": 3, "keys": keysOf(found, "a")}
+	if err := writeJSON(dir, "trust.json", v1, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadTrust(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.V != 2 || loaded.Version != 3 || len(loaded.Core) != 1 || len(loaded.Access) != 1 || loaded.Access[0] != "a" || loaded.Passphrase != nil {
+		t.Fatalf("loaded %+v", loaded)
+	}
 }
 
 func TestTrustRoundTripsThroughTheStateDirectory(t *testing.T) {
 	dir := t.TempDir()
 	empty, err := LoadTrust(dir)
-	if err != nil || len(empty.Keys) != 0 {
+	if err != nil || len(empty.Core) != 0 {
 		t.Fatalf("empty %+v err %v", empty, err)
 	}
-	current, _, _ := trusted(t)
+	found := devices(t, "a")
+	pass, _ := passphraseKey(t)
+	current := storeOf(found, []string{"a"}, []string{"a"})
+	current.Passphrase = &pass
 	if err := SaveTrust(dir, current); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := LoadTrust(dir)
-	if err != nil || loaded.NodeID != testNode || len(loaded.Keys) != 1 {
+	if err != nil || loaded.NodeID != testNode || len(loaded.Core) != 1 || loaded.Passphrase == nil {
 		t.Fatalf("loaded %+v err %v", loaded, err)
 	}
 	info, err := os.Stat(filepath.Join(dir, "trust.json"))
@@ -210,29 +362,44 @@ func TestTrustRoundTripsThroughTheStateDirectory(t *testing.T) {
 	}
 }
 
-func TestTheTrustReportCarriesFingerprints(t *testing.T) {
-	current, key, _ := trusted(t)
+func TestTheTrustReportCarriesCoreAccessAndPassphrase(t *testing.T) {
+	found := devices(t, "a", "b")
+	current := storeOf(found, []string{"a", "b"}, []string{"b"})
 	report := current.Report()
-	if report.Version != 1 || len(report.Keys) != 1 || report.Keys[0] != Fingerprint(key) || len(report.Keys[0]) != 16 {
+	if report.Version != 1 || len(report.Core) != 2 || len(report.Access) != 1 || report.Access[0] != Fingerprint(found["b"].key) || report.Passphrase {
 		t.Fatalf("report %+v", report)
+	}
+	pass, _ := passphraseKey(t)
+	current.Passphrase = &pass
+	if !current.Report().Passphrase {
+		t.Fatal("the report should say a passphrase is set")
 	}
 }
 
-func TestParseTrustArgsReadsIDAlgAndKey(t *testing.T) {
+func TestParseTrustArgsReadsKeysPassphraseAndGrant(t *testing.T) {
 	key, _ := newPasskey(t, "cred-1", algES256)
-	trust, err := ParseTrustArgs(testOrigin, []string{"cred-1.-7." + key.PublicKey})
+	pass, _ := passphraseKey(t)
+	token := pass.Salt + "." + "600000" + "." + pass.PublicKey
+	trust, err := ParseTrustArgs(testOrigin, []string{"cred-1.-7." + key.PublicKey}, token, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if trust.Origin != testOrigin || trust.RPID != testRPID || trust.Version != 1 || len(trust.Keys) != 1 || trust.Keys[0].ID != "cred-1" || trust.Keys[0].Alg != algES256 {
+	if trust.V != 2 || trust.Origin != testOrigin || trust.RPID != testRPID || trust.Version != 1 || len(trust.Core) != 1 || trust.Core[0].ID != "cred-1" || len(trust.Access) != 1 || trust.Passphrase == nil || *trust.Passphrase != pass {
 		t.Fatalf("trust %+v", trust)
 	}
+	plain, err := ParseTrustArgs(testOrigin, []string{"cred-1.-7." + key.PublicKey}, "", false)
+	if err != nil || len(plain.Access) != 0 || plain.Passphrase != nil {
+		t.Fatalf("plain %+v err %v", plain, err)
+	}
 	for _, bad := range [][]string{{"cred-1"}, {"cred-1.x." + key.PublicKey}, {"cred-1.5." + key.PublicKey}, {"cred-1.-7.bm90YWtleQ"}, {}} {
-		if _, err := ParseTrustArgs(testOrigin, bad); err == nil {
+		if _, err := ParseTrustArgs(testOrigin, bad, "", false); err == nil {
 			t.Errorf("%v should be refused", bad)
 		}
 	}
-	if _, err := ParseTrustArgs("kry.kleavox.xyz", []string{"cred-1.-7." + key.PublicKey}); err == nil {
+	if _, err := ParseTrustArgs(testOrigin, []string{"cred-1.-7." + key.PublicKey}, "salt.nope.key", false); err == nil {
+		t.Error("a malformed passphrase should be refused")
+	}
+	if _, err := ParseTrustArgs("kry.kleavox.xyz", []string{"cred-1.-7." + key.PublicKey}, "", false); err == nil {
 		t.Error("an origin without a scheme should be refused")
 	}
 }
@@ -240,10 +407,8 @@ func TestParseTrustArgsReadsIDAlgAndKey(t *testing.T) {
 func TestTheExecutorAppliesATrustRequestAndReportsIt(t *testing.T) {
 	executor, run := newExecutor(t)
 	executor.Now = func() time.Time { return testNow }
-	key, _ := newPasskey(t, "cred-1", algES256)
-	c := newChange(t, 1, key)
-	c.unsigned = true
-	request := c.request(t)
+	found := devices(t, "a")
+	request := newChange(1, keysOf(found, "a"), map[string][]string{testNode: {"a"}}).request(t)
 	writeRequest(t, executor.RequestDir, testID+".json", request)
 	if err := executor.Execute(context.Background()); err != nil {
 		t.Fatal(err)
@@ -259,7 +424,7 @@ func TestTheExecutorAppliesATrustRequestAndReportsIt(t *testing.T) {
 	if err := readJSON(filepath.Join(executor.StateDir, "inventory.json"), &inventory); err != nil {
 		t.Fatal(err)
 	}
-	if inventory.Trust.Version != 1 || len(inventory.Trust.Keys) != 1 {
+	if inventory.Trust.Version != 1 || len(inventory.Trust.Core) != 1 || len(inventory.Trust.Access) != 1 {
 		t.Fatalf("inventory trust %+v", inventory.Trust)
 	}
 	if len(run.calls) != 0 {

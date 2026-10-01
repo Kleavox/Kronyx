@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { app } from "../app";
 import type { Env } from "../env";
-import { seedCheck, seedNode } from "../test/seed";
+import { seedCheck, seedIncident, seedNode, seedResult } from "../test/seed";
 import { createTestDb } from "../test/sqlite-d1";
 
 const NODE = "11111111-1111-4111-8111-111111111111";
@@ -63,5 +63,154 @@ describe("public check fields", () => {
       await app.request("https://kry.example.test/api/overview", {}, env)
     ).json()) as { checks: { public: number; public_note: string | null }[] };
     expect(overview.checks[0]).toMatchObject({ public: 1, public_note: "DNS" });
+  });
+});
+
+describe("editing a check", () => {
+  const OTHER = "33333333-3333-4333-8333-333333333333";
+
+  function edit() {
+    const { db, sqlite } = createTestDb();
+    seedNode(sqlite, { id: NODE });
+    seedNode(sqlite, { id: OTHER });
+    seedCheck(sqlite, { id: CHECK, nodeId: NODE });
+    sqlite
+      .prepare(
+        "UPDATE checks SET status = 'DOWN', consecutive_failures = 4, latency_ms = 120, last_message = 'timeout', last_checked_at = '2026-09-30 10:00:00' WHERE id = ?",
+      )
+      .run(CHECK);
+    seedIncident(sqlite, {
+      id: "i1",
+      checkId: CHECK,
+      status: "OPEN",
+      startedAt: "2026-09-30 09:58:00",
+    });
+    seedResult(sqlite, CHECK, "2026-09-30 10:00:00", "DOWN");
+    const env = { DB: db } as unknown as Env;
+    const patch = (body: unknown) =>
+      app.request(
+        `https://kry.example.test/api/checks/${CHECK}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+        env,
+      );
+    const check = () =>
+      sqlite
+        .prepare(
+          "SELECT node_id, name, kind, target, timeout_seconds, enabled, status, consecutive_failures, latency_ms, last_message, last_checked_at FROM checks WHERE id = ?",
+        )
+        .get(CHECK) as Record<string, unknown>;
+    const incident = () =>
+      sqlite
+        .prepare("SELECT status, resolved_at FROM incidents WHERE id = 'i1'")
+        .get() as { status: string; resolved_at: string | null };
+    const results = () =>
+      (
+        sqlite
+          .prepare(
+            "SELECT COUNT(*) AS n FROM node_windows WHERE json_extract(checks, '$.' || ?) IS NOT NULL",
+          )
+          .get(CHECK) as { n: number }
+      ).n;
+    return { sqlite, patch, check, incident, results };
+  }
+
+  const FRESH = {
+    status: "UNKNOWN",
+    consecutive_failures: 0,
+    latency_ms: null,
+    last_message: null,
+    last_checked_at: null,
+  };
+
+  it("renames and changes the timeout without touching the status", async () => {
+    const t = edit();
+    const response = await t.patch({ name: "  Website  ", timeoutSeconds: 20 });
+    expect(response.status).toBe(200);
+    expect(t.check()).toMatchObject({
+      name: "Website",
+      timeout_seconds: 20,
+      status: "DOWN",
+      consecutive_failures: 4,
+    });
+    expect(t.incident().status).toBe("OPEN");
+  });
+
+  it("starts fresh when the target changes, closing the open incident and keeping history", async () => {
+    const t = edit();
+    expect(
+      (await t.patch({ target: "https://example.com/ready" })).status,
+    ).toBe(200);
+    expect(t.check()).toMatchObject({
+      target: "https://example.com/ready",
+      ...FRESH,
+    });
+    expect(t.incident().status).toBe("RESOLVED");
+    expect(t.incident().resolved_at).not.toBeNull();
+    expect(t.results()).toBe(1);
+  });
+
+  it("changes the kind and target together, validated for the new kind", async () => {
+    const t = edit();
+    expect(
+      (await t.patch({ kind: "TCP", target: "https://example.com" })).status,
+    ).toBe(400);
+    expect((await t.patch({ kind: "TCP" })).status).toBe(400);
+    expect(t.check()).toMatchObject({ kind: "HTTP", status: "DOWN" });
+    expect(
+      (await t.patch({ kind: "TCP", target: "DB.internal:5432" })).status,
+    ).toBe(200);
+    expect(t.check()).toMatchObject({
+      kind: "TCP",
+      target: "db.internal:5432",
+      ...FRESH,
+    });
+  });
+
+  it("moves to another owned node within its check limit", async () => {
+    const t = edit();
+    expect(
+      (await t.patch({ nodeId: "44444444-4444-4444-8444-444444444444" }))
+        .status,
+    ).toBe(404);
+    for (let index = 0; index < 10; index += 1) {
+      seedCheck(t.sqlite, { id: `full-${index}`, nodeId: OTHER });
+    }
+    expect((await t.patch({ nodeId: OTHER })).status).toBe(400);
+    t.sqlite.prepare("DELETE FROM checks WHERE id = 'full-0'").run();
+    expect((await t.patch({ nodeId: OTHER })).status).toBe(200);
+    expect(t.check()).toMatchObject({ node_id: OTHER, ...FRESH });
+    expect(t.incident().status).toBe("RESOLVED");
+  });
+
+  it("pauses by closing the open incident and resumes from a fresh status", async () => {
+    const t = edit();
+    expect((await t.patch({ enabled: false })).status).toBe(200);
+    expect(t.check()).toMatchObject({ enabled: 0, ...FRESH });
+    expect(t.incident().status).toBe("RESOLVED");
+    expect((await t.patch({ enabled: true })).status).toBe(200);
+    expect(t.check()).toMatchObject({ enabled: 1, status: "UNKNOWN" });
+  });
+
+  it("keeps the status when an edit changes nothing that is checked", async () => {
+    const t = edit();
+    expect(
+      (
+        await t.patch({
+          kind: "HTTP",
+          target: "https://example.com/health",
+          nodeId: NODE,
+          enabled: true,
+        })
+      ).status,
+    ).toBe(200);
+    expect(t.check()).toMatchObject({
+      status: "DOWN",
+      consecutive_failures: 4,
+    });
+    expect(t.incident().status).toBe("OPEN");
   });
 });

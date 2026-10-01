@@ -156,3 +156,37 @@ export async function sendIncidentEmail(
     },
   });
 }
+
+export async function sendProposalEmail(
+  env: Env,
+  message: {
+    state: "opened" | "applied" | "expired";
+    title: string;
+    openedBy: string;
+    detail: string;
+  },
+): Promise<void> {
+  const label = {
+    opened: "Waiting for approval",
+    applied: "Applied",
+    expired: "Expired",
+  }[message.state];
+  await deliver(env, {
+    title: `[Krynodes] ${label}: ${message.title}`,
+    preheader: message.detail,
+    badge: {
+      label,
+      color: message.state === "applied" ? COLOR.success : COLOR.primary,
+    },
+    heading: message.title,
+    intro: message.detail,
+    rows: [
+      ["Change", message.title],
+      ["Opened by", message.openedBy],
+    ],
+    action: {
+      label: "Open Trusted devices",
+      href: new URL("/devices", env.PUBLIC_ORIGIN).toString(),
+    },
+  });
+}

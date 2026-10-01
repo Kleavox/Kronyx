@@ -28,7 +28,12 @@ const stack = (
   ...overrides,
 });
 
-const trusted = { version: 1, keys: ["0123456789abcdef"] };
+const trusted = {
+  version: 1,
+  core: ["0123456789abcdef"],
+  access: ["0123456789abcdef"],
+  passphrase: false,
+};
 
 const data: ServicesResponse = {
   nodes: [
@@ -143,6 +148,7 @@ describe("stacks", () => {
       finishedAt: null,
       exitCode: null,
       output: null,
+      deviceId: null,
     };
     expect(actionText(deploy, "Callisto")).toBe("Deploying…");
     expect(

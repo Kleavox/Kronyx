@@ -82,8 +82,10 @@ type StackEntry struct {
 }
 
 type TrustReport struct {
-	Version int      `json:"version"`
-	Keys    []string `json:"keys"`
+	Version    int      `json:"version"`
+	Core       []string `json:"core"`
+	Access     []string `json:"access"`
+	Passphrase bool     `json:"passphrase"`
 }
 
 type InventoryReport struct {

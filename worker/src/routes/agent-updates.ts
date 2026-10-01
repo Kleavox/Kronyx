@@ -1,3 +1,4 @@
+import { pokeSoon } from "../fleet/client";
 import type { MiddlewareHandler } from "hono";
 
 import {
@@ -51,6 +52,7 @@ export function registerAgentUpdateRoutes(
     )
       .bind(version, new Date().toISOString(), node.id)
       .run();
+    pokeSoon(context, context.get("identity").id, [node.id]);
     return context.json({ version }, 202);
   });
 

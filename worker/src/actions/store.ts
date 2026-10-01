@@ -37,6 +37,7 @@ export interface ActionRow {
   exit_code: number | null;
   output: string | null;
   signed: string | null;
+  device_id: string | null;
 }
 
 export const DELIVER_SQL = `UPDATE actions SET status = 'sent', sent_at = ?1
@@ -94,6 +95,7 @@ export function createBatch(
     targets: ActionTarget[];
     requestedBy: string;
     now: number;
+    deviceId?: string;
   },
 ) {
   const batchId = crypto.randomUUID();
@@ -115,15 +117,23 @@ export function createBatch(
   const statement = db
     .prepare(
       `INSERT INTO actions (id, batch_id, position, mode, node_id, kind, name,
-         action, status, requested_by, requested_at, deliverable_at, signed)
+         action, status, requested_by, requested_at, deliverable_at, signed, device_id)
        SELECT json_extract(value, '$.id'), ?1, key, ?2,
               json_extract(value, '$.nodeId'), json_extract(value, '$.kind'),
               json_extract(value, '$.name'), ?3, 'queued', ?4, ?5,
               CASE WHEN ?2 = 'parallel' OR key = 0 THEN ?5 END,
-              json_extract(value, '$.signed')
+              json_extract(value, '$.signed'), ?7
        FROM json_each(?6)`,
     )
-    .bind(batchId, input.mode, input.action, input.requestedBy, at, rows);
+    .bind(
+      batchId,
+      input.mode,
+      input.action,
+      input.requestedBy,
+      at,
+      rows,
+      input.deviceId ?? null,
+    );
   return { batchId, actions, statements: [statement] };
 }
 

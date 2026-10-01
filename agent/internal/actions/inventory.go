@@ -194,8 +194,11 @@ func NewInventory(services []Service, stacks []reporter.StackEntry, trust report
 	if len(listed) > maxStacks {
 		listed = listed[:maxStacks]
 	}
-	if trust.Keys == nil {
-		trust.Keys = []string{}
+	if trust.Core == nil {
+		trust.Core = []string{}
+	}
+	if trust.Access == nil {
+		trust.Access = []string{}
 	}
 	encoded, err := json.Marshal(struct {
 		Services []Service             `json:"services"`

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { rememberOpener } from "@/lib/use-return-focus";
 import { cn } from "@/lib/utils";
 import { CheckIcon, ChevronRightIcon, CircleIcon } from "lucide-react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
@@ -18,11 +19,21 @@ function DropdownMenuPortal({
 }
 
 function DropdownMenuTrigger({
+  onPointerDown,
+  onKeyDown,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Trigger>) {
   return (
     <DropdownMenuPrimitive.Trigger
       data-slot="dropdown-menu-trigger"
+      onPointerDown={(event) => {
+        rememberOpener(event.currentTarget);
+        onPointerDown?.(event);
+      }}
+      onKeyDown={(event) => {
+        rememberOpener(event.currentTarget);
+        onKeyDown?.(event);
+      }}
       {...props}
     />
   );

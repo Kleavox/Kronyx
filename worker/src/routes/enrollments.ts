@@ -2,21 +2,22 @@ import type { MiddlewareHandler } from "hono";
 
 import type { Env } from "../env";
 import { randomToken, sha256 } from "../lib/crypto";
-import { activeDevices } from "./devices";
+import { loadFleet, type Fleet } from "../trust/fleet";
 import { agentOrigin, type KrynodesApp, type KrynodesEnv } from "./shared";
 
 const ENROLLMENT_TTL_MS = 30 * 60_000;
 
-function installCommand(
-  env: Env,
-  token: string,
-  devices: { id: string; alg: number; public_key: string }[],
-): string {
+function installCommand(env: Env, token: string, fleet: Fleet): string {
   const endpoint = agentOrigin(env);
+  const core = fleet.devices.filter((device) => fleet.core.includes(device.id));
+  const passphrase = fleet.passphrase
+    ? ` --passphrase ${fleet.passphrase.salt}.${fleet.passphrase.iterations}.${fleet.passphrase.publicKey}`
+    : "";
+  const grant = core.length < 2 ? " --grant" : "";
   const trust =
-    devices.length > 0
-      ? ` --trust ${env.PUBLIC_ORIGIN} ${devices
-          .map((device) => `${device.id}.${device.alg}.${device.public_key}`)
+    core.length > 0
+      ? ` --trust ${env.PUBLIC_ORIGIN}${passphrase}${grant} -- ${core
+          .map((device) => `${device.id}.${device.alg}.${device.publicKey}`)
           .join(" ")}`
       : "";
   return `curl -fsSL ${endpoint}/install.sh | sudo sh -s -- ${endpoint} ${token}${trust}`;
@@ -44,7 +45,7 @@ export function registerEnrollmentRoutes(
         command: installCommand(
           context.env,
           token,
-          await activeDevices(context.env.DB, context.get("identity").id),
+          await loadFleet(context.env.DB, context.get("identity").id),
         ),
       },
       201,

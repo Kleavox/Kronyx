@@ -1,6 +1,7 @@
 import type {
   ActionRecord,
   NodeRecord,
+  NodeTrust,
   ServiceEntry,
   ServicesResponse,
   StackEntry,
@@ -12,7 +13,7 @@ export interface StackMember {
   node: NodeRecord;
   stack: StackEntry;
   trusted: boolean;
-  trustKeys: string[];
+  trust: NodeTrust | null;
   action: ActionRecord | null;
 }
 
@@ -56,8 +57,8 @@ export function groupStacks(
       group.members.push({
         node,
         stack,
-        trusted: (entry.trust?.keys.length ?? 0) > 0,
-        trustKeys: entry.trust?.keys ?? [],
+        trusted: (entry.trust?.access.length ?? 0) > 0,
+        trust: entry.trust,
         action: latest.get(`${node.id}|${stack.project}`) ?? null,
       });
       groups.set(stack.project, group);

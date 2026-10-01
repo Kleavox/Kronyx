@@ -302,6 +302,15 @@ describe("POST /api/actions", () => {
     expect(other.status).toBe(400);
   });
 
+  it("records which device signed each action", async () => {
+    const { call, restart } = setup();
+    await restart([{ nodeId: A }]);
+    const body = await reply(call("GET", "/api/services"));
+    expect(body.actions).toEqual([
+      expect.objectContaining({ nodeId: A, deviceId: "ZGV2aWNlLTE" }),
+    ]);
+  });
+
   it("answers ACTION_PENDING when two requests race for one service", async () => {
     const { restart } = setup();
     const statuses = (

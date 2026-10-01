@@ -18,8 +18,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AgentPanel } from "@/features/agent/agent-panel";
 import { NodeStacks } from "@/features/deploy/node-stacks";
 import { NodeServices, RecentActions } from "@/features/services/node-sections";
+import { CheckMenu } from "@/features/checks/check-menu";
 import { NodeActions } from "@/features/nodes/node-actions";
-import { useCheckResults, useNodeMetrics, useOverview } from "@/lib/api";
+import {
+  useCheckResults,
+  useDevices,
+  useNodeMetrics,
+  useOverview,
+  useServices,
+} from "@/lib/api";
 import {
   checkDisplayStatus,
   formatBytes,
@@ -175,6 +182,15 @@ export function NodeDetailPage() {
               />
               <Fact label="Uptime" value={formatUptime(node.uptime_seconds)} />
               <Fact
+                label="Reports"
+                value={
+                  node.transport === "stream"
+                    ? "Live connection"
+                    : `Every ${formatDuration(node.interval_seconds * 1000)} (HTTP)`
+                }
+              />
+              <AccessFact nodeId={node.id} />
+              <Fact
                 label="Enrolled"
                 value={
                   node.enrolled_at
@@ -216,15 +232,19 @@ export function NodeDetailPage() {
                   {checks.map((check) => (
                     <li
                       key={check.id}
-                      className="grid grid-cols-[auto_minmax(0,1fr)_56px] items-center gap-x-3 gap-y-2 px-3 py-2.5 sm:grid-cols-[auto_minmax(0,1fr)_minmax(120px,1.5fr)_56px]"
+                      className="grid grid-cols-[auto_minmax(0,1fr)_56px_36px] items-center gap-x-3 gap-y-2 py-2.5 pr-1 pl-3 sm:grid-cols-[auto_minmax(0,1fr)_minmax(120px,1.5fr)_56px_36px]"
                     >
                       <span className="flex items-center gap-1.5 font-mono text-[11px]">
                         <StatusDot
                           tone={checkTone(
-                            checkDisplayStatus(check.status, state),
+                            checkDisplayStatus(
+                              check.status,
+                              state,
+                              check.enabled,
+                            ),
                           )}
                         />
-                        {checkDisplayStatus(check.status, state)}
+                        {checkDisplayStatus(check.status, state, check.enabled)}
                       </span>
                       <span className="min-w-0 truncate" title={check.name}>
                         {check.name}{" "}
@@ -247,10 +267,13 @@ export function NodeDetailPage() {
                         now={now}
                         asOf={results.data ? results.dataUpdatedAt : undefined}
                         count={24}
-                        className="col-span-3 row-start-2 sm:col-span-1 sm:row-start-auto"
+                        className="col-span-4 row-start-2 sm:col-span-1 sm:row-start-auto"
                       />
                       <span className="col-start-3 row-start-1 text-right font-mono text-xs sm:col-start-auto sm:row-start-auto">
                         {newestLatency(results.data?.checks[check.id])}
+                      </span>
+                      <span className="col-start-4 row-start-1 sm:col-start-auto sm:row-start-auto">
+                        <CheckMenu check={check} nodes={overview.data.nodes} />
                       </span>
                     </li>
                   ))}
@@ -317,6 +340,37 @@ export function NodeDetailPage() {
           </div>
         </div>
       </div>
+    </>
+  );
+}
+
+function AccessFact({ nodeId }: { nodeId: string }) {
+  const services = useServices();
+  const devices = useDevices();
+  if (!services.data || !devices.data) return null;
+  const trust =
+    services.data.nodes.find((entry) => entry.id === nodeId)?.trust ?? null;
+  const names = devices.data.devices
+    .filter((device) => trust?.access.includes(device.fingerprint))
+    .map((device) => device.name);
+  const text =
+    (trust?.core.length ?? 0) === 0
+      ? "Not trusted yet"
+      : names.length > 0
+        ? names.join(", ")
+        : "No access";
+  return (
+    <>
+      <dt className="text-muted-foreground">Access</dt>
+      <dd className="min-w-0 truncate text-right font-mono text-xs leading-5">
+        <Link
+          to="/devices"
+          className="underline-offset-4 hover:underline"
+          title="Change access in Trusted devices"
+        >
+          {text}
+        </Link>
+      </dd>
     </>
   );
 }

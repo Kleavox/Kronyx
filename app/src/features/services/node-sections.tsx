@@ -2,7 +2,12 @@ import { RefreshCw } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { useNodeActions, useRefreshServices, useServices } from "@/lib/api";
+import {
+  useDevices,
+  useNodeActions,
+  useRefreshServices,
+  useServices,
+} from "@/lib/api";
 import { clockTime } from "@/lib/format";
 import {
   displayName,
@@ -43,7 +48,7 @@ export function NodeServices({
       })
     : [];
   const trusted =
-    (services.data?.nodes.find((entry) => entry.id === node.id)?.trust?.keys
+    (services.data?.nodes.find((entry) => entry.id === node.id)?.trust?.access
       .length ?? 0) > 0;
   const refreshing =
     services.data?.nodes.some(
@@ -91,7 +96,10 @@ export function NodeServices({
 
 export function RecentActions({ node }: { node: NodeRecord }) {
   const actions = useNodeActions(node.id);
+  const devices = useDevices();
   const list = actions.data?.actions ?? [];
+  const deviceName = (id: string | null) =>
+    devices.data?.devices.find((device) => device.id === id)?.name;
   return (
     <section
       aria-labelledby="node-recent-actions"
@@ -121,6 +129,12 @@ export function RecentActions({ node }: { node: NodeRecord }) {
                 </span>
                 <span className="min-w-0 truncate">
                   {verb(action.action)} {displayName(action.kind, action.name)}
+                  {deviceName(action.deviceId) && (
+                    <span className="text-muted-foreground">
+                      {" "}
+                      · {deviceName(action.deviceId)}
+                    </span>
+                  )}
                 </span>
                 <span className="col-start-2 flex min-w-0 flex-wrap items-baseline gap-x-1 font-mono text-xs text-muted-foreground sm:col-start-auto sm:justify-end">
                   {isPending(action) ? (

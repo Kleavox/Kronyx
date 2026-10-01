@@ -184,18 +184,16 @@ describe("GET /api/metrics/recent", () => {
     expect(body.nodes.none?.slots[0]?.memPct).toBeNull();
   });
 
-  it("seeks the metrics index per node instead of scanning a shared window", async () => {
+  it("seeks the window primary key per node instead of scanning", async () => {
     const { db } = createTestDb();
     const plan = await db
       .prepare(`EXPLAIN QUERY PLAN ${RECENT_SQL}`)
       .bind(OWNER, new Date().toISOString())
       .all<{ detail: string }>();
-    expect(
-      plan.results.some(
-        (row) =>
-          row.detail.includes("idx_node_metrics_node_id_recorded_at") &&
-          row.detail.includes("recorded_at>"),
-      ),
-    ).toBe(true);
+    const details = plan.results.map((row) => row.detail).join(" | ");
+    expect(details).toMatch(
+      /SEARCH m USING PRIMARY KEY \(node_id=\? AND window_start>\?\)/u,
+    );
+    expect(details).not.toMatch(/SCAN m\b/u);
   });
 });

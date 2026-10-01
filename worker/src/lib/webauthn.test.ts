@@ -1,0 +1,80 @@
+import { describe, expect, it } from "vitest";
+
+import { testPassphrase, testPasskey } from "../test/passkeys";
+import { fromB64url } from "./b64url";
+import { fingerprint, verifyAssertion, verifyProof } from "./webauthn";
+
+const ORIGIN = "https://kry.example.test";
+const RP = "kry.example.test";
+const challenge = new Uint8Array(32).fill(7);
+
+describe("webauthn", () => {
+  it("verifies an assertion and reports user verification", async () => {
+    const laptop = await testPasskey("bGFwdG9w");
+    const signed = await laptop.sign({ challenge, origin: ORIGIN, rpId: RP });
+    await expect(
+      verifyAssertion(laptop, signed, { origin: ORIGIN, rpId: RP, challenge }),
+    ).resolves.toEqual({ uv: true });
+    const touch = await laptop.sign({
+      challenge,
+      origin: ORIGIN,
+      rpId: RP,
+      verified: false,
+    });
+    await expect(
+      verifyAssertion(laptop, touch, { origin: ORIGIN, rpId: RP, challenge }),
+    ).resolves.toEqual({ uv: false });
+  });
+
+  it("refuses another challenge, origin, rp id or key", async () => {
+    const laptop = await testPasskey("bGFwdG9w");
+    const phone = await testPasskey("cGhvbmU");
+    const signed = await laptop.sign({ challenge, origin: ORIGIN, rpId: RP });
+    const expected = { origin: ORIGIN, rpId: RP, challenge };
+    await expect(
+      verifyAssertion(laptop, signed, {
+        ...expected,
+        challenge: new Uint8Array(32),
+      }),
+    ).rejects.toThrow(/challenge/u);
+    await expect(
+      verifyAssertion(laptop, signed, {
+        ...expected,
+        origin: "https://evil.test",
+      }),
+    ).rejects.toThrow(/origin/u);
+    await expect(
+      verifyAssertion(
+        laptop,
+        await laptop.sign({ challenge, origin: ORIGIN, rpId: "evil.test" }),
+        expected,
+      ),
+    ).rejects.toThrow(/rp id/u);
+    await expect(verifyAssertion(phone, signed, expected)).rejects.toThrow(
+      /signature/u,
+    );
+  });
+
+  it("checks a passphrase proof for its purpose", async () => {
+    const passphrase = await testPassphrase();
+    const data = new Uint8Array(new TextEncoder().encode("change"));
+    const proof = await passphrase.proof("approve:bGFwdG9w", data);
+    await expect(
+      verifyProof(passphrase.key.publicKey, "approve:bGFwdG9w", data, proof),
+    ).resolves.toBe(true);
+    await expect(
+      verifyProof(passphrase.key.publicKey, "grant", data, proof),
+    ).resolves.toBe(false);
+  });
+
+  it("fingerprints a key the way the agent does", async () => {
+    const laptop = await testPasskey("bGFwdG9w");
+    const digest = new Uint8Array(
+      await crypto.subtle.digest("SHA-256", fromB64url(laptop.publicKey)),
+    );
+    const hex = Array.from(digest, (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    await expect(fingerprint(laptop.publicKey)).resolves.toBe(hex.slice(0, 16));
+  });
+});

@@ -89,6 +89,51 @@ and `krynodes-linux-arm64`, their checksums, ed25519 signatures and build
 provenance. The workflow signs with the repository secret `AGENT_SIGNING_KEY`
 and refuses to publish if it does not match `agent/internal/update/release.pub`.
 
+### Checks
+
+Checks run on the agent of the server they belong to: HTTP (down on errors,
+timeouts and 5xx answers), TCP (down when the connection fails) and systemd
+(up while the unit is active). A check's menu on the Checks page or the node
+page has **Edit** (name, server, kind, target, timeout), **Pause** / **Resume**,
+**Status page** and **Remove**, which asks first. Changing what is checked (kind,
+target or server) or pausing starts the status fresh and closes an open
+incident; the history stays. A server with a live connection (below) runs the
+changed check within seconds; others at their next report.
+
+### Live connection
+
+From agent 0.3.0 each server keeps one WebSocket open to the Worker
+(`/api/agent/stream`), held by a Durable Object (`FleetHub`, one per owner,
+SQLite class, Free plan). Reports travel over it instead of one HTTP request a
+minute, and the dashboard can wake a server at once: queued actions, check
+changes, update and refresh requests, and applied trust changes reach it in
+seconds instead of up to a minute.
+
+- History is one D1 row per server per 5-minute window (`node_windows`), with
+  the averaged metrics and every check's result; the hub writes it when the
+  window ends or the connection closes. Failures keep their message.
+- The server row is written when the connection opens, once per window and
+  when it closes; between those the dashboard asks the hub, so a server still
+  shows offline after about 3 minutes of silence.
+- Anything that goes wrong falls back to HTTP for that report; the agent
+  retries the connection after 1 minute, doubling to 30. Set the Worker var
+  `AGENT_STREAM` to `off` to keep every agent on HTTP.
+- At a 60-second interval a server costs about 870 D1 writes a day on a live
+  connection and about 2,000 on HTTP (was about 4,900).
+
+### Usage and quota shares
+
+The fleet page's **Krynodes quota** tile opens **Usage today**: Krynodes'
+requests, D1 writes and D1 reads against its share of the account's free
+quotas (editable there; other projects may share the account), and the whole
+account against the Free plan. Quotas reset at 00:00 UTC.
+
+Without setup the numbers are estimates. For Cloudflare's real counts, create
+an API token with one permission (Account, Account Analytics, Read) and save it
+as the GitHub production secret `CF_ANALYTICS_TOKEN`; the next deploy hands it
+to the Worker together with the account and database ids it already has. The
+Worker asks Cloudflare at most every 15 minutes while someone looks.
+
 ### Updating the agent
 
 The Worker checks GitHub for the latest `agent-v*` release once a day (or on
@@ -144,19 +189,34 @@ ran before it, and **Roll back** starts them again.
 
 Deploys, like start, stop and restart, need a fingerprint. On **Trusted
 devices** (account menu) you register a passkey on your laptop or phone; each
-server keeps its public key in `/var/lib/kry-exec/trust.json`, and the root
-executor checks every action against it, so nothing on Cloudflare can run one
+server keeps the public keys in `/var/lib/kry-exec/trust.json`, and the root
+executor checks every action against them, so nothing on Cloudflare can run one
 on its own. One fingerprint opens a 15-minute session, like sudo: nothing on
 screen counts it down, a tab hidden for 2 minutes ends it, and **Lock actions**
 in the account menu ends it at once.
 
-- New servers trust your devices through the enroll command.
-- Servers enrolled earlier: **Trust on servers** on the Trusted devices page,
-  accepted only while a server trusts no device yet.
-- Every change to the trusted devices shows each device's key fingerprint for
-  you to check before it is sent.
-- Adding or removing a device needs a fingerprint from a device the servers
-  already trust. To start over on a server:
+From agent 0.3.0 one admin login can be shared safely by several people:
+
+- **Core devices** are the passkeys every server knows. Only they approve
+  changes. **Access** is the core devices that may run actions on one server.
+- The first device trusts itself on your servers (**Trust on servers**). The
+  second one, such as your phone, is approved by the first alone and gets
+  access to every server enrolled then.
+- From then on a new core device, removing one and setting or changing the
+  **passphrase** need approvals from two core devices. A device registered by
+  someone else stays inert until then, and you get an email.
+- Giving a device access to a server needs one core device that already has
+  access there (never the device itself), or two other core devices. Servers
+  enrolled later start with the core and no access.
+- Changes wait under **Waiting for approval** for up to 24 hours. Each approval
+  signs the exact change; the dialog shows new devices' key fingerprints for
+  you to compare with the new device's screen.
+- Passkeys that do not prove a fingerprint (such as Microsoft Password
+  Manager) need the passphrase once one is set. It never leaves the tab: it
+  derives a key whose public half the servers keep.
+- Keep three core devices: with two, losing one needs SSH to recover.
+
+To start over on a server:
 
 ```sh
 sudo kry trust --reset

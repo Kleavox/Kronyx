@@ -19,6 +19,8 @@ export const queryKeys = {
   incident: (id: string) => ["incidents", id],
   enrollment: (id: string) => ["enrollments", id],
   devices: ["devices"],
+  proposals: ["proposals"],
+  usage: ["usage"],
 } as const;
 
 export function createQueryClient(): QueryClient {

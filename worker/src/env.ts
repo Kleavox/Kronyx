@@ -10,4 +10,10 @@ export interface Env {
   AGENT_RATE_LIMIT?: RateLimit;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
+  CF_ACCOUNT_ID?: string;
+  CF_ANALYTICS_TOKEN?: string;
+  KRY_D1_ID?: string;
+  KRY_SCRIPTS?: string;
+  FLEET?: DurableObjectNamespace;
+  AGENT_STREAM?: string;
 }

@@ -74,7 +74,11 @@ export function fleetSummary(
 ) {
   const states = new Map(nodes.map((node) => [node.id, nodeState(node, now)]));
   const shown = checks.map((check) =>
-    checkDisplayStatus(check.status, states.get(check.node_id) ?? "offline"),
+    checkDisplayStatus(
+      check.status,
+      states.get(check.node_id) ?? "offline",
+      check.enabled,
+    ),
   );
   return {
     nodes: {

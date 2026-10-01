@@ -217,7 +217,9 @@ describe("refresh and eligibility", () => {
         "UPDATE nodes SET agent_version = '0.6.0', last_seen_at = ? WHERE id = ?",
       )
       .run(SEEN, FOREIGN);
-    expect(await requestRefresh(db, "standalone", undefined, NOW)).toBe(2);
+    expect(await requestRefresh(db, "standalone", undefined, NOW)).toEqual(
+      [NODE, OTHER].sort(),
+    );
     const flagged = sqlite
       .prepare(
         "SELECT id FROM nodes WHERE refresh_requested_at IS NOT NULL ORDER BY id",
@@ -225,7 +227,25 @@ describe("refresh and eligibility", () => {
       .all()
       .map((row) => (row as { id: string }).id);
     expect(flagged).toEqual([NODE, OTHER].sort());
-    expect(await requestRefresh(db, "standalone", [OTHER], NOW)).toBe(1);
+    expect(await requestRefresh(db, "standalone", [OTHER], NOW)).toEqual([
+      OTHER,
+    ]);
+  });
+
+  it("still asks a streaming server whose row is a few minutes old", async () => {
+    const { db, sqlite } = setup();
+    sqlite
+      .prepare(
+        "UPDATE nodes SET transport = 'stream', last_seen_at = ? WHERE id = ?",
+      )
+      .run("2026-09-29 09:56:00", NODE);
+    expect(await requestRefresh(db, "standalone", undefined, NOW)).toEqual([
+      NODE,
+    ]);
+    sqlite
+      .prepare("UPDATE nodes SET transport = 'http' WHERE id = ?")
+      .run(NODE);
+    expect(await requestRefresh(db, "standalone", undefined, NOW)).toEqual([]);
   });
 
   it("does not ask a server that has stopped reporting", async () => {
@@ -233,11 +253,11 @@ describe("refresh and eligibility", () => {
     sqlite
       .prepare("UPDATE nodes SET last_seen_at = ? WHERE id = ?")
       .run("2026-09-29 09:50:00", NODE);
-    expect(await requestRefresh(db, "standalone", undefined, NOW)).toBe(0);
+    expect(await requestRefresh(db, "standalone", undefined, NOW)).toEqual([]);
     sqlite
       .prepare("UPDATE nodes SET last_seen_at = NULL WHERE id = ?")
       .run(NODE);
-    expect(await requestRefresh(db, "standalone", undefined, NOW)).toBe(0);
+    expect(await requestRefresh(db, "standalone", undefined, NOW)).toEqual([]);
   });
 });
 
@@ -305,8 +325,16 @@ describe("stacks and trust", () => {
     ]);
   });
 
-  it("stores the trust report", async () => {
+  it("stores the trust report, reading an old agent's keys as core with access", async () => {
     const { db, sqlite, node } = setup();
+    const stored = () =>
+      JSON.parse(
+        (
+          sqlite
+            .prepare("SELECT trust_report FROM nodes WHERE id = ?")
+            .get(NODE) as { trust_report: string }
+        ).trust_report,
+      ) as unknown;
     await applyInventory(
       db,
       node(),
@@ -317,13 +345,32 @@ describe("stacks and trust", () => {
       },
       NOW,
     );
-    expect(
-      sqlite
-        .prepare("SELECT trust_version, trust_keys FROM nodes WHERE id = ?")
-        .get(NODE),
-    ).toEqual({
-      trust_version: 2,
-      trust_keys: '["0123456789abcdef","fedcba9876543210"]',
+    expect(stored()).toEqual({
+      version: 2,
+      core: ["0123456789abcdef", "fedcba9876543210"],
+      access: ["0123456789abcdef", "fedcba9876543210"],
+      passphrase: false,
+    });
+    await applyInventory(
+      db,
+      node(),
+      {
+        hash: HASH_B,
+        services: [],
+        trust: {
+          version: 3,
+          core: ["0123456789abcdef"],
+          access: [],
+          passphrase: true,
+        },
+      },
+      NOW,
+    );
+    expect(stored()).toEqual({
+      version: 3,
+      core: ["0123456789abcdef"],
+      access: [],
+      passphrase: true,
     });
   });
 
@@ -348,7 +395,14 @@ describe("stacks and trust", () => {
     );
     expect(stacks(sqlite)).toHaveLength(1);
     expect(
-      sqlite.prepare("SELECT trust_version FROM nodes WHERE id = ?").get(NODE),
-    ).toEqual({ trust_version: 1 });
+      sqlite.prepare("SELECT trust_report FROM nodes WHERE id = ?").get(NODE),
+    ).toEqual({
+      trust_report: JSON.stringify({
+        version: 1,
+        core: ["0123456789abcdef"],
+        access: ["0123456789abcdef"],
+        passphrase: false,
+      }),
+    });
   });
 });

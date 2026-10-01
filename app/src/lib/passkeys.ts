@@ -2,28 +2,32 @@ import type { ActionKind } from "../types";
 
 export const SESSION_MS = 15 * 60_000;
 const COMMAND_GRACE_MS = 60 * 60_000;
-export const TRUST_CHANGE_MS = 10 * 60_000;
+const BROWSER_KEY = "kry.devices";
 
-export interface Assertion {
+interface Assertion {
   credentialId: string;
   authenticatorData: string;
   clientDataJSON: string;
   signature: string;
 }
 
-interface SignedGrant extends Assertion {
+export interface Approval extends Assertion {
+  proof?: string;
+}
+
+interface SignedGrant extends Approval {
   grant: string;
 }
+
+export type Prove = (
+  purpose: string,
+  data: Uint8Array<ArrayBuffer>,
+) => Promise<string>;
 
 export interface SignedCommand {
   grant: SignedGrant;
   command: string;
   signature: string;
-}
-
-export interface SignedTrust {
-  change: string;
-  assertion: Assertion | null;
 }
 
 export interface Session {
@@ -38,6 +42,7 @@ export interface DeviceInput {
   name: string;
   alg: number;
   publicKey: string;
+  verifies: boolean;
 }
 
 const encoder = new TextEncoder();
@@ -71,14 +76,40 @@ const NOT_TOUCHED =
 function requirePresent(
   authenticatorData: ArrayBuffer,
   attachment: string | null | undefined,
-) {
+): boolean {
   const flags = new Uint8Array(authenticatorData)[32] ?? 0;
-  if ((flags & 0x01) === 0x01) return;
+  if ((flags & 0x01) === 0x01) return (flags & 0x04) === 0x04;
   const detail = [
     `flags 0x${flags.toString(16).padStart(2, "0")}`,
     attachment ?? "unknown authenticator",
   ].join(", ");
   throw new Error(`${NOT_TOUCHED} (${detail})`);
+}
+
+export function thisBrowser(): string[] {
+  try {
+    const stored: unknown = JSON.parse(
+      localStorage.getItem(BROWSER_KEY) ?? "[]",
+    );
+    return Array.isArray(stored)
+      ? stored.filter((id): id is string => typeof id === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function remember(id: string) {
+  try {
+    const known = thisBrowser();
+    if (known.includes(id)) return;
+    localStorage.setItem(
+      BROWSER_KEY,
+      JSON.stringify([...known, id].slice(-10)),
+    );
+  } catch {
+    return;
+  }
 }
 
 export async function registerDevice(
@@ -101,7 +132,7 @@ export async function registerDevice(
         { type: "public-key", alg: -257 },
       ],
       authenticatorSelection: {
-        userVerification: "required",
+        userVerification: "preferred",
         residentKey: "preferred",
       },
       attestation: "none",
@@ -114,55 +145,100 @@ export async function registerDevice(
   })) as PublicKeyCredential | null;
   if (!credential) throw new Error("No passkey was created.");
   const response = credential.response as AuthenticatorAttestationResponse;
-  requirePresent(
+  const verifies = requirePresent(
     response.getAuthenticatorData(),
     credential.authenticatorAttachment,
   );
   const publicKey = response.getPublicKey();
   if (!publicKey)
     throw new Error("This browser does not share the passkey's public key.");
+  if (credential.authenticatorAttachment !== "cross-platform") {
+    remember(credential.id);
+  }
   return {
     id: credential.id,
     name,
     alg: response.getPublicKeyAlgorithm(),
     publicKey: b64url(publicKey),
+    verifies,
   };
 }
 
 async function assert(
   challenge: Uint8Array<ArrayBuffer>,
-  rpId: string | undefined,
+  rpId: string,
   devices: string[],
-): Promise<Assertion> {
+): Promise<{ assertion: Assertion; verified: boolean }> {
   const credential = (await navigator.credentials.get({
     publicKey: {
       challenge,
-      ...(rpId ? { rpId } : {}),
+      rpId,
       allowCredentials: devices.map((id) => ({
         type: "public-key" as const,
         id: fromB64url(id),
       })),
-      userVerification: "required",
+      userVerification: "preferred",
       timeout: 120_000,
     },
   })) as PublicKeyCredential | null;
   if (!credential) throw new Error("The passkey did not answer.");
   const response = credential.response as AuthenticatorAssertionResponse;
-  requirePresent(
+  const verified = requirePresent(
     response.authenticatorData,
     credential.authenticatorAttachment,
   );
+  if (credential.authenticatorAttachment !== "cross-platform") {
+    remember(credential.id);
+  }
   return {
-    credentialId: credential.id,
-    authenticatorData: b64url(response.authenticatorData),
-    clientDataJSON: b64url(response.clientDataJSON),
-    signature: b64url(response.signature),
+    assertion: {
+      credentialId: credential.id,
+      authenticatorData: b64url(response.authenticatorData),
+      clientDataJSON: b64url(response.clientDataJSON),
+      signature: b64url(response.signature),
+    },
+    verified,
   };
+}
+
+async function approveBytes(
+  bytes: Uint8Array<ArrayBuffer>,
+  rpId: string,
+  devices: string[],
+  prove: Prove | null,
+  purpose: (credentialId: string) => string,
+): Promise<Approval> {
+  const { assertion, verified } = await assert(
+    await sha256(bytes),
+    rpId,
+    devices,
+  );
+  if (verified || !prove) return assertion;
+  return {
+    ...assertion,
+    proof: await prove(purpose(assertion.credentialId), bytes),
+  };
+}
+
+export function approveChange(
+  change: string,
+  devices: string[],
+  rpId: string,
+  prove: Prove | null = null,
+): Promise<Approval> {
+  return approveBytes(
+    fromB64url(change),
+    rpId,
+    devices,
+    prove,
+    (id) => `approve:${id}`,
+  );
 }
 
 export async function createSession(
   devices: string[],
   rpId: string,
+  prove: Prove | null = null,
   now = Date.now(),
 ): Promise<Session> {
   const pair = await crypto.subtle.generateKey(
@@ -182,10 +258,16 @@ export async function createSession(
       nonce: b64url(random(16)),
     }),
   );
-  const assertion = await assert(await sha256(grantBytes), rpId, devices);
+  const approval = await approveBytes(
+    grantBytes,
+    rpId,
+    devices,
+    prove,
+    () => "grant",
+  );
   return {
     key: pair.privateKey,
-    grant: { grant: b64url(grantBytes), ...assertion },
+    grant: { grant: b64url(grantBytes), ...approval },
     issuedAt: now,
     expiresAt,
   };
@@ -257,17 +339,4 @@ export function signTargets(
       };
     }),
   );
-}
-
-export async function signTrustChange(
-  change: object,
-  devices: string[] | null,
-  rpId?: string,
-): Promise<SignedTrust> {
-  const bytes = encoder.encode(JSON.stringify(change));
-  if (!devices) return { change: b64url(bytes), assertion: null };
-  return {
-    change: b64url(bytes),
-    assertion: await assert(await sha256(bytes), rpId, devices),
-  };
 }

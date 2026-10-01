@@ -90,6 +90,35 @@ func TestChangedConfigVersionRefetchesOnTheNextCycle(t *testing.T) {
 	}
 }
 
+func TestAChangedConfigAsksForOneImmediateRerun(t *testing.T) {
+	server := &fakeReporter{
+		config:    configWith(targetURL(t), "v1"),
+		heartbeat: reporter.HeartbeatResponse{OK: true, IntervalSeconds: 60, ConfigVersion: "v2"},
+	}
+	monitoring := New(server, reporter.Host{}, nil, nil)
+	if _, err := monitoring.Execute(context.Background(), "node-1"); err != nil {
+		t.Fatal(err)
+	}
+	if !monitoring.ConfigChanged() {
+		t.Fatal("a new config version should ask for a rerun")
+	}
+	if monitoring.ConfigChanged() {
+		t.Fatal("the rerun is asked for once")
+	}
+
+	unversioned := &fakeReporter{
+		config:    configWith(targetURL(t), ""),
+		heartbeat: reporter.HeartbeatResponse{OK: true, IntervalSeconds: 60},
+	}
+	quiet := New(unversioned, reporter.Host{}, nil, nil)
+	if _, err := quiet.Execute(context.Background(), "node-1"); err != nil {
+		t.Fatal(err)
+	}
+	if quiet.ConfigChanged() {
+		t.Fatal("a server without config versions must not cause reruns")
+	}
+}
+
 func TestUnversionedServerRefetchesEveryCycle(t *testing.T) {
 	server := &fakeReporter{
 		config:    configWith(targetURL(t), ""),

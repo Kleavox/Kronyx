@@ -6,19 +6,18 @@ import {
   useServices,
 } from "@/lib/api";
 import { signersFor } from "@/lib/devices";
+import { proverFor } from "@/lib/passphrase-prompt";
 import { signTargets, type CommandTarget } from "@/lib/passkeys";
 import type { ActionVerb, BatchMode } from "@/types";
 
 import { useDeploySession } from "./use-deploy-session";
-import { useFingerprints } from "./use-fingerprints";
 
 const NO_SIGNER =
-  "None of your devices is trusted by every server here. Update them in Trusted devices.";
+  "None of your devices has access to every server here. Change access in Trusted devices.";
 
 export function useSignedAction(toastErrors = true) {
   const devices = useDevices();
   const services = useServices();
-  const prints = useFingerprints(devices.data?.devices);
   const { open } = useDeploySession();
   return useApiMutation(
     async ({
@@ -30,20 +29,18 @@ export function useSignedAction(toastErrors = true) {
       mode?: BatchMode;
       targets: CommandTarget[];
     }) => {
-      const keys = new Map(
-        (services.data?.nodes ?? []).map((node) => [
-          node.id,
-          node.trust?.keys ?? [],
-        ]),
+      const trust = new Map(
+        (services.data?.nodes ?? []).map((node) => [node.id, node.trust]),
       );
-      const signers = signersFor(
-        devices.data?.devices ?? [],
-        prints ?? [],
-        targets.map((target) => keys.get(target.nodeId) ?? []),
-      );
+      const reports = targets.map((target) => trust.get(target.nodeId) ?? null);
+      const signers = signersFor(devices.data?.devices ?? [], reports);
       if (signers.length === 0) throw new Error(NO_SIGNER);
+      const strict = reports.some((report) => report?.passphrase);
       try {
-        const session = await open(signers);
+        const session = await open(
+          signers,
+          strict ? proverFor(devices.data?.passphrase ?? null) : null,
+        );
         return await postActions({
           action,
           mode,

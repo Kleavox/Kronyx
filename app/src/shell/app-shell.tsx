@@ -14,9 +14,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useDeploySession } from "@/features/deploy/use-deploy-session";
+import { PassphrasePrompt } from "@/features/devices/passphrase-dialogs";
 import { useSignedAction } from "@/features/deploy/use-signed-action";
 import { useActionToasts } from "@/features/services/use-action-toasts";
-import { useOverview, useServices } from "@/lib/api";
+import { useDevices, useOverview, useProposals, useServices } from "@/lib/api";
 import { timeAgo } from "@/lib/format";
 import { accountLinks } from "@/lib/account";
 import { useNow } from "@/lib/use-now";
@@ -157,6 +158,7 @@ export function AppShell({
           </NavLink>
         ))}
       </nav>
+      <PassphrasePrompt />
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
@@ -214,13 +216,30 @@ function AccountMenu({
   const handle = displayHandle(identity.username, identity.email);
   const links = accountLinks(via);
   const session = useDeploySession();
+  const proposals = useProposals();
+  const devices = useDevices();
+  const approvals =
+    (proposals.data?.proposals.filter((proposal) => proposal.status === "open")
+      .length ?? 0) +
+    (devices.data?.devices.filter((device) => !device.core).length ?? 0);
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" aria-label={`Account ${handle}`}>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="relative"
+          aria-label={`Account ${handle}${approvals > 0 ? `, ${approvals} waiting for approval` : ""}`}
+        >
           <User aria-hidden="true" className="sm:hidden" />
           <span className="hidden max-w-32 truncate sm:inline">{handle}</span>
           <ChevronDown aria-hidden="true" />
+          {approvals > 0 && (
+            <span
+              aria-hidden="true"
+              className="absolute top-1 right-1 size-2 rounded-full bg-warning"
+            />
+          )}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
@@ -231,6 +250,11 @@ function AccountMenu({
         <DropdownMenuItem asChild>
           <Link to="/devices">Trusted devices</Link>
         </DropdownMenuItem>
+        {approvals > 0 && (
+          <DropdownMenuItem asChild>
+            <Link to="/devices">Approvals · {approvals}</Link>
+          </DropdownMenuItem>
+        )}
         {session.state && (
           <DropdownMenuItem onSelect={session.lock}>
             <Lock aria-hidden="true" />

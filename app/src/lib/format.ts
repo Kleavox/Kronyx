@@ -17,24 +17,26 @@ export function nodeState(
   node: Pick<
     NodeRecord,
     "disabled_at" | "enrolled_at" | "last_seen_at" | "interval_seconds"
-  >,
+  > & { grace_seconds?: number },
   now = Date.now(),
 ): NodeState {
   if (node.disabled_at) return "disabled";
   if (!node.enrolled_at) return "pending";
   if (!node.last_seen_at) return "offline";
   return now - parseTimestamp(node.last_seen_at) <=
-    graceSeconds(node.interval_seconds) * 1000
+    (node.grace_seconds ?? graceSeconds(node.interval_seconds)) * 1000
     ? "online"
     : "offline";
 }
 
-export type CheckDisplay = CheckStatus | "STALE";
+export type CheckDisplay = CheckStatus | "STALE" | "PAUSED";
 
 export function checkDisplayStatus(
   status: CheckStatus,
   node: NodeState,
+  enabled: boolean | number = true,
 ): CheckDisplay {
+  if (!enabled) return "PAUSED";
   if (node === "online" || status === "UNKNOWN") return status;
   return "STALE";
 }

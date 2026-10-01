@@ -3,6 +3,21 @@ import { z } from "zod";
 import { isValidTarget } from "./targets";
 
 export { isProtectedTarget, isValidTarget } from "./targets";
+export {
+  passphraseKeySchema,
+  trustChangeSchema,
+  trustKeySchema,
+  type PassphraseKeyRecord,
+  type TrustChange,
+  type TrustKeyRecord,
+} from "./change";
+export { summarizeChange, type ChangeSummary } from "./summary";
+export {
+  evaluateQuorum,
+  proofMessage,
+  type QuorumInput,
+  type QuorumResult,
+} from "./quorum";
 
 export const agentHostSchema = z.object({
   hostname: z.string().min(1).max(255),
@@ -62,15 +77,21 @@ export const assertionSchema = z.strictObject({
   signature: b64url,
 });
 
+const approvalSchema = assertionSchema.extend({ proof: b64url.optional() });
+
 export const signedCommandSchema = z.strictObject({
-  grant: assertionSchema.extend({ grant: b64url }),
+  grant: approvalSchema.extend({ grant: b64url }),
   command: b64url,
   signature: b64url,
 });
 
 export const signedTrustSchema = z.strictObject({
-  change: b64url,
-  assertion: assertionSchema.nullable(),
+  change: z
+    .string()
+    .min(1)
+    .max(65536)
+    .regex(/^[A-Za-z0-9_-]+$/u),
+  approvals: z.array(approvalSchema).max(20),
 });
 
 export const agentActionSchema = z
@@ -145,10 +166,20 @@ export const stackEntrySchema = z
   })
   .refine((stack) => isValidTarget("compose", stack.project));
 
-export const trustReportSchema = z.strictObject({
-  version: z.number().int().nonnegative(),
-  keys: z.array(z.string().regex(/^[0-9a-f]{16}$/u)).max(20),
-});
+const fingerprints = z.array(z.string().regex(/^[0-9a-f]{16}$/u)).max(20);
+
+export const trustReportSchema = z.union([
+  z.strictObject({
+    version: z.number().int().nonnegative(),
+    core: fingerprints,
+    access: fingerprints,
+    passphrase: z.boolean(),
+  }),
+  z.strictObject({
+    version: z.number().int().nonnegative(),
+    keys: fingerprints,
+  }),
+]);
 
 export const actionResultSchema = z.strictObject({
   id: z.string().uuid(),

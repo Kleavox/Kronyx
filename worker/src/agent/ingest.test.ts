@@ -7,11 +7,13 @@ import { sha256 } from "../lib/crypto";
 import { seedCheck, seedNode } from "../test/seed";
 import { createTestDb } from "../test/sqlite-d1";
 import {
+  acceptResults,
   CHECK_LIMIT,
   commit,
   heartbeatStatements,
   loadAgentConfig,
   resultStatements,
+  windowStatements,
 } from "./ingest";
 
 const NODE = {
@@ -59,21 +61,32 @@ function setup() {
   const env = { DB: db } as unknown as Env;
   const beat = async (now: number, results?: CheckResult[]) => {
     const agent = await loadAgentConfig(db, NODE);
-    const ingestion = await resultStatements(
-      db,
-      NODE,
-      agent.checks,
-      results ?? [],
-      now,
-    );
+    const accepted = acceptResults(agent.checks, results ?? []);
     await commit(
       env,
       NODE.id,
-      heartbeatStatements(db, NODE, heartbeat(results), now),
-      ingestion,
+      [
+        ...heartbeatStatements(db, NODE, heartbeat(results), now),
+        ...(await windowStatements(
+          db,
+          NODE,
+          heartbeat(results).metrics,
+          accepted,
+          now,
+        )),
+      ],
+      resultStatements(db, agent.checks, accepted, now),
       notifier,
     );
   };
+  const windows = () =>
+    (
+      sqlite
+        .prepare(
+          "SELECT window_start, checks FROM node_windows ORDER BY window_start",
+        )
+        .all() as { window_start: string; checks: string }[]
+    ).map((row) => ({ ...row, checks: JSON.parse(row.checks) as unknown }));
   const changes = () =>
     (sqlite.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
   const count = (table: string) =>
@@ -82,35 +95,41 @@ function setup() {
         n: number;
       }
     ).n;
-  return { db, sqlite, notifier, beat, changes, count };
+  return { db, sqlite, notifier, beat, changes, count, windows };
 }
 
 describe("agent ingestion budget", () => {
-  it("stores history once per window and only the live row after that", async () => {
-    const { beat, changes, count } = setup();
+  it("stores one history row per window and only the live row after that", async () => {
+    const { beat, changes, count, windows } = setup();
+    const first = changes();
     await beat(BASE + 10_000, [result("UP")]);
-    expect(count("node_metrics")).toBe(1);
-    expect(count("check_results")).toBe(1);
+    expect(changes() - first).toBe(3);
+    expect(windows()).toEqual([
+      {
+        window_start: new Date(BASE).toISOString(),
+        checks: { [CHECK]: ["UP", 40] },
+      },
+    ]);
 
     const before = changes();
     await beat(BASE + 70_000, [result("UP")]);
     expect(changes() - before).toBe(1);
-    expect(count("node_metrics")).toBe(1);
-    expect(count("check_results")).toBe(1);
+    expect(count("node_windows")).toBe(1);
 
     await beat(BASE + WINDOW + 10_000, [result("UP")]);
-    expect(count("node_metrics")).toBe(2);
-    expect(count("check_results")).toBe(2);
+    expect(count("node_windows")).toBe(2);
   });
 
-  it("keeps the worst status inside a window", async () => {
-    const { beat, sqlite } = setup();
+  it("keeps the worst status inside a window, with its message", async () => {
+    const { beat, changes, windows } = setup();
     await beat(BASE + 10_000, [result("UP")]);
     await beat(BASE + 70_000, [result("DOWN")]);
+    const before = changes();
     await beat(BASE + 130_000, [result("UP")]);
-    expect(sqlite.prepare("SELECT status FROM check_results").all()).toEqual([
-      { status: "DOWN" },
-    ]);
+    expect(changes() - before).toBe(2);
+    expect(windows()[0]!.checks).toEqual({
+      [CHECK]: ["DOWN", null, "timeout"],
+    });
   });
 
   it("opens an incident at the second failure, then stays quiet until it resolves", async () => {
@@ -143,11 +162,11 @@ describe("agent ingestion budget", () => {
   });
 
   it("ignores results for checks the node does not run", async () => {
-    const { beat, count } = setup();
+    const { beat, windows } = setup();
     await beat(BASE, [
       { ...result("DOWN"), checkId: "33333333-3333-4333-8333-333333333333" },
     ]);
-    expect(count("check_results")).toBe(0);
+    expect(windows()[0]!.checks).toEqual({});
   });
 
   it("changes the config version only when the agent config changes", async () => {
@@ -178,7 +197,7 @@ describe("agent ingestion budget", () => {
     await beat(BASE + 70_000, [
       { ...result("UP"), checkedAt: "2031-01-01T00:00:00.000Z" },
     ]);
-    expect(count("check_results")).toBe(1);
+    expect(count("node_windows")).toBe(1);
   });
 
   it("orders checks that share a creation time by id", async () => {
@@ -244,8 +263,17 @@ describe("agent routes", () => {
       (await loadAgentConfig(db, NODE)).configVersion,
     );
     expect(
-      sqlite.prepare("SELECT COUNT(*) AS n FROM check_results").get(),
-    ).toEqual({ n: 1 });
+      JSON.parse(
+        (
+          sqlite.prepare("SELECT checks FROM node_windows").get() as {
+            checks: string;
+          }
+        ).checks,
+      ),
+    ).toMatchObject({ [CHECK]: ["UP", 40] });
+    expect(
+      sqlite.prepare("SELECT transport FROM nodes WHERE id = ?").get(NODE.id),
+    ).toEqual({ transport: "http" });
   });
 
   it("serves the config with its version to older agents", async () => {
@@ -268,7 +296,7 @@ describe("agent routes", () => {
     });
     expect(response.status).toBe(404);
     expect(
-      sqlite.prepare("SELECT COUNT(*) AS n FROM check_results").get(),
+      sqlite.prepare("SELECT COUNT(*) AS n FROM node_windows").get(),
     ).toEqual({ n: 0 });
   });
 });

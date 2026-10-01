@@ -117,6 +117,20 @@ func TestTrustArgumentsMayStartWithADash(t *testing.T) {
 	}
 }
 
+func TestTrustArgumentsCarryThePassphraseAndTheGrant(t *testing.T) {
+	options, err := parseTrust([]string{"--initial", "--origin", "https://kry.kleavox.xyz", "--passphrase", "SALT.600000.KEY", "--grant", "--", "-abc.-7.KEY"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.passphrase != "SALT.600000.KEY" || !options.grant || len(options.keys) != 1 {
+		t.Fatalf("options %+v", options)
+	}
+	plain, err := parseTrust([]string{"--initial", "--origin", "https://kry.kleavox.xyz", "--", "abc.-7.KEY"})
+	if err != nil || plain.passphrase != "" || plain.grant {
+		t.Fatalf("plain %+v err %v", plain, err)
+	}
+}
+
 func TestTheExecutorIsStartedByRequestsAndATimer(t *testing.T) {
 	path := execPathUnit()
 	for _, want := range []string{"PathChanged=/var/lib/kry/actions\n", "Unit=krynodes-exec.service\n", "WantedBy=multi-user.target\n"} {

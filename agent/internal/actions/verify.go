@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -14,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 	"time"
 )
 
@@ -22,6 +24,7 @@ const (
 	commandGrace = 60 * time.Minute
 	clockSkew    = time.Minute
 	flagPresent  = 0x01
+	flagVerified = 0x04
 	algES256     = -7
 	algRS256     = -257
 )
@@ -35,12 +38,58 @@ type TrustKey struct {
 	PublicKey string `json:"publicKey"`
 }
 
+type PassphraseKey struct {
+	Salt       string `json:"salt"`
+	Iterations int    `json:"iterations"`
+	PublicKey  string `json:"publicKey"`
+}
+
 type Trust struct {
-	NodeID  string     `json:"nodeId"`
-	Origin  string     `json:"origin"`
-	RPID    string     `json:"rpId"`
-	Version int        `json:"version"`
-	Keys    []TrustKey `json:"keys"`
+	V          int            `json:"v"`
+	NodeID     string         `json:"nodeId"`
+	Origin     string         `json:"origin"`
+	RPID       string         `json:"rpId"`
+	Version    int            `json:"version"`
+	Core       []TrustKey     `json:"core"`
+	Access     []string       `json:"access"`
+	Passphrase *PassphraseKey `json:"passphrase"`
+}
+
+func (t Trust) coreIDs() []string {
+	ids := make([]string, 0, len(t.Core))
+	for _, key := range t.Core {
+		ids = append(ids, key.ID)
+	}
+	return ids
+}
+
+func (t Trust) verified(uv bool, proof, purpose string, data []byte) error {
+	if uv || t.Passphrase == nil {
+		return nil
+	}
+	if proof == "" {
+		return errors.New("the passkey did not verify the user; the passphrase is needed")
+	}
+	return verifyProof(*t.Passphrase, purpose, data, proof)
+}
+
+func proofMessage(purpose string, data []byte) string {
+	return "krynodes-passphrase\n" + purpose + "\n" + b64.EncodeToString(digest(data))
+}
+
+func verifyProof(key PassphraseKey, purpose string, data []byte, proof string) error {
+	public, err := decode("passphrase key", key.PublicKey)
+	if err != nil || len(public) != ed25519.PublicKeySize {
+		return errors.New("the passphrase key is malformed")
+	}
+	signature, err := decode("passphrase proof", proof)
+	if err != nil {
+		return err
+	}
+	if !ed25519.Verify(public, []byte(proofMessage(purpose, data)), signature) {
+		return errors.New("the passphrase is wrong")
+	}
+	return nil
 }
 
 type Assertion struct {
@@ -53,6 +102,7 @@ type Assertion struct {
 type SignedGrant struct {
 	Grant string `json:"grant"`
 	Assertion
+	Proof string `json:"proof,omitempty"`
 }
 
 type SignedCommand struct {
@@ -148,31 +198,29 @@ func Fingerprint(key TrustKey) string {
 	return hex.EncodeToString(digest(der))[:16]
 }
 
-func verifyAssertion(trust Trust, assertion Assertion, challenge []byte) error {
-	var key *TrustKey
-	for index := range trust.Keys {
-		if trust.Keys[index].ID == assertion.CredentialID {
-			key = &trust.Keys[index]
-		}
+func verifyAssertion(trust Trust, allowed []string, assertion Assertion, challenge []byte) (bool, error) {
+	index := slices.IndexFunc(trust.Core, func(key TrustKey) bool { return key.ID == assertion.CredentialID })
+	if index < 0 {
+		return false, errors.New("passkey is not trusted")
 	}
-	if key == nil {
-		return errors.New("passkey is not trusted")
+	if !slices.Contains(allowed, assertion.CredentialID) {
+		return false, errors.New("the passkey has no access to this server")
 	}
-	public, err := parseKey(*key)
+	public, err := parseKey(trust.Core[index])
 	if err != nil {
-		return err
+		return false, err
 	}
 	authData, err := decode("authenticator data", assertion.AuthenticatorData)
 	if err != nil {
-		return err
+		return false, err
 	}
 	clientData, err := decode("client data", assertion.ClientDataJSON)
 	if err != nil {
-		return err
+		return false, err
 	}
 	signature, err := decode("passkey signature", assertion.Signature)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var client struct {
 		Type        string `json:"type"`
@@ -181,41 +229,41 @@ func verifyAssertion(trust Trust, assertion Assertion, challenge []byte) error {
 		CrossOrigin bool   `json:"crossOrigin"`
 	}
 	if err := json.Unmarshal(clientData, &client); err != nil {
-		return errors.New("client data is not JSON")
+		return false, errors.New("client data is not JSON")
 	}
 	if client.Type != "webauthn.get" {
-		return errors.New("client data is not an assertion")
+		return false, errors.New("client data is not an assertion")
 	}
 	if client.Challenge != b64.EncodeToString(challenge) {
-		return errors.New("challenge does not match")
+		return false, errors.New("challenge does not match")
 	}
 	if client.Origin != trust.Origin {
-		return errors.New("origin does not match")
+		return false, errors.New("origin does not match")
 	}
 	if client.CrossOrigin {
-		return errors.New("cross-origin assertion")
+		return false, errors.New("cross-origin assertion")
 	}
 	if len(authData) < 37 {
-		return errors.New("authenticator data is too short")
+		return false, errors.New("authenticator data is too short")
 	}
 	if !bytes.Equal(authData[:32], digest([]byte(trust.RPID))) {
-		return errors.New("rp id does not match")
+		return false, errors.New("rp id does not match")
 	}
 	if authData[32]&flagPresent == 0 {
-		return errors.New("the passkey was not touched")
+		return false, errors.New("the passkey was not touched")
 	}
 	signed := digest(append(append([]byte{}, authData...), digest(clientData)...))
 	switch public := public.(type) {
 	case *ecdsa.PublicKey:
 		if !ecdsa.VerifyASN1(public, signed, signature) {
-			return errors.New("passkey signature is invalid")
+			return false, errors.New("passkey signature is invalid")
 		}
 	case *rsa.PublicKey:
 		if rsa.VerifyPKCS1v15(public, crypto.SHA256, signed, signature) != nil {
-			return errors.New("passkey signature is invalid")
+			return false, errors.New("passkey signature is invalid")
 		}
 	}
-	return nil
+	return authData[32]&flagVerified != 0, nil
 }
 
 func VerifyCommand(trust Trust, request Request, now time.Time) (Command, error) {
@@ -230,7 +278,11 @@ func VerifyCommand(trust Trust, request Request, now time.Time) (Command, error)
 	if err != nil {
 		return Command{}, err
 	}
-	if err := verifyAssertion(trust, signed.Grant.Assertion, digest(grantBytes)); err != nil {
+	uv, err := verifyAssertion(trust, trust.Access, signed.Grant.Assertion, digest(grantBytes))
+	if err != nil {
+		return Command{}, err
+	}
+	if err := trust.verified(uv, signed.Grant.Proof, "grant", grantBytes); err != nil {
 		return Command{}, err
 	}
 	var session grant

@@ -2,6 +2,8 @@ import { runReleaseCheck } from "./agent/releases";
 import { app } from "./app";
 import type { Env } from "./env";
 
+export { FleetHub } from "./fleet/hub";
+
 const worker = {
   fetch(request: Request, env: Env, context: ExecutionContext) {
     return app.fetch(request, env, context);
@@ -17,12 +19,9 @@ const worker = {
 };
 
 export async function runRetention(env: Env): Promise<void> {
-  await env.DB.prepare(
-    "DELETE FROM node_metrics WHERE datetime(recorded_at) < datetime('now', '-8 days')",
-  ).run();
-  await env.DB.prepare(
-    "DELETE FROM check_results WHERE datetime(checked_at) < datetime('now', '-8 days')",
-  ).run();
+  await env.DB.prepare("DELETE FROM node_windows WHERE window_start < ?")
+    .bind(new Date(Date.now() - 8 * 86_400_000).toISOString())
+    .run();
   await env.DB.prepare(
     `DELETE FROM incidents
      WHERE status = 'RESOLVED'

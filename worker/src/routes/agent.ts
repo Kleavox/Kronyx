@@ -7,13 +7,16 @@ import {
   sweepStatements,
 } from "../actions/store";
 import {
+  acceptResults,
   commit,
+  heartbeatResponse,
   heartbeatStatements,
   loadAgentConfig,
   resultStatements,
   type AgentNode,
-  updateDone,
+  windowStatements,
 } from "../agent/ingest";
+import { hubFor, streamsOn } from "../fleet/client";
 import { randomToken, readBearerToken, sha256 } from "../lib/crypto";
 import { actionsSchema, heartbeatSchema, hostSchema } from "../schemas";
 import { readJson, type KrynodesApp, type KrynodesContext } from "./shared";
@@ -105,37 +108,58 @@ export function registerAgentRoutes(app: KrynodesApp): void {
     }
 
     const now = Date.now();
-    const agent = await loadAgentConfig(context.env.DB, node);
-    const ingestion = await resultStatements(
-      context.env.DB,
-      node,
-      agent.checks,
-      heartbeat.data.results ?? [],
-      now,
-    );
+    const db = context.env.DB;
+    const agent = await loadAgentConfig(db, node);
+    const accepted = acceptResults(agent.checks, heartbeat.data.results ?? []);
     await commit(
       context.env,
       node.id,
-      heartbeatStatements(context.env.DB, node, heartbeat.data, now),
-      ingestion,
+      [
+        ...heartbeatStatements(db, node, heartbeat.data, now),
+        ...(await windowStatements(
+          db,
+          node,
+          heartbeat.data.metrics,
+          accepted,
+          now,
+        )),
+      ],
+      resultStatements(db, agent.checks, accepted, now),
     );
     const actions = await heartbeatActions(context.env.DB, node.id, now);
-    const requested = node.update_requested_version;
-    return context.json({
-      ok: true,
-      intervalSeconds: node.interval_seconds,
-      configVersion: agent.configVersion,
-      ...(requested && !updateDone(node, heartbeat.data.agentVersion)
-        ? {
-            update: {
-              version: requested,
-              requestedAt: node.update_requested_at,
-            },
-          }
-        : {}),
-      ...(actions.length > 0 ? { actions } : {}),
-      ...(node.refresh_requested_at ? { refresh: true } : {}),
-    });
+    return context.json(
+      heartbeatResponse(
+        node,
+        agent.configVersion,
+        heartbeat.data.agentVersion,
+        actions,
+      ),
+    );
+  });
+
+  app.get("/api/agent/stream", async (context) => {
+    if (!streamsOn(context.env)) {
+      return context.json({ code: "STREAM_OFF" }, 404);
+    }
+    if (context.req.header("upgrade")?.toLowerCase() !== "websocket") {
+      return context.json({ code: "UPGRADE_REQUIRED" }, 426);
+    }
+    const node = await authenticateAgent(context);
+    if (!node?.owner_user_id) {
+      return context.json({ code: "UNAUTHORIZED" }, 401);
+    }
+    const headers = new Headers();
+    for (const [name, value] of context.req.raw.headers) {
+      const key = name.toLowerCase();
+      if (key === "authorization" || key.startsWith("x-kry-")) continue;
+      headers.set(name, value);
+    }
+    headers.set("x-kry-node", node.id);
+    headers.set("x-kry-owner", node.owner_user_id);
+    headers.set("x-kry-interval", String(node.interval_seconds));
+    return hubFor(context.env, node.owner_user_id).fetch(
+      new Request("https://fleet/connect", { headers }),
+    );
   });
 
   app.get("/api/agent/config", async (context) => {
@@ -187,8 +211,8 @@ async function authenticateAgent(
   const token = readBearerToken(context.req.header("authorization"));
   if (!token) return null;
   return context.env.DB.prepare(
-    `SELECT id, interval_seconds, update_requested_version, update_requested_at,
-            inventory_hash, refresh_requested_at
+    `SELECT id, owner_user_id, interval_seconds, update_requested_version,
+            update_requested_at, inventory_hash, refresh_requested_at
      FROM nodes
      WHERE agent_token_hash = ? AND enrolled_at IS NOT NULL
        AND disabled_at IS NULL LIMIT 1`,

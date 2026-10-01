@@ -406,24 +406,68 @@ describe("deploy messages", () => {
     ).toBe(false);
   });
 
-  it("accepts a trust action with or without an assertion", () => {
+  it("accepts a trust action with approvals, or none for a first trust", () => {
     const trust = {
       id,
       kind: "trust",
       name: "devices",
       action: "trust",
       expiresAt: "2026-09-29T10:10:00.000Z",
-      signed: { change: "Y2hhbmdl", assertion },
+      signed: {
+        change: "Y2hhbmdl",
+        approvals: [assertion, { ...assertion, proof: "cHJvb2Y" }],
+      },
     };
     expect(agentActionSchema.safeParse(trust).success).toBe(true);
     expect(
       agentActionSchema.safeParse({
         ...trust,
-        signed: { change: "Y2hhbmdl", assertion: null },
+        signed: { change: "Y2hhbmdl", approvals: [] },
       }).success,
     ).toBe(true);
     expect(
+      agentActionSchema.safeParse({
+        ...trust,
+        signed: { change: "Y2hhbmdl", assertion },
+      }).success,
+    ).toBe(false);
+    expect(
       agentActionSchema.safeParse({ ...trust, signed: signedCommand }).success,
+    ).toBe(false);
+  });
+
+  it("lets a grant carry a passphrase proof", () => {
+    expect(
+      agentActionSchema.safeParse({
+        ...deploy,
+        signed: {
+          ...signedCommand,
+          grant: { ...signedCommand.grant, proof: "cHJvb2Y" },
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("accepts trust reports from agents before and after 0.3.0", () => {
+    const fp = "0123456789abcdef";
+    expect(
+      agentActionsRequestSchema.safeParse(
+        inventory({
+          trust: { version: 3, core: [fp], access: [fp], passphrase: true },
+        }),
+      ).success,
+    ).toBe(true);
+    expect(
+      agentActionsRequestSchema.safeParse(
+        inventory({ trust: { version: 2, keys: [fp] } }),
+      ).success,
+    ).toBe(true);
+    expect(
+      agentActionsRequestSchema.safeParse(
+        inventory({
+          trust: { version: 3, core: [fp], access: ["xyz"], passphrase: false },
+        }),
+      ).success,
     ).toBe(false);
   });
 

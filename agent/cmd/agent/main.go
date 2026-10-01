@@ -25,6 +25,7 @@ import (
 	"github.com/Kleavox/krynodes/agent/internal/host"
 	"github.com/Kleavox/krynodes/agent/internal/metrics"
 	"github.com/Kleavox/krynodes/agent/internal/reporter"
+	"github.com/Kleavox/krynodes/agent/internal/stream"
 	"github.com/Kleavox/krynodes/agent/internal/update"
 )
 
@@ -86,18 +87,22 @@ func run(args []string) error {
 }
 
 type trustOptions struct {
-	initial bool
-	reset   bool
-	origin  string
-	config  string
-	keys    []string
+	initial    bool
+	reset      bool
+	origin     string
+	config     string
+	keys       []string
+	passphrase string
+	grant      bool
 }
 
 func parseTrust(args []string) (trustOptions, error) {
 	var options trustOptions
 	flags := flag.NewFlagSet("trust", flag.ContinueOnError)
-	flags.BoolVar(&options.initial, "initial", false, "trust the first deploy devices")
-	flags.BoolVar(&options.reset, "reset", false, "forget every trusted deploy device")
+	flags.BoolVar(&options.initial, "initial", false, "trust the first core devices")
+	flags.BoolVar(&options.reset, "reset", false, "forget every trusted device")
+	flags.StringVar(&options.passphrase, "passphrase", "", "the passphrase key as <salt>.<iterations>.<publicKey>")
+	flags.BoolVar(&options.grant, "grant", false, "give the core devices access to this server")
 	flags.StringVar(&options.origin, "origin", "", "the dashboard origin, such as https://kry.kleavox.xyz")
 	flags.StringVar(&options.config, "config", defaultConfigPath, "path to the agent config")
 	if err := flags.Parse(args); err != nil {
@@ -119,7 +124,7 @@ func trustDevices(args []string) error {
 		if err := actions.SaveTrust(actions.StateDir, actions.Trust{}); err != nil {
 			return err
 		}
-		fmt.Println("This server trusts no deploy device now.")
+		fmt.Println("This server trusts no device now.")
 		return nil
 	}
 	if !options.initial {
@@ -129,14 +134,14 @@ func trustDevices(args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(current.Keys) > 0 {
-		return fmt.Errorf("this server already trusts deploy devices; run kry trust --reset first")
+	if len(current.Core) > 0 {
+		return fmt.Errorf("this server already trusts devices; run kry trust --reset first")
 	}
 	cfg, err := config.Load(options.config)
 	if err != nil {
 		return err
 	}
-	trust, err := actions.ParseTrustArgs(options.origin, options.keys)
+	trust, err := actions.ParseTrustArgs(options.origin, options.keys, options.passphrase, options.grant)
 	if err != nil {
 		return err
 	}
@@ -144,7 +149,7 @@ func trustDevices(args []string) error {
 	if err := actions.SaveTrust(actions.StateDir, trust); err != nil {
 		return err
 	}
-	fmt.Printf("This server trusts %d deploy devices.\n", len(trust.Keys))
+	fmt.Printf("This server trusts %d core devices; %d have access.\n", len(trust.Core), len(trust.Access))
 	return nil
 }
 
@@ -219,14 +224,17 @@ func runDaemon(args []string, once bool) error {
 		Server:     client,
 		Now:        time.Now,
 	}
-	monitoringCycle := cycle.New(client, host, requestFile{}, relay)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if once {
-		_, err := monitoringCycle.Execute(ctx, cfg.NodeID)
+		_, err := cycle.New(client, host, requestFile{}, relay).Execute(ctx, cfg.NodeID)
 		return err
 	}
+
+	streamer := stream.New(cfg.Endpoint, cfg.Token, version)
+	defer streamer.Close()
+	monitoringCycle := cycle.New(stream.Hybrid{Stream: streamer, HTTP: client}, host, requestFile{}, relay)
 
 	log.Printf("%s %s started for node %s", unitName, version, cfg.NodeID)
 	go relay.Watch(ctx, 2*time.Second)
@@ -238,6 +246,9 @@ func runDaemon(args []string, once bool) error {
 		} else if nextInterval >= 15 && nextInterval <= 3600 {
 			interval = time.Duration(nextInterval) * time.Second
 		}
+		if err == nil && monitoringCycle.ConfigChanged() {
+			continue
+		}
 		timer := time.NewTimer(untilNextTick(time.Now(), interval))
 		select {
 		case <-ctx.Done():
@@ -245,6 +256,8 @@ func runDaemon(args []string, once bool) error {
 			log.Printf("%s stopped", unitName)
 			return nil
 		case <-timer.C:
+		case <-streamer.Pokes():
+			timer.Stop()
 		}
 	}
 }

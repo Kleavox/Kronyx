@@ -92,19 +92,17 @@ describe("GET /api/checks/results", () => {
     expect((await results(db)).checks).toEqual({});
   });
 
-  it("seeks the results index per check, not a table scan", async () => {
+  it("seeks the window primary key per server, not a table scan", async () => {
     const { db } = setup();
     const plan = await db
       .prepare(`EXPLAIN QUERY PLAN ${CHECK_RESULTS_SQL}`)
       .bind(OWNER, ago(4 * 3_600_000))
       .all<{ detail: string }>();
-    const details = plan.results.map((row) => row.detail);
-    expect(details).not.toContain("SCAN r");
-    expect(
-      details.some((detail) =>
-        detail.includes("idx_check_results_check_id_checked_at"),
-      ),
-    ).toBe(true);
+    const details = plan.results.map((row) => row.detail).join(" | ");
+    expect(details).not.toMatch(/SCAN w\b/u);
+    expect(details).toMatch(
+      /SEARCH w USING PRIMARY KEY \(node_id=\? AND window_start>\?\)/u,
+    );
   });
 });
 

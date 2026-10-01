@@ -69,7 +69,7 @@ if [ "$mode" = "enroll" ]; then
 fi
 "$bin" install-service
 if [ -n "$trust_origin" ]; then
-  "$bin" trust --initial --origin "$trust_origin" -- "$@"
+  "$bin" trust --initial --origin "$trust_origin" "$@"
 fi
 systemctl restart krynodes.service
 

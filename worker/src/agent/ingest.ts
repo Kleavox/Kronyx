@@ -8,6 +8,12 @@ import {
 import type { CheckKind } from "../lib/checks";
 import { sha256 } from "../lib/crypto";
 import { compareVersions } from "./releases";
+import {
+  mergeChecks,
+  parseChecks,
+  windowStart,
+  type WindowChecks,
+} from "./windows";
 
 export const CHECK_LIMIT = 10;
 const INCIDENT_THRESHOLD = 2;
@@ -15,13 +21,14 @@ const INCIDENT_THRESHOLD = 2;
 export interface AgentNode {
   id: string;
   interval_seconds: number;
+  owner_user_id?: string;
   update_requested_version?: string | null;
   update_requested_at?: string | null;
   inventory_hash?: string | null;
   refresh_requested_at?: string | null;
 }
 
-interface LiveCheck {
+export interface LiveCheck {
   id: string;
   name: string;
   kind: CheckKind;
@@ -39,14 +46,9 @@ interface Transition {
   statement: D1PreparedStatement;
 }
 
-interface Ingestion {
+export interface Ingestion {
   statements: D1PreparedStatement[];
   transitions: Transition[];
-}
-
-function windowStart(now: number, intervalSeconds: number): number {
-  const size = Math.max(300, intervalSeconds) * 1000;
-  return Math.floor(now / size) * size;
 }
 
 function sqliteTime(epochMs: number): string {
@@ -77,7 +79,7 @@ export async function loadAgentConfig(db: D1Database, node: AgentNode) {
   return { checks: rows.results, config, configVersion };
 }
 
-export function updateDone(
+function updateDone(
   node: Pick<AgentNode, "update_requested_version">,
   version: string,
 ): boolean {
@@ -85,11 +87,36 @@ export function updateDone(
   return Boolean(requested) && compareVersions(version, requested!) >= 0;
 }
 
+export function heartbeatResponse(
+  node: AgentNode,
+  configVersion: string,
+  agentVersion: string,
+  actions: unknown[],
+) {
+  const requested = node.update_requested_version;
+  return {
+    ok: true,
+    intervalSeconds: node.interval_seconds,
+    configVersion,
+    ...(requested && !updateDone(node, agentVersion)
+      ? {
+          update: {
+            version: requested,
+            requestedAt: node.update_requested_at,
+          },
+        }
+      : {}),
+    ...(actions.length > 0 ? { actions } : {}),
+    ...(node.refresh_requested_at ? { refresh: true } : {}),
+  };
+}
+
 export function heartbeatStatements(
   db: D1Database,
   node: AgentNode,
-  heartbeat: AgentHeartbeat,
+  heartbeat: Omit<AgentHeartbeat, "results">,
   now: number,
+  transport: "http" | "stream" = "http",
 ): D1PreparedStatement[] {
   const metrics = heartbeat.metrics;
   const at = sqliteTime(now);
@@ -102,7 +129,7 @@ export function heartbeatStatements(
              agent_version = ?, last_seen_at = ?,
              cpu_percent = ?, memory_used_bytes = ?, memory_total_bytes = ?,
              disk_used_bytes = ?, disk_total_bytes = ?, load_1 = ?,
-             uptime_seconds = ?, updated_at = ?,
+             uptime_seconds = ?, updated_at = ?, transport = ?,
              update_requested_at = CASE WHEN ?
                THEN NULL ELSE update_requested_at END,
              update_requested_version = CASE WHEN ?
@@ -123,36 +150,10 @@ export function heartbeatStatements(
         metrics.load1,
         metrics.uptimeSeconds,
         at,
+        transport,
         updated ? 1 : 0,
         updated ? 1 : 0,
         node.id,
-      ),
-    db
-      .prepare(
-        `INSERT INTO node_metrics (
-           node_id, cpu_percent, memory_used_bytes, memory_total_bytes,
-           disk_used_bytes, disk_total_bytes, load_1, load_5, load_15,
-           uptime_seconds, recorded_at
-         )
-         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-         WHERE NOT EXISTS (
-           SELECT 1 FROM node_metrics WHERE node_id = ? AND recorded_at >= ?
-         )`,
-      )
-      .bind(
-        node.id,
-        metrics.cpuPercent,
-        metrics.memoryUsedBytes,
-        metrics.memoryTotalBytes,
-        metrics.diskUsedBytes,
-        metrics.diskTotalBytes,
-        metrics.load1,
-        metrics.load5,
-        metrics.load15,
-        metrics.uptimeSeconds,
-        at,
-        node.id,
-        sqliteTime(windowStart(now, node.interval_seconds)),
       ),
   ];
 }
@@ -168,64 +169,102 @@ function worstPerCheck(results: CheckResult[]): CheckResult[] {
   return [...byCheck.values()];
 }
 
-export async function resultStatements(
+export function acceptResults(
+  checks: Pick<LiveCheck, "id">[],
+  results: CheckResult[],
+): CheckResult[] {
+  const known = new Set(checks.map((check) => check.id));
+  return worstPerCheck(results.filter((result) => known.has(result.checkId)));
+}
+
+export async function windowStatements(
   db: D1Database,
   node: AgentNode,
-  checks: LiveCheck[],
-  results: CheckResult[],
+  metrics: AgentHeartbeat["metrics"],
+  accepted: CheckResult[],
   now: number,
-): Promise<Ingestion> {
+): Promise<D1PreparedStatement[]> {
+  const start = windowStart(now, node.interval_seconds);
+  const row = await db
+    .prepare(
+      "SELECT checks FROM node_windows WHERE node_id = ? AND window_start = ?",
+    )
+    .bind(node.id, start)
+    .first<{ checks: string }>();
+  if (row) {
+    const current = parseChecks(row.checks);
+    const merged = mergeChecks(current, accepted);
+    if (merged === current) return [];
+    return [
+      db
+        .prepare(
+          "UPDATE node_windows SET checks = ? WHERE node_id = ? AND window_start = ?",
+        )
+        .bind(JSON.stringify(merged), node.id, start),
+    ];
+  }
+  return [
+    insertWindow(db, node.id, start, 1, metrics, mergeChecks({}, accepted)),
+  ];
+}
+
+export function insertWindow(
+  db: D1Database,
+  nodeId: string,
+  start: string,
+  samples: number,
+  metrics: AgentHeartbeat["metrics"],
+  checks: WindowChecks,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT INTO node_windows (
+         node_id, window_start, samples, cpu_percent, memory_used_bytes,
+         memory_total_bytes, disk_used_bytes, disk_total_bytes, load_1,
+         load_5, load_15, uptime_seconds, checks
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (node_id, window_start) DO UPDATE SET
+         samples = excluded.samples, cpu_percent = excluded.cpu_percent,
+         memory_used_bytes = excluded.memory_used_bytes,
+         memory_total_bytes = excluded.memory_total_bytes,
+         disk_used_bytes = excluded.disk_used_bytes,
+         disk_total_bytes = excluded.disk_total_bytes,
+         load_1 = excluded.load_1, load_5 = excluded.load_5,
+         load_15 = excluded.load_15, uptime_seconds = excluded.uptime_seconds,
+         checks = excluded.checks`,
+    )
+    .bind(
+      nodeId,
+      start,
+      samples,
+      metrics.cpuPercent,
+      metrics.memoryUsedBytes,
+      metrics.memoryTotalBytes,
+      metrics.diskUsedBytes,
+      metrics.diskTotalBytes,
+      metrics.load1,
+      metrics.load5,
+      metrics.load15,
+      metrics.uptimeSeconds,
+      JSON.stringify(checks),
+    );
+}
+
+export function resultStatements(
+  db: D1Database,
+  checks: LiveCheck[],
+  accepted: CheckResult[],
+  now: number,
+): Ingestion {
   const byId = new Map(checks.map((check) => [check.id, check]));
-  const accepted = worstPerCheck(
-    results.filter((result) => byId.has(result.checkId)),
-  );
   if (accepted.length === 0) return { statements: [], transitions: [] };
 
   const receivedAt = new Date(now).toISOString();
-  const stored = await db
-    .prepare(
-      `SELECT r.id, r.check_id, r.status
-       FROM check_results r
-       JOIN checks c ON c.id = r.check_id
-       WHERE c.node_id = ? AND r.checked_at >= ?`,
-    )
-    .bind(
-      node.id,
-      new Date(windowStart(now, node.interval_seconds)).toISOString(),
-    )
-    .all<{ id: number; check_id: string; status: "UP" | "DOWN" }>();
-  const inWindow = new Map(stored.results.map((row) => [row.check_id, row]));
-
   const statements: D1PreparedStatement[] = [];
   const transitions: Transition[] = [];
   for (const result of accepted) {
-    const check = byId.get(result.checkId)!;
-    const row = inWindow.get(check.id);
-    if (!row) {
-      statements.push(
-        db
-          .prepare(
-            `INSERT INTO check_results (check_id, status, latency_ms, message, checked_at)
-             VALUES (?, ?, ?, ?, ?)`,
-          )
-          .bind(
-            check.id,
-            result.status,
-            result.latencyMs,
-            result.message,
-            receivedAt,
-          ),
-      );
-    } else if (row.status === "UP" && result.status === "DOWN") {
-      statements.push(
-        db
-          .prepare(
-            `UPDATE check_results SET status = 'DOWN', latency_ms = ?, message = ?
-             WHERE id = ?`,
-          )
-          .bind(result.latencyMs, result.message, row.id),
-      );
-    }
+    const check = byId.get(result.checkId);
+    if (!check) continue;
 
     const failures =
       result.status === "DOWN"

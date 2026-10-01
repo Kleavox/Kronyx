@@ -34,6 +34,41 @@ export function seedNode(
     );
 }
 
+const epochOf = (value: string) =>
+  Date.parse(
+    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u.test(value)
+      ? `${value.replace(" ", "T")}Z`
+      : value,
+  );
+
+function windowOf(sqlite: DatabaseSync, nodeId: string, at: string): string {
+  const row = sqlite
+    .prepare("SELECT interval_seconds FROM nodes WHERE id = ?")
+    .get(nodeId) as { interval_seconds: number } | undefined;
+  const size = Math.max(300, row?.interval_seconds ?? 60) * 1000;
+  return new Date(Math.floor(epochOf(at) / size) * size).toISOString();
+}
+
+interface WindowValues {
+  samples: number;
+  cpu_percent: number | null;
+  memory_used_bytes: number | null;
+  memory_total_bytes: number | null;
+  load_1: number | null;
+  load_5: number | null;
+  load_15: number | null;
+  checks: string;
+}
+
+const average = (
+  current: number | null,
+  next: number | null,
+  samples: number,
+) =>
+  current === null || next === null
+    ? (next ?? current)
+    : (current * samples + next) / (samples + 1);
+
 export function seedMetric(
   sqlite: DatabaseSync,
   nodeId: string,
@@ -47,26 +82,53 @@ export function seedMetric(
     load15?: number;
   } = {},
 ): void {
+  const start = windowOf(sqlite, nodeId, recordedAt);
+  const sample = {
+    cpu: values.cpu === undefined ? 10 : values.cpu,
+    memUsed: values.memUsed === undefined ? 4 : values.memUsed,
+    memTotal: values.memTotal === undefined ? 8 : values.memTotal,
+    load1: values.load1 ?? 0.5,
+    load5: values.load5 ?? 0.4,
+    load15: values.load15 ?? 0.3,
+  };
+  const row = sqlite
+    .prepare(
+      "SELECT samples, cpu_percent, memory_used_bytes, memory_total_bytes, load_1, load_5, load_15, checks FROM node_windows WHERE node_id = ? AND window_start = ?",
+    )
+    .get(nodeId, start) as WindowValues | undefined;
+  const samples = row?.samples ?? 0;
+  const had = samples > 0 ? row : undefined;
   sqlite
     .prepare(
-      `INSERT INTO node_metrics
-         (node_id, cpu_percent, memory_used_bytes, memory_total_bytes,
-          disk_used_bytes, disk_total_bytes, load_1, load_5, load_15,
-          uptime_seconds, recorded_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO node_windows
+         (node_id, window_start, samples, cpu_percent, memory_used_bytes,
+          memory_total_bytes, disk_used_bytes, disk_total_bytes, load_1,
+          load_5, load_15, uptime_seconds, checks)
+       VALUES (?, ?, ?, ?, ?, ?, 20, 100, ?, ?, ?, 1000, ?)
+       ON CONFLICT (node_id, window_start) DO UPDATE SET
+         samples = excluded.samples, cpu_percent = excluded.cpu_percent,
+         memory_used_bytes = excluded.memory_used_bytes,
+         memory_total_bytes = excluded.memory_total_bytes,
+         disk_used_bytes = excluded.disk_used_bytes,
+         disk_total_bytes = excluded.disk_total_bytes,
+         load_1 = excluded.load_1, load_5 = excluded.load_5,
+         load_15 = excluded.load_15, uptime_seconds = excluded.uptime_seconds`,
     )
     .run(
       nodeId,
-      values.cpu === undefined ? 10 : values.cpu,
-      values.memUsed === undefined ? 4 : values.memUsed,
-      values.memTotal === undefined ? 8 : values.memTotal,
-      20,
-      100,
-      values.load1 ?? 0.5,
-      values.load5 ?? 0.4,
-      values.load15 ?? 0.3,
-      1000,
-      recordedAt,
+      start,
+      samples + 1,
+      had ? average(had.cpu_percent, sample.cpu, samples) : sample.cpu,
+      had
+        ? average(had.memory_used_bytes, sample.memUsed, samples)
+        : sample.memUsed,
+      had && had.memory_total_bytes !== null && sample.memTotal !== null
+        ? Math.max(had.memory_total_bytes, sample.memTotal)
+        : sample.memTotal,
+      had ? average(had.load_1, sample.load1, samples) : sample.load1,
+      had ? average(had.load_5, sample.load5, samples) : sample.load5,
+      had ? average(had.load_15, sample.load15, samples) : sample.load15,
+      row?.checks ?? "{}",
     );
 }
 
@@ -89,18 +151,28 @@ export function seedResult(
   status: "UP" | "DOWN",
   latencyMs: number | null = 50,
 ): void {
+  const check = sqlite
+    .prepare("SELECT node_id FROM checks WHERE id = ?")
+    .get(checkId) as { node_id: string };
+  const start = windowOf(sqlite, check.node_id, checkedAt);
+  const row = sqlite
+    .prepare(
+      "SELECT checks FROM node_windows WHERE node_id = ? AND window_start = ?",
+    )
+    .get(check.node_id, start) as { checks: string } | undefined;
+  const checks = JSON.parse(row?.checks ?? "{}") as Record<string, unknown[]>;
+  const stored = checks[checkId];
+  if (!stored || (stored[0] === "UP" && status === "DOWN")) {
+    checks[checkId] =
+      status === "DOWN" ? ["DOWN", latencyMs, "timeout"] : ["UP", latencyMs];
+  }
   sqlite
     .prepare(
-      `INSERT INTO check_results (check_id, status, latency_ms, message, checked_at)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO node_windows (node_id, window_start, samples, checks)
+       VALUES (?, ?, 0, ?)
+       ON CONFLICT (node_id, window_start) DO UPDATE SET checks = excluded.checks`,
     )
-    .run(
-      checkId,
-      status,
-      latencyMs,
-      status === "DOWN" ? "timeout" : null,
-      checkedAt,
-    );
+    .run(check.node_id, start, JSON.stringify(checks));
 }
 
 export function seedIncident(

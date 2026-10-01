@@ -8,7 +8,8 @@ import {
   fromB64url,
   signCommand,
   signTargets,
-  signTrustChange,
+  approveChange,
+  thisBrowser,
 } from "./passkeys";
 
 const T = Date.parse("2026-09-29T10:00:00.000Z");
@@ -25,7 +26,7 @@ const authData = (flags: number) => {
   return bytes.buffer;
 };
 
-function authenticator(flags = 0x05) {
+function authenticator(flags = 0x05, attachment = "platform") {
   const seen: Uint8Array[] = [];
   vi.stubGlobal("navigator", {
     credentials: {
@@ -33,7 +34,7 @@ function authenticator(flags = 0x05) {
         seen.push(new Uint8Array(options.publicKey!.challenge as ArrayBuffer));
         return {
           id: "ZGV2aWNl",
-          authenticatorAttachment: "platform",
+          authenticatorAttachment: attachment,
           response: {
             authenticatorData: authData(flags),
             clientDataJSON: new TextEncoder().encode("{}").buffer,
@@ -62,7 +63,12 @@ describe("passkeys", () => {
 
   it("builds a grant whose challenge is the SHA-256 of its bytes", async () => {
     const seen = authenticator();
-    const session = await createSession(["ZGV2aWNl"], "kry.example.test", T);
+    const session = await createSession(
+      ["ZGV2aWNl"],
+      "kry.example.test",
+      null,
+      T,
+    );
     const grantBytes = fromB64url(session.grant.grant);
     expect(seen[0]).toEqual(await sha256(grantBytes));
     expect(decode(session.grant.grant)).toMatchObject({
@@ -82,7 +88,12 @@ describe("passkeys", () => {
 
   it("signs a command the session key verifies (P1363)", async () => {
     authenticator();
-    const session = await createSession(["ZGV2aWNl"], "kry.example.test", T);
+    const session = await createSession(
+      ["ZGV2aWNl"],
+      "kry.example.test",
+      null,
+      T,
+    );
     const command = actionCommand(
       {
         id: "55555555-5555-4555-8555-555555555555",
@@ -125,21 +136,101 @@ describe("passkeys", () => {
     expect(signed.grant).toBe(session.grant);
   });
 
-  it("signs a trust change with a fresh assertion, or leaves the first one unsigned", async () => {
+  it("approves a change with an assertion over its exact bytes", async () => {
     const seen = authenticator();
-    const change = { v: 1, nodeIds: ["n1"], version: 2 };
-    const signed = await signTrustChange(change, ["ZGV2aWNl"]);
-    expect(decode(signed.change)).toEqual(change);
-    expect(seen[0]).toEqual(await sha256(fromB64url(signed.change)));
-    expect(signed.assertion?.credentialId).toBe("ZGV2aWNl");
-    const first = await signTrustChange(change, null);
-    expect(first.assertion).toBeNull();
-    expect(seen).toHaveLength(1);
+    const change = b64url(new TextEncoder().encode('{"v":2}'));
+    const approval = await approveChange(
+      change,
+      ["ZGV2aWNl"],
+      "kry.example.test",
+    );
+    expect(seen[0]).toEqual(await sha256(fromB64url(change)));
+    expect(approval).toEqual({
+      credentialId: "ZGV2aWNl",
+      authenticatorData: b64url(authData(0x05)),
+      clientDataJSON: "e30",
+      signature: "BAU",
+    });
+  });
+
+  it("adds a passphrase proof only when the passkey did not verify the user", async () => {
+    const asked: { purpose: string; data: Uint8Array }[] = [];
+    const prove = async (purpose: string, data: Uint8Array) => {
+      asked.push({ purpose, data });
+      return "cHJvb2Y";
+    };
+    authenticator(0x05);
+    const verified = await createSession(
+      ["ZGV2aWNl"],
+      "kry.example.test",
+      prove,
+      T,
+    );
+    expect(verified.grant).not.toHaveProperty("proof");
+    expect(asked).toHaveLength(0);
+    authenticator(0x19);
+    const touched = await createSession(
+      ["ZGV2aWNl"],
+      "kry.example.test",
+      prove,
+      T,
+    );
+    expect(touched.grant.proof).toBe("cHJvb2Y");
+    expect(asked[0]?.purpose).toBe("grant");
+    expect(asked[0]?.data).toEqual(fromB64url(touched.grant.grant));
+    const change = b64url(new TextEncoder().encode('{"v":2}'));
+    const approval = await approveChange(
+      change,
+      ["ZGV2aWNl"],
+      "kry.example.test",
+      prove,
+    );
+    expect(approval.proof).toBe("cHJvb2Y");
+    expect(asked[1]).toEqual({
+      purpose: "approve:ZGV2aWNl",
+      data: fromB64url(change),
+    });
+    const bare = await createSession(["ZGV2aWNl"], "kry.example.test", null, T);
+    expect(bare.grant).not.toHaveProperty("proof");
+  });
+
+  it("remembers the passkeys this browser used", async () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => store.set(key, value),
+    });
+    expect(thisBrowser()).toEqual([]);
+    authenticator();
+    await createSession(["ZGV2aWNl"], "kry.example.test", null, T);
+    await createSession(["ZGV2aWNl"], "kry.example.test", null, T);
+    expect(thisBrowser()).toEqual(["ZGV2aWNl"]);
+    store.clear();
+    authenticator(0x05, "cross-platform");
+    await createSession(["ZGV2aWNl"], "kry.example.test", null, T);
+    expect(thisBrowser()).toEqual([]);
+    vi.stubGlobal("localStorage", {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    });
+    expect(thisBrowser()).toEqual([]);
+    await expect(
+      createSession(["ZGV2aWNl"], "kry.example.test", null, T),
+    ).resolves.toBeDefined();
   });
 
   it("signs every target before anything is sent", async () => {
     authenticator();
-    const session = await createSession(["ZGV2aWNl"], "kry.example.test", T);
+    const session = await createSession(
+      ["ZGV2aWNl"],
+      "kry.example.test",
+      null,
+      T,
+    );
     const targets = await signTargets(
       session,
       "rollback",
@@ -169,7 +260,12 @@ describe("passkeys", () => {
 
   it("signs a service action with its own kind", async () => {
     authenticator();
-    const session = await createSession(["ZGV2aWNl"], "kry.example.test", T);
+    const session = await createSession(
+      ["ZGV2aWNl"],
+      "kry.example.test",
+      null,
+      T,
+    );
     const [target] = await signTargets(
       session,
       "restart",
@@ -192,17 +288,39 @@ describe("passkeys", () => {
     });
   });
 
+  it("asks for verification without requiring it, so servers decide", async () => {
+    const asked: CredentialRequestOptions[] = [];
+    vi.stubGlobal("navigator", {
+      credentials: {
+        get: async (options: CredentialRequestOptions) => {
+          asked.push(options);
+          return {
+            id: "ZGV2aWNl",
+            authenticatorAttachment: "platform",
+            response: {
+              authenticatorData: authData(0x01),
+              clientDataJSON: new TextEncoder().encode("{}").buffer,
+              signature: new Uint8Array([4, 5]).buffer,
+            },
+          };
+        },
+      },
+    });
+    await createSession(["ZGV2aWNl"], "kry.example.test", null, T);
+    expect(asked[0]?.publicKey?.userVerification).toBe("preferred");
+  });
+
   it("accepts a passkey that reports presence without verification", async () => {
     authenticator(0x19);
     await expect(
-      createSession(["ZGV2aWNl"], "kry.example.test", T),
+      createSession(["ZGV2aWNl"], "kry.example.test", null, T),
     ).resolves.toMatchObject({ grant: { credentialId: "ZGV2aWNl" } });
   });
 
   it("stops at once when the passkey was not touched", async () => {
     authenticator(0x00);
     await expect(
-      createSession(["ZGV2aWNl"], "kry.example.test", T),
+      createSession(["ZGV2aWNl"], "kry.example.test", null, T),
     ).rejects.toThrow(/was not touched.*flags 0x00, platform/u);
   });
 
@@ -225,6 +343,10 @@ describe("passkeys", () => {
     vi.stubGlobal("navigator", { credentials: created(0x59) });
     await expect(
       registerDevice("Laptop", "kry.example.test", user, []),
-    ).resolves.toMatchObject({ id: "bmV3", alg: -7 });
+    ).resolves.toMatchObject({ id: "bmV3", alg: -7, verifies: false });
+    vi.stubGlobal("navigator", { credentials: created(0x45) });
+    await expect(
+      registerDevice("Laptop", "kry.example.test", user, []),
+    ).resolves.toMatchObject({ verifies: true });
   });
 });

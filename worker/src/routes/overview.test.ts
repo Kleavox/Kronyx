@@ -27,6 +27,7 @@ const NODE_KEYS = [
   "update_requested_version",
   "update_requested_at",
   "auto_update",
+  "transport",
 ];
 const CHECK_KEYS = [
   "id",

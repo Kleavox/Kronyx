@@ -297,6 +297,15 @@ describe("serviceState", () => {
       "nodata",
     );
   });
+
+  it("gives a streaming server a window and two reports before no data", () => {
+    expect(serviceState("UP", "2026-09-28T11:54:00.000Z", NOW, 420_000)).toBe(
+      "up",
+    );
+    expect(serviceState("UP", "2026-09-28T11:52:59.000Z", NOW, 420_000)).toBe(
+      "nodata",
+    );
+  });
 });
 
 describe("loadStatus", () => {
@@ -339,26 +348,14 @@ describe("loadStatus", () => {
     expect(plan).not.toMatch(/SCAN (TABLE )?(incidents|i)\b/u);
     expect(plan).toMatch(/SEARCH (TABLE )?(incidents|i) USING INDEX/u);
 
-    const latest = statements.find((sql) => sql.includes("check_results"));
-    const latestPlan = prepare(`EXPLAIN QUERY PLAN ${latest}`)
+    const recent = statements.find((sql) => sql.includes("node_windows"));
+    const recentPlan = prepare(`EXPLAIN QUERY PLAN ${recent}`)
       .all()
       .map((row) => String(row.detail))
       .join(" | ");
-    expect(latestPlan).not.toMatch(/SCAN (TABLE )?(check_results|r)\b/u);
-    expect(latestPlan).toMatch(
-      /SEARCH (TABLE )?(check_results|r) USING (COVERING )?INDEX idx_check_results_check_id_checked_at/u,
-    );
-
-    const day = statements.find(
-      (sql) => sql.includes("FROM check_results") && sql.includes(">="),
-    );
-    const dayPlan = prepare(`EXPLAIN QUERY PLAN ${day}`)
-      .all()
-      .map((row) => String(row.detail))
-      .join(" | ");
-    expect(dayPlan).not.toMatch(/SCAN (TABLE )?check_results\b/u);
-    expect(dayPlan).toMatch(
-      /SEARCH (TABLE )?check_results USING (COVERING )?INDEX idx_check_results_check_id_checked_at \(check_id=\? AND checked_at>\?\)/u,
+    expect(recentPlan).not.toMatch(/SCAN (TABLE )?(node_windows|w)\b/u);
+    expect(recentPlan).toMatch(
+      /SEARCH (TABLE )?(node_windows|w) USING PRIMARY KEY \(node_id=\? AND window_start>\?\)/u,
     );
 
     statements.length = 0;

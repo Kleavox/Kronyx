@@ -18,6 +18,7 @@ type Reporter interface {
 
 type Cycle interface {
 	Execute(context.Context, string) (int, error)
+	ConfigChanged() bool
 }
 
 type Updater interface {
@@ -35,6 +36,7 @@ type implementation struct {
 	updates  Updater
 	actions  Actions
 	config   *reporter.AgentConfig
+	changed  bool
 }
 
 func New(server Reporter, host reporter.Host, updates Updater, actions Actions) Cycle {
@@ -68,6 +70,7 @@ func (cycle *implementation) Execute(ctx context.Context, nodeID string) (int, e
 		return 0, describeResponseError("heartbeat", err)
 	}
 	if cycle.config != nil && (response.ConfigVersion == "" || response.ConfigVersion != cycle.config.ConfigVersion) {
+		cycle.changed = response.ConfigVersion != ""
 		cycle.config = nil
 	}
 	if configErr != nil {
@@ -107,4 +110,10 @@ func describeResponseError(action string, err error) error {
 		)
 	}
 	return fmt.Errorf("%s failed: %w", action, err)
+}
+
+func (cycle *implementation) ConfigChanged() bool {
+	changed := cycle.changed
+	cycle.changed = false
+	return changed
 }
