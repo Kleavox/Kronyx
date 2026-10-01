@@ -75,6 +75,23 @@ describe("change summaries", () => {
     ).toBe("Change passphrase");
   });
 
+  it("names turning on fingerprints next to the removal it needs", () => {
+    const summary = summarizeChange({
+      names,
+      currentCore: ["a", "b"],
+      currentAccess: { [N1]: ["a", "b"] },
+      currentPassphrase: true,
+      change: {
+        core: ["b"],
+        passphrase: false,
+        requireUv: true,
+        access: { [N1]: ["b"] },
+      },
+    });
+    expect(summary.title).toBe("Remove Laptop · Require fingerprint");
+    expect(summary.requireUv).toBe(true);
+  });
+
   it("parses a change and refuses one of the old format", () => {
     const change = {
       v: 2,
@@ -90,6 +107,12 @@ describe("change summaries", () => {
     expect(trustChangeSchema.safeParse(change).success).toBe(true);
     expect(
       trustChangeSchema.safeParse({ ...change, v: 1, nodeIds: [N1] }).success,
+    ).toBe(false);
+    expect(
+      trustChangeSchema.safeParse({ ...change, requireUv: true }).success,
+    ).toBe(true);
+    expect(
+      trustChangeSchema.safeParse({ ...change, requireUv: false }).success,
     ).toBe(false);
   });
 });

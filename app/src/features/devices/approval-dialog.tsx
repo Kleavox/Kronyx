@@ -12,7 +12,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useApproveProposal, useOpenProposal } from "@/lib/api";
-import { decodeChange, describeChange, predictMissing } from "@/lib/devices";
+import {
+  decodeChange,
+  describeChange,
+  fingerprintsRequired,
+  predictMissing,
+} from "@/lib/devices";
 import { capitalize } from "@/lib/format";
 import { approveChange } from "@/lib/passkeys";
 import { proverFor } from "@/lib/passphrase-prompt";
@@ -108,7 +113,9 @@ function Body({
         review.text,
         signers,
         window.location.hostname,
-        proverFor(fleet.view.passphrase),
+        fingerprintsRequired(fleet.view)
+          ? "fingerprint"
+          : proverFor(fleet.view.passphrase),
       );
       const reply = proposal
         ? await approve.mutateAsync({ id: proposal.id, approval })
@@ -124,7 +131,7 @@ function Body({
       }
       onClose();
     } catch (caught) {
-      setError(failure(caught));
+      setError(failure(caught, fingerprintsRequired(fleet.view)));
     } finally {
       setWorking(false);
     }

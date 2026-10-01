@@ -35,6 +35,7 @@ type trustChange struct {
 	ExpiresAt  string              `json:"expiresAt"`
 	Core       []TrustKey          `json:"core"`
 	Passphrase *PassphraseKey      `json:"passphrase"`
+	RequireUV  *bool               `json:"requireUv,omitempty"`
 	Access     map[string][]string `json:"access"`
 }
 
@@ -93,7 +94,7 @@ func (t Trust) Report() reporter.TrustReport {
 			access = append(access, Fingerprint(key))
 		}
 	}
-	return reporter.TrustReport{Version: t.Version, Core: core, Access: access, Passphrase: t.Passphrase != nil}
+	return reporter.TrustReport{Version: t.Version, Core: core, Access: access, Passphrase: t.Passphrase != nil, RequireUV: t.RequireUV}
 }
 
 func originHost(origin string) (string, error) {
@@ -163,7 +164,7 @@ func ApplyTrustChange(current Trust, request Request, now time.Time) (Trust, err
 		return Trust{}, err
 	}
 	var change trustChange
-	if err := strict(changeBytes, &change); err != nil || change.V != 2 || change.Version < 1 {
+	if err := strict(changeBytes, &change); err != nil || change.V != 2 || change.Version < 1 || (change.RequireUV != nil && !*change.RequireUV) {
 		return Trust{}, errors.New("the change is malformed")
 	}
 	issued, err := stamp("change issuedAt", change.IssuedAt)
@@ -190,6 +191,9 @@ func ApplyTrustChange(current Trust, request Request, now time.Time) (Trust, err
 	if err := checkPassphrase(change.Passphrase); err != nil {
 		return Trust{}, err
 	}
+	if change.Passphrase != nil && (current.RequireUV || change.RequireUV != nil) {
+		return Trust{}, errors.New("fingerprints are required, so no passphrase is used")
+	}
 	if len(current.Core) == 0 {
 		return firstTrust(change, signed)
 	}
@@ -213,7 +217,7 @@ func ApplyTrustChange(current Trust, request Request, now time.Time) (Trust, err
 	if err := checkKeys(core); err != nil {
 		return Trust{}, err
 	}
-	next := Trust{V: 2, NodeID: current.NodeID, Origin: current.Origin, RPID: current.RPID, Version: change.Version, Core: core, Access: access, Passphrase: current.Passphrase}
+	next := Trust{V: 2, NodeID: current.NodeID, Origin: current.Origin, RPID: current.RPID, Version: change.Version, Core: core, Access: access, Passphrase: current.Passphrase, RequireUV: current.RequireUV || change.RequireUV != nil}
 	if err := checkAccess(access, next.coreIDs()); err != nil {
 		return Trust{}, err
 	}
@@ -228,6 +232,10 @@ func ApplyTrustChange(current Trust, request Request, now time.Time) (Trust, err
 		input.Change.PassphraseChanged = current.Passphrase == nil || *current.Passphrase != *change.Passphrase
 		next.Passphrase = change.Passphrase
 	}
+	if next.RequireUV {
+		next.Passphrase = nil
+	}
+	input.Change.RequireUV = next.RequireUV && !current.RequireUV
 	challenge := digest(changeBytes)
 	for _, item := range signed.Approvals {
 		uv, err := verifyAssertion(current, input.Current.Core, item.Assertion, challenge)
@@ -237,7 +245,7 @@ func ApplyTrustChange(current Trust, request Request, now time.Time) (Trust, err
 		if err := current.verified(uv, item.Proof, "approve:"+item.CredentialID, changeBytes); err != nil {
 			return Trust{}, err
 		}
-		input.Approvals = append(input.Approvals, quorumApproval{ID: item.CredentialID, Verified: true})
+		input.Approvals = append(input.Approvals, quorumApproval{ID: item.CredentialID, Verified: true, UV: uv})
 	}
 	if err := evaluateQuorum(input); err != nil {
 		return Trust{}, err
@@ -260,7 +268,7 @@ func firstTrust(change trustChange, signed signedTrust) (Trust, error) {
 	for id, list := range change.Access {
 		nodeID, access = id, list
 	}
-	next := Trust{V: 2, NodeID: nodeID, Origin: change.Origin, RPID: change.RPID, Version: change.Version, Core: change.Core, Access: access, Passphrase: change.Passphrase}
+	next := Trust{V: 2, NodeID: nodeID, Origin: change.Origin, RPID: change.RPID, Version: change.Version, Core: change.Core, Access: access, Passphrase: change.Passphrase, RequireUV: change.RequireUV != nil}
 	if err := checkAccess(access, next.coreIDs()); err != nil {
 		return Trust{}, err
 	}

@@ -50,6 +50,12 @@ export const agentHeartbeatSchema = agentHostSchema.extend({
   nodeId: z.string().uuid(),
   metrics: metricSnapshotSchema,
   results: z.array(checkResultSchema).max(100).optional(),
+  update: z
+    .object({
+      version: z.string().regex(/^\d+\.\d+\.\d+$/u),
+      message: z.string().min(1).max(300),
+    })
+    .optional(),
 });
 
 export const enrollmentResponseSchema = z.object({
@@ -174,6 +180,7 @@ export const trustReportSchema = z.union([
     core: fingerprints,
     access: fingerprints,
     passphrase: z.boolean(),
+    requireUv: z.boolean().optional(),
   }),
   z.strictObject({
     version: z.number().int().nonnegative(),

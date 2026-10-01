@@ -196,4 +196,14 @@ describe("GET /api/metrics/recent", () => {
     );
     expect(details).not.toMatch(/SCAN m\b/u);
   });
+
+  it("reaches back to the oldest slot the fleet strip can show", async () => {
+    const { db, sqlite } = createTestDb();
+    seedNode(sqlite, { id: "n1" });
+    const slot = Math.floor(Date.now() / 300_000);
+    seedMetric(sqlite, "n1", at((slot - 31) * 300 + 5), { cpu: 70 });
+    seedMetric(sqlite, "n1", at((slot - 32) * 300 + 5), { cpu: 90 });
+    const body = await recent(db);
+    expect(body.nodes.n1?.slots.map((entry) => entry.cpu)).toEqual([70]);
+  });
 });

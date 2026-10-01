@@ -82,7 +82,10 @@ export const RECENT_SQL = `
   JOIN node_windows m
     ON m.node_id = n.id
    AND m.samples > 0
-   AND m.window_start >= strftime('%Y-%m-%dT%H:%M:%fZ', ?2, '-' || (30 * MAX(300, n.interval_seconds)) || ' seconds')
+   AND m.window_start >= strftime('%Y-%m-%dT%H:%M:%fZ',
+         (CAST(strftime('%s', ?2) AS INTEGER) / MAX(300, n.interval_seconds) - 31)
+           * MAX(300, n.interval_seconds),
+         'unixepoch')
   WHERE n.owner_user_id = ?1 AND n.disabled_at IS NULL
   GROUP BY m.node_id, slot
   ORDER BY m.node_id, slot`;

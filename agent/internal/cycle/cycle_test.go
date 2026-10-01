@@ -199,11 +199,30 @@ var _ Reporter = (*fakeReporter)(nil)
 
 type fakeUpdater struct {
 	requests []string
+	failure  *reporter.UpdateFailure
 }
 
 func (updater *fakeUpdater) Request(version, requestedAt string) error {
 	updater.requests = append(updater.requests, version+"@"+requestedAt)
 	return nil
+}
+
+func (updater *fakeUpdater) Failure() *reporter.UpdateFailure {
+	return updater.failure
+}
+
+func TestTheLastUpdateFailureTravelsWithTheHeartbeat(t *testing.T) {
+	server := &fakeReporter{
+		config:    configWith(targetURL(t), "v1"),
+		heartbeat: reporter.HeartbeatResponse{OK: true, IntervalSeconds: 60, ConfigVersion: "v1"},
+	}
+	updates := &fakeUpdater{failure: &reporter.UpdateFailure{Version: "0.5.2", Message: "download stalled"}}
+	if _, err := New(server, reporter.Host{}, updates, nil).Execute(context.Background(), "node-1"); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if server.received.Update == nil || server.received.Update.Message != "download stalled" {
+		t.Fatalf("heartbeat update %+v", server.received.Update)
+	}
 }
 
 func TestUpdateInstructionIsHandedToTheUpdater(t *testing.T) {

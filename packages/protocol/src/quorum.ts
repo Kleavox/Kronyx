@@ -3,14 +3,17 @@ export interface QuorumInput {
   change: {
     core: string[] | null;
     passphraseChanged: boolean;
+    requireUv?: boolean;
     access: string[];
   };
-  approvals: { id: string; verified: boolean }[];
+  approvals: { id: string; verified: boolean; uv?: boolean }[];
 }
 
 export type QuorumResult = { ok: true } | { ok: false; reason: string };
 
 const WITH_ACCESS = "needs approval from another device with access here";
+const STAY_VERIFIED =
+  "every core device that stays must approve with a fingerprint";
 
 const sameSet = (a: string[], b: string[]) =>
   a.length === b.length && a.every((item) => b.includes(item));
@@ -38,7 +41,7 @@ export function evaluateQuorum({
   }
   const coreChanged =
     change.core !== null && !sameSet(change.core, current.core);
-  if (coreChanged || change.passphraseChanged) {
+  if (coreChanged || change.passphraseChanged || change.requireUv) {
     const need = Math.min(2, current.core.length);
     if (approvers.length < need) {
       const missing = need - approvers.length;
@@ -47,6 +50,14 @@ export function evaluateQuorum({
         reason: `needs ${missing} more core device${missing === 1 ? "" : "s"}`,
       };
     }
+  }
+  if (
+    change.requireUv &&
+    !core.every((id) =>
+      approvals.some((approval) => approval.id === id && approval.uv),
+    )
+  ) {
+    return { ok: false, reason: STAY_VERIFIED };
   }
   for (const id of change.access) {
     if (current.access.includes(id)) continue;

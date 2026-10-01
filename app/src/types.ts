@@ -33,8 +33,11 @@ export interface NodeRecord {
   created_at: string;
   update_requested_version: string | null;
   update_requested_at: string | null;
+  update_attempts?: number;
+  update_error?: string | null;
   auto_update: number;
   transport: "http" | "stream";
+  connected_at?: string;
   grace_seconds?: number;
 }
 
@@ -87,6 +90,7 @@ export interface Overview {
   checks: CheckRecord[];
   incidents: Incident[];
   agentRelease: AgentRelease;
+  agentHttp: boolean;
 }
 
 export interface Enrollment {
@@ -190,6 +194,7 @@ export interface NodeTrust {
   core: string[];
   access: string[];
   passphrase: boolean;
+  requireUv?: boolean;
 }
 
 interface ServiceNode {

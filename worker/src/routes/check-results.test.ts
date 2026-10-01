@@ -51,7 +51,7 @@ function setup() {
 }
 
 describe("GET /api/checks/results", () => {
-  it("returns the windows of the last four hours, oldest first", async () => {
+  it("returns the windows of the last four hours and the two before, oldest first", async () => {
     const { db, sqlite } = setup();
     for (let index = 0; index < 60; index += 1) {
       seedResult(sqlite, "c1", ago(index * 300_000 + 30_000), "UP", index);
@@ -60,9 +60,11 @@ describe("GET /api/checks/results", () => {
     const body = await results(db);
     expect(body.windowSeconds).toBe(300);
     const entry = body.checks.c1!;
-    expect(entry.results).toHaveLength(48);
-    expect(entry.results[0]?.latencyMs).toBe(47);
-    expect(entry.results[47]?.latencyMs).toBe(0);
+    const oldest =
+      (Math.floor((Date.now() - 4 * 3_600_000) / 300_000) - 2) * 300_000;
+    expect(Date.parse(entry.results[0]!.t)).toBe(oldest);
+    expect(entry.results.length).toBeGreaterThanOrEqual(50);
+    expect(entry.results.at(-1)?.latencyMs).toBe(0);
   });
 
   it("computes uptime over the returned windows only", async () => {

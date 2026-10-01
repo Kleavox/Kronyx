@@ -178,6 +178,13 @@ export const useCheckAgentRelease = () =>
     true,
   );
 
+export const useSetAgentHttp = () =>
+  useApiMutation(
+    (enabled: boolean) => apiFetch("/api/agent-http", send("PUT", { enabled })),
+    [queryKeys.overview],
+    true,
+  );
+
 export const useDeleteNode = () =>
   useApiMutation(
     (nodeId: string) => apiFetch(`/api/nodes/${nodeId}`, send("DELETE")),

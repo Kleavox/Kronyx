@@ -24,6 +24,8 @@ export interface AgentNode {
   owner_user_id?: string;
   update_requested_version?: string | null;
   update_requested_at?: string | null;
+  update_attempts?: number;
+  update_error?: string | null;
   inventory_hash?: string | null;
   refresh_requested_at?: string | null;
 }
@@ -87,6 +89,57 @@ function updateDone(
   return Boolean(requested) && compareVersions(version, requested!) >= 0;
 }
 
+const UPDATE_RETRY_MS = 15 * 60_000;
+const UPDATE_ATTEMPTS = 3;
+
+export function updateRetry(
+  db: D1Database,
+  node: AgentNode,
+  heartbeat: Pick<AgentHeartbeat, "agentVersion" | "update">,
+  now: number,
+): { node: AgentNode; statements: D1PreparedStatement[] } {
+  const requested = node.update_requested_version;
+  if (!requested || updateDone(node, heartbeat.agentVersion)) {
+    return { node, statements: [] };
+  }
+  const attempts = node.update_attempts || 1;
+  const reported =
+    heartbeat.update?.version === requested ? heartbeat.update.message : null;
+  const error = reported ?? node.update_error ?? null;
+  const since = Date.parse(node.update_requested_at ?? "");
+  const retry =
+    attempts < UPDATE_ATTEMPTS &&
+    (Number.isNaN(since) || now - since >= UPDATE_RETRY_MS);
+  if (!retry && error === (node.update_error ?? null)) {
+    return { node, statements: [] };
+  }
+  const next: AgentNode = {
+    ...node,
+    update_requested_at: retry
+      ? new Date(now).toISOString()
+      : (node.update_requested_at ?? null),
+    update_attempts: retry ? attempts + 1 : attempts,
+    update_error: error,
+  };
+  return {
+    node: next,
+    statements: [
+      db
+        .prepare(
+          `UPDATE nodes SET update_requested_at = ?, update_attempts = ?, update_error = ?
+           WHERE id = ? AND update_requested_version = ?`,
+        )
+        .bind(
+          next.update_requested_at,
+          next.update_attempts,
+          next.update_error,
+          node.id,
+          requested,
+        ),
+    ],
+  };
+}
+
 export function heartbeatResponse(
   node: AgentNode,
   configVersion: string,
@@ -133,7 +186,9 @@ export function heartbeatStatements(
              update_requested_at = CASE WHEN ?
                THEN NULL ELSE update_requested_at END,
              update_requested_version = CASE WHEN ?
-               THEN NULL ELSE update_requested_version END
+               THEN NULL ELSE update_requested_version END,
+             update_attempts = CASE WHEN ? THEN 0 ELSE update_attempts END,
+             update_error = CASE WHEN ? THEN NULL ELSE update_error END
          WHERE id = ?`,
       )
       .bind(
@@ -151,6 +206,8 @@ export function heartbeatStatements(
         metrics.uptimeSeconds,
         at,
         transport,
+        updated ? 1 : 0,
+        updated ? 1 : 0,
         updated ? 1 : 0,
         updated ? 1 : 0,
         node.id,

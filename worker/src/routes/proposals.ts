@@ -12,8 +12,8 @@ import { pokeNodes } from "../fleet/client";
 import type { Env } from "../env";
 import { fromB64url } from "../lib/b64url";
 import { sendProposalEmail } from "../lib/mail";
-import { verifyAssertion, verifyProof } from "../lib/webauthn";
-import { loadFleet, speaksQuorum, type Fleet } from "../trust/fleet";
+import { assertionUv, verifyAssertion, verifyProof } from "../lib/webauthn";
+import { loadFleet, speaksQuorum, speaksUv, type Fleet } from "../trust/fleet";
 import {
   invalidRequest,
   readJson,
@@ -116,6 +116,7 @@ function describe(fleet: Fleet, change: TrustChange) {
     change: {
       core: change.core?.map((key) => key.id) ?? null,
       passphrase: !samePassphrase(fleet, change),
+      requireUv: change.requireUv === true && !fleet.requireUv,
       access: change.access,
     },
   }).title;
@@ -138,11 +139,13 @@ function missing(
         passphraseChanged:
           !samePassphrase(fleet, change) ||
           (change.passphrase !== null && !node?.report?.passphrase),
+        requireUv: change.requireUv === true && !node?.report?.requireUv,
         access,
       },
       approvals: approvals.map((approval) => ({
         id: approval.credentialId,
         verified: true,
+        uv: assertionUv(approval.authenticatorData),
       })),
     });
     if (!result.ok) return result.reason;
@@ -175,6 +178,13 @@ function checkChange(env: Env, fleet: Fleet, change: TrustChange, now: number) {
         `${node.name} needs agent 0.3.0 or later.`,
       );
     }
+    if (change.requireUv && !speaksUv(node)) {
+      throw new Refusal(
+        422,
+        "NEEDS_AGENT",
+        `${node.name} needs agent 0.3.1 or later.`,
+      );
+    }
     if ((node.report?.core.length ?? 0) === 0) {
       throw new Refusal(
         409,
@@ -190,7 +200,8 @@ function checkChange(env: Env, fleet: Fleet, change: TrustChange, now: number) {
       );
     }
   }
-  if (change.core !== null || change.passphrase !== null) {
+  checkFingerprints(fleet, change);
+  if (change.core !== null || change.passphrase !== null || change.requireUv) {
     const trusted = fleet.nodes.filter(
       (node) => (node.report?.core.length ?? 0) > 0,
     );
@@ -198,7 +209,38 @@ function checkChange(env: Env, fleet: Fleet, change: TrustChange, now: number) {
       throw new Refusal(
         400,
         "INCOMPLETE",
-        "A change to the core or the passphrase must reach every server.",
+        "A change to the core, the passphrase or the fingerprint rule must reach every server.",
+      );
+    }
+  }
+}
+
+function checkFingerprints(fleet: Fleet, change: TrustChange) {
+  const ruled = fleet.requireUv || change.requireUv === true;
+  if (!ruled) return;
+  if (change.passphrase !== null) {
+    throw new Refusal(
+      400,
+      "NO_PASSPHRASE",
+      "Fingerprints are required, so the passphrase is not used.",
+    );
+  }
+  const next = change.core?.map((key) => key.id) ?? fleet.core;
+  for (const id of next) {
+    const device = fleet.devices.find((entry) => entry.id === id);
+    const name = device?.name ?? "A device";
+    if (!fleet.core.includes(id) && device?.verifies !== true) {
+      throw new Refusal(
+        422,
+        "CANNOT_VERIFY",
+        `${name} has not shown it can verify a fingerprint, so it cannot join while fingerprints are required.`,
+      );
+    }
+    if (change.requireUv && !fleet.requireUv && device?.verifies === false) {
+      throw new Refusal(
+        422,
+        "CANNOT_VERIFY",
+        `${name} cannot verify a fingerprint. Remove it in the same change.`,
       );
     }
   }
@@ -231,7 +273,15 @@ async function verifyApproval(
       `The approval did not verify: ${(error as Error).message}.`,
     );
   }
-  if (uv || !fleet.passphrase) return;
+  if (uv) return;
+  if (fleet.requireUv) {
+    throw new Refusal(
+      400,
+      "FINGERPRINT_NEEDED",
+      "This passkey did not confirm a fingerprint. Use your phone or a security key.",
+    );
+  }
+  if (!fleet.passphrase) return;
   if (!approval.proof) {
     throw new Refusal(
       400,
@@ -386,6 +436,13 @@ async function apply(
           input.change.passphrase.publicKey,
           at,
         ),
+    );
+  }
+  if (input.change.requireUv) {
+    statements.push(
+      db
+        .prepare("DELETE FROM passphrase WHERE owner_user_id = ?")
+        .bind(input.ownerId),
     );
   }
   if (input.change.core) {

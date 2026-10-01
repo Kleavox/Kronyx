@@ -130,6 +130,73 @@ describe("POST /api/nodes/:id/update", () => {
     });
   });
 
+  it("asks again after 15 minutes, three attempts at most, and keeps the agent's reason", async () => {
+    const { call, release, sqlite, heartbeat } = await setup();
+    release("0.5.2");
+    await call("POST", `/api/nodes/${NODE}/update`);
+    const state = () =>
+      sqlite
+        .prepare(
+          "SELECT update_requested_at, update_attempts, update_error FROM nodes WHERE id = ?",
+        )
+        .get(NODE) as {
+        update_requested_at: string | null;
+        update_attempts: number;
+        update_error: string | null;
+      };
+    const stale = () =>
+      sqlite
+        .prepare("UPDATE nodes SET update_requested_at = ? WHERE id = ?")
+        .run(new Date(Date.now() - 16 * 60_000).toISOString(), NODE);
+    const beat = async (
+      version: string,
+      update?: { version: string; message: string },
+    ) =>
+      (await (
+        await call(
+          "POST",
+          "/api/agent/heartbeat",
+          { ...heartbeat(version), ...(update ? { update } : {}) },
+          "agent-token",
+        )
+      ).json()) as { update?: { requestedAt: string } };
+
+    expect(state()).toMatchObject({ update_attempts: 1, update_error: null });
+    const first = state().update_requested_at;
+    await beat("0.5.1", { version: "0.5.2", message: "download stalled" });
+    expect(state()).toMatchObject({
+      update_requested_at: first,
+      update_attempts: 1,
+      update_error: "download stalled",
+    });
+
+    stale();
+    const again = await beat("0.5.1");
+    expect(state().update_attempts).toBe(2);
+    expect(again.update?.requestedAt).toBe(state().update_requested_at);
+    expect(Date.now() - Date.parse(state().update_requested_at!)).toBeLessThan(
+      60_000,
+    );
+    stale();
+    await beat("0.5.1");
+    expect(state().update_attempts).toBe(3);
+    stale();
+    const kept = state().update_requested_at;
+    await beat("0.5.1");
+    expect(state()).toMatchObject({
+      update_requested_at: kept,
+      update_attempts: 3,
+      update_error: "download stalled",
+    });
+
+    await beat("0.5.2");
+    expect(state()).toMatchObject({
+      update_requested_at: null,
+      update_attempts: 0,
+      update_error: null,
+    });
+  });
+
   it("forgets a request once the agent reports a newer version, as after an update by hand", async () => {
     const { call, release, row, heartbeat } = await setup();
     release("0.5.2");

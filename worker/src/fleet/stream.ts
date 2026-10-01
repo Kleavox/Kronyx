@@ -37,6 +37,7 @@ export interface StreamState {
   nodeId: string;
   ownerId: string;
   interval: number;
+  connectedAt: number;
   lastSeen: number | null;
   beat: Beat | null;
   window: Accumulator | null;
@@ -69,11 +70,13 @@ export function newState(
   nodeId: string,
   ownerId: string,
   interval: number,
+  connectedAt = Date.now(),
 ): StreamState {
   return {
     nodeId,
     ownerId,
     interval,
+    connectedAt,
     lastSeen: null,
     beat: null,
     window: null,
@@ -205,6 +208,7 @@ export function drain(state: StreamState): {
 
 export interface LiveNode {
   lastSeen: number;
+  connectedAt: number;
   agentVersion: string;
   hostname: string;
   metrics: Metrics;
@@ -218,6 +222,7 @@ export function liveView(states: StreamState[]): Record<string, LiveNode> {
     if (current && current.lastSeen >= state.lastSeen) continue;
     view[state.nodeId] = {
       lastSeen: state.lastSeen,
+      connectedAt: state.connectedAt,
       agentVersion: state.beat.agentVersion,
       hostname: state.beat.hostname,
       metrics: state.beat.metrics,

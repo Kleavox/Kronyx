@@ -86,6 +86,7 @@ export function HeartbeatStrip({
   since,
   windowSeconds,
   graceSeconds,
+  settleSeconds = 0,
   now,
   asOf,
   count = 48,
@@ -96,6 +97,7 @@ export function HeartbeatStrip({
   since: number | null;
   windowSeconds: number;
   graceSeconds: number;
+  settleSeconds?: number;
   now: number;
   asOf: number | undefined;
   count?: number;
@@ -105,6 +107,7 @@ export function HeartbeatStrip({
     slots: results ?? [],
     slotSeconds: windowSeconds,
     graceSeconds,
+    settleSeconds,
     since,
     now,
     asOf,

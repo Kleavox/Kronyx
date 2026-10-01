@@ -20,7 +20,11 @@ import {
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AgentVersion } from "@/features/agent/agent-version";
-import { LatestAgent, UpdateNotice } from "@/features/agent/update-notice";
+import {
+  LatestAgent,
+  OldPathNotice,
+  UpdateNotice,
+} from "@/features/agent/update-notice";
 import { EnrollDialog } from "@/features/nodes/enroll-dialog";
 import { NodeActions } from "@/features/nodes/node-actions";
 import { UsageDialog } from "@/features/usage/usage-dialog";
@@ -69,6 +73,8 @@ function laidSlots(
     slots: recent?.slots ?? [],
     slotSeconds: recent?.slotSeconds ?? Math.max(300, node.interval_seconds),
     graceSeconds: graceSeconds(node.interval_seconds),
+    settleSeconds:
+      node.transport === "stream" ? Math.max(300, node.interval_seconds) : 0,
     since:
       asOf !== null && node.enrolled_at
         ? parseTimestamp(node.enrolled_at)
@@ -183,7 +189,7 @@ export function FleetPage() {
     );
   }
 
-  const { nodes, checks, incidents, agentRelease } = overview.data;
+  const { nodes, checks, incidents, agentRelease, agentHttp } = overview.data;
   const seen = overview.dataUpdatedAt;
   const checksFor = (id: string) =>
     checks.filter((check) => check.node_id === id);
@@ -265,6 +271,7 @@ export function FleetPage() {
             now={now}
             onShow={() => setParam("filter", "updates")}
           />
+          <OldPathNotice nodes={nodes} agentHttp={agentHttp} />
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <label className="relative min-w-0 flex-1 basis-56 md:max-w-72">
               <span className="sr-only">Search servers</span>

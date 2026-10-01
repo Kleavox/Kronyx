@@ -142,6 +142,29 @@ describe("layoutReportSlots", () => {
     expect(laid[27]!.state).toBe("received");
   });
 
+  it("waits for the window to end on a live connection, whose row is written then", () => {
+    const window = 300_000;
+    const start = 1_000 * window;
+    const live = (asOf: number, slots: { t: string }[] = []) =>
+      layoutReportSlots({
+        slots,
+        slotSeconds: 300,
+        graceSeconds: 180,
+        settleSeconds: 300,
+        since: 0,
+        now: asOf,
+        asOf,
+      });
+    const young = live(start + 400_000, [
+      { t: new Date(start - window).toISOString() },
+    ]);
+    expect(young[29]!.start).toBe(start - window);
+    expect(young[29]!.state).toBe("received");
+    const late = live(start + window + 200_000);
+    expect(late[29]!.start).toBe(start);
+    expect(late[29]!.state).toBe("missed");
+  });
+
   it("shows slots before enrollment as none", () => {
     const laid = layoutReportSlots({
       slots: [],
@@ -186,17 +209,17 @@ describe("untilWindowSettles", () => {
   const window = 300_000;
   const boundary = 1_000 * window;
 
-  it("fetches shortly after agents report at the top of each window", () => {
-    expect(untilWindowSettles(boundary + 10_000)).toBe(5_000);
-    expect(untilWindowSettles(boundary + 100_000)).toBe(215_000);
+  it("fetches after agents report at the top of each window and live windows are written", () => {
+    expect(untilWindowSettles(boundary + 10_000)).toBe(35_000);
+    expect(untilWindowSettles(boundary + 100_000)).toBe(245_000);
   });
 
   it("never schedules a fetch for the moment it is called", () => {
-    expect(untilWindowSettles(boundary + 15_000)).toBe(window);
+    expect(untilWindowSettles(boundary + 45_000)).toBe(window);
   });
 
   it("aligns to shorter windows too", () => {
-    expect(untilWindowSettles(boundary + 20_000, 60_000)).toBe(55_000);
+    expect(untilWindowSettles(boundary + 20_000, 60_000)).toBe(25_000);
   });
 });
 

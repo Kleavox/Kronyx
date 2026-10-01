@@ -102,12 +102,12 @@ changed check within seconds; others at their next report.
 
 ### Live connection
 
-From agent 0.3.0 each server keeps one WebSocket open to the Worker
-(`/api/agent/stream`), held by a Durable Object (`FleetHub`, one per owner,
-SQLite class, Free plan). Reports travel over it instead of one HTTP request a
-minute, and the dashboard can wake a server at once: queued actions, check
-changes, update and refresh requests, and applied trust changes reach it in
-seconds instead of up to a minute.
+Each server keeps one WebSocket open to the Worker (`/api/agent/stream`), held
+by a Durable Object (`FleetHub`, one per owner, SQLite class, Free plan). From
+agent 0.3.1 everything travels over it: reports, config and action results.
+The dashboard can wake a server at once: queued actions, check changes, update
+and refresh requests, and applied trust changes reach it in seconds instead of
+up to a minute.
 
 - History is one D1 row per server per 5-minute window (`node_windows`), with
   the averaged metrics and every check's result; the hub writes it when the
@@ -115,9 +115,13 @@ seconds instead of up to a minute.
 - The server row is written when the connection opens, once per window and
   when it closes; between those the dashboard asks the hub, so a server still
   shows offline after about 3 minutes of silence.
-- Anything that goes wrong falls back to HTTP for that report; the agent
-  retries the connection after 1 minute, doubling to 30. Set the Worker var
-  `AGENT_STREAM` to `off` to keep every agent on HTTP.
+- There is no HTTP fallback. The agent sends a `ping` every 25 seconds, drops
+  a connection that stays silent for 75 seconds and reconnects after 1 second,
+  doubling to 1 minute (with jitter). Cloudflare closes every connection on a
+  deploy or restart; agents are back within seconds and report at once.
+- Agents before 0.3.1 report over HTTP. Once every server runs 0.3.1 or later,
+  the fleet page offers **Turn off old path**; old agents then get HTTP 410
+  `AGENT_UPDATE_REQUIRED`, and a warning on the same page turns it back on.
 - At a 60-second interval a server costs about 870 D1 writes a day on a live
   connection and about 2,000 on HTTP (was about 4,900).
 
@@ -146,6 +150,15 @@ with an arrow when it is behind, and the **Updates** filter lists them.
   `kry self-update`, which downloads the release from this repository, checks
   the SHA-256 and the signature against the key built into the agent, refuses
   downgrades, keeps the old binary as `kry.previous` and restarts.
+- From agent 0.3.1 the download suits slow links: it fetches the gzip asset
+  (about 2.6 MB instead of 6.5 MB), gives up on an attempt only after a minute
+  without data, resumes where it stopped, and tries five times. The new binary
+  must print its version before it is installed, and if the agent does not stay
+  up after the restart the old binary comes back. Why an attempt failed shows
+  on the node page.
+- A stalled update is asked for again after 15 minutes, three attempts in all,
+  before the dashboard calls it failed. Releases are published only once every
+  file is uploaded.
 - **Update automatically** (per node) requests every new release as soon as the
   Worker sees it.
 - **By hand**, on the server:
@@ -202,19 +215,28 @@ From agent 0.3.0 one admin login can be shared safely by several people:
 - The first device trusts itself on your servers (**Trust on servers**). The
   second one, such as your phone, is approved by the first alone and gets
   access to every server enrolled then.
-- From then on a new core device, removing one and setting or changing the
-  **passphrase** need approvals from two core devices. A device registered by
-  someone else stays inert until then, and you get an email.
+- From then on a new core device, removing one and **Require fingerprint**
+  need approvals from two core devices. A device registered by someone else
+  stays inert until then, and you get an email.
 - Giving a device access to a server needs one core device that already has
   access there (never the device itself), or two other core devices. Servers
   enrolled later start with the core and no access.
 - Changes wait under **Waiting for approval** for up to 24 hours. Each approval
   signs the exact change; the dialog shows new devices' key fingerprints for
   you to compare with the new device's screen.
-- Passkeys that do not prove a fingerprint (such as Microsoft Password
-  Manager) need the passphrase once one is set. It never leaves the tab: it
-  derives a key whose public half the servers keep.
-- Keep three core devices: with two, losing one needs SSH to recover.
+- **Require fingerprint** (agent 0.3.1) makes every server accept only
+  passkeys that verify you: a fingerprint, a face or a security key. A passkey
+  that only takes a touch (such as Microsoft Password Manager) leaves the core
+  in the same change, and every device that stays approves it with a
+  fingerprint, so you cannot lock yourself out. It cannot be turned off from
+  the dashboard.
+- On a computer without a fingerprint reader, choose **Use a phone** in the
+  passkey window: the phone's own passkey signs, so the phone is the trusted
+  device. It joins as "Phone"; a security key joins as "Security key".
+- WebAuthn only reports that the person was verified, not how, so a security
+  key's PIN counts the same as a fingerprint.
+- Keep two fingerprint devices or more: with one, losing it needs SSH to
+  recover.
 
 To start over on a server:
 

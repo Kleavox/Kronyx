@@ -29,6 +29,8 @@ import {
 } from "@/lib/api";
 import {
   checkDisplayStatus,
+  clockTime,
+  dayLabel,
   formatBytes,
   formatDuration,
   formatUptime,
@@ -185,7 +187,9 @@ export function NodeDetailPage() {
                 label="Reports"
                 value={
                   node.transport === "stream"
-                    ? "Live connection"
+                    ? node.connected_at
+                      ? `Live since ${liveSince(node.connected_at, now)}`
+                      : "Live connection"
                     : `Every ${formatDuration(node.interval_seconds * 1000)} (HTTP)`
                 }
               />
@@ -264,6 +268,11 @@ export function NodeDetailPage() {
                         )}
                         windowSeconds={Math.max(300, node.interval_seconds)}
                         graceSeconds={graceSeconds(node.interval_seconds)}
+                        settleSeconds={
+                          node.transport === "stream"
+                            ? Math.max(300, node.interval_seconds)
+                            : 0
+                        }
                         now={now}
                         asOf={results.data ? results.dataUpdatedAt : undefined}
                         count={24}
@@ -373,6 +382,11 @@ function AccessFact({ nodeId }: { nodeId: string }) {
       </dd>
     </>
   );
+}
+
+function liveSince(at: string, now: number): string {
+  const time = clockTime(at);
+  return dayLabel(at, now) === "Today" ? time : `${shortDate(at)}, ${time}`;
 }
 
 function Fact({ label, value }: { label: string; value: string | null }) {

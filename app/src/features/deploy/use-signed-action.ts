@@ -5,6 +5,7 @@ import {
   useDevices,
   useServices,
 } from "@/lib/api";
+import { failure } from "@/features/devices/parts";
 import { signersFor } from "@/lib/devices";
 import { proverFor } from "@/lib/passphrase-prompt";
 import { signTargets, type CommandTarget } from "@/lib/passkeys";
@@ -35,11 +36,16 @@ export function useSignedAction(toastErrors = true) {
       const reports = targets.map((target) => trust.get(target.nodeId) ?? null);
       const signers = signersFor(devices.data?.devices ?? [], reports);
       if (signers.length === 0) throw new Error(NO_SIGNER);
+      const ruled = reports.some((report) => report?.requireUv);
       const strict = reports.some((report) => report?.passphrase);
       try {
         const session = await open(
           signers,
-          strict ? proverFor(devices.data?.passphrase ?? null) : null,
+          ruled
+            ? "fingerprint"
+            : strict
+              ? proverFor(devices.data?.passphrase ?? null)
+              : null,
         );
         return await postActions({
           action,
@@ -48,7 +54,7 @@ export function useSignedAction(toastErrors = true) {
         });
       } catch (error) {
         throw error instanceof DOMException && error.name === "NotAllowedError"
-          ? new Error("The fingerprint was cancelled.")
+          ? new Error(failure(error, ruled))
           : error;
       }
     },

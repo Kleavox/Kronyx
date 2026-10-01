@@ -109,6 +109,7 @@ function setup(agent = "0.3.0") {
     access: TestPasskey[],
     version = 1,
     passphrase = false,
+    requireUv = false,
   ) => {
     const prints = async (list: TestPasskey[]) =>
       Promise.all(list.map((key) => fingerprint(key.publicKey)));
@@ -118,6 +119,7 @@ function setup(agent = "0.3.0") {
         core: await prints(core),
         access: await prints(access),
         passphrase,
+        ...(requireUv ? { requireUv } : {}),
       }),
       nodeId,
     );
@@ -127,6 +129,7 @@ function setup(agent = "0.3.0") {
     core?: TestPasskey[] | null;
     access: Record<string, TestPasskey[]>;
     passphrase?: unknown;
+    requireUv?: true;
     origin?: string;
     hours?: number;
   }) => {
@@ -148,6 +151,7 @@ function setup(agent = "0.3.0") {
               publicKey: key.publicKey,
             })),
       passphrase: input.passphrase ?? null,
+      ...(input.requireUv ? { requireUv: true } : {}),
       access: Object.fromEntries(
         Object.entries(input.access).map(([nodeId, keys]) => [
           nodeId,
@@ -596,5 +600,200 @@ describe("devices", () => {
       devices: { name: string }[];
     };
     expect(body.devices.map((device) => device.name)).toEqual(["Work laptop"]);
+  });
+});
+
+describe("fingerprint rule", () => {
+  const everywhere = (keys: TestPasskey[]) => ({
+    [A]: keys,
+    [B]: keys,
+    [C]: keys,
+  });
+
+  async function touchAndPhone(agent = "0.3.1", requireUv = false) {
+    const t = setup(agent);
+    const [laptop, phone] = await fleet(2);
+    await t.register(laptop!, false);
+    await t.register(phone!);
+    for (const id of [A, B, C]) {
+      await t.report(
+        id,
+        [laptop!, phone!],
+        [laptop!, phone!],
+        1,
+        false,
+        requireUv,
+      );
+    }
+    return { t, laptop: laptop!, phone: phone! };
+  }
+
+  it("turns on when the touch-only device leaves and the phone approves with a fingerprint", async () => {
+    const { t, laptop, phone } = await touchAndPhone();
+    const passphrase = await testPassphrase();
+    t.sqlite
+      .prepare(
+        "INSERT INTO passphrase (owner_user_id, salt, iterations, public_key, set_at) VALUES ('standalone', ?, ?, ?, ?)",
+      )
+      .run(
+        passphrase.key.salt,
+        passphrase.key.iterations,
+        passphrase.key.publicKey,
+        new Date().toISOString(),
+      );
+    const text = t.change({
+      core: [phone],
+      requireUv: true,
+      access: everywhere([phone]),
+    });
+    const opened = await reply(
+      t.open(
+        text,
+        await t.approval(laptop, text, {
+          verified: false,
+          proof: await passphrase.proof(
+            `approve:${laptop.id}`,
+            fromB64url(text),
+          ),
+        }),
+      ),
+    );
+    expect(opened).toMatchObject({
+      status: "open",
+      missing: "needs 1 more core device",
+    });
+    const applied = await reply(
+      t.call("POST", `/api/proposals/${opened.id}/approvals`, {
+        approval: await t.approval(phone, text),
+      }),
+    );
+    expect(applied.status).toBe("applied");
+    expect(t.trustActions()).toHaveLength(3);
+    expect((await reply(t.call("GET", "/api/devices"))).passphrase).toBeNull();
+  });
+
+  it("keeps waiting while a device that stays only touched", async () => {
+    const { t, laptop, phone } = await touchAndPhone();
+    const [tablet] = (await fleet(3)).slice(2);
+    await t.register(tablet!);
+    for (const id of [A, B, C]) {
+      await t.report(id, [laptop, phone, tablet!], [laptop, phone, tablet!]);
+    }
+    const text = t.change({
+      core: [phone, tablet!],
+      requireUv: true,
+      access: everywhere([phone, tablet!]),
+    });
+    const opened = await reply(
+      t.open(text, await t.approval(laptop, text, { verified: false })),
+    );
+    const after = await reply(
+      t.call("POST", `/api/proposals/${opened.id}/approvals`, {
+        approval: await t.approval(phone, text),
+      }),
+    );
+    expect(after).toMatchObject({
+      status: "open",
+      missing: "every core device that stays must approve with a fingerprint",
+    });
+  });
+
+  it("refuses to keep a device known to only touch", async () => {
+    const { t, laptop, phone } = await touchAndPhone();
+    const text = t.change({
+      requireUv: true,
+      access: everywhere([laptop, phone]),
+    });
+    const response = await t.open(text, await t.approval(phone, text));
+    expect(response.status).toBe(422);
+    expect((await reply(response)).code).toBe("CANNOT_VERIFY");
+  });
+
+  it("needs agent 0.3.1 on every server", async () => {
+    const { t, phone } = await touchAndPhone("0.3.0");
+    const text = t.change({
+      core: [phone],
+      requireUv: true,
+      access: everywhere([phone]),
+    });
+    const response = await t.open(text, await t.approval(phone, text));
+    expect(response.status).toBe(422);
+    expect(await reply(response)).toMatchObject({ code: "NEEDS_AGENT" });
+  });
+
+  it("refuses a touch, even with the passphrase, once a server requires fingerprints", async () => {
+    const { t, laptop, phone } = await touchAndPhone("0.3.1", true);
+    const text = t.change({ access: { [A]: [laptop, phone] } });
+    const response = await t.open(
+      text,
+      await t.approval(laptop, text, { verified: false }),
+    );
+    expect(response.status).toBe(400);
+    expect((await reply(response)).code).toBe("FINGERPRINT_NEEDED");
+  });
+
+  it("refuses a passphrase once fingerprints are required", async () => {
+    const { t, phone, laptop } = await touchAndPhone("0.3.1", true);
+    const passphrase = await testPassphrase();
+    const text = t.change({
+      access: everywhere([laptop, phone]),
+      passphrase: passphrase.key,
+    });
+    const response = await t.open(text, await t.approval(phone, text));
+    expect(response.status).toBe(400);
+    expect((await reply(response)).code).toBe("NO_PASSPHRASE");
+  });
+
+  it("refuses to admit or register a device without a fingerprint once required", async () => {
+    const { t, phone } = await touchAndPhone("0.3.1", true);
+    for (const id of [A, B, C])
+      await t.report(id, [phone], [phone], 1, false, true);
+    const [, , tablet, helper] = await fleet(4);
+    t.sqlite
+      .prepare(
+        "INSERT INTO devices (id, owner_user_id, name, alg, public_key, created_at, verifies) VALUES (?, 'standalone', ?, -7, ?, ?, 0)",
+      )
+      .run(
+        tablet!.id,
+        tablet!.name,
+        tablet!.publicKey,
+        new Date().toISOString(),
+      );
+    const text = t.change({
+      core: [phone, tablet!],
+      access: everywhere([phone, tablet!]),
+    });
+    const admit = await t.open(text, await t.approval(phone, text));
+    expect(admit.status).toBe(422);
+    expect((await reply(admit)).code).toBe("CANNOT_VERIFY");
+    const touchOnly = await t.register(helper!, false);
+    expect(touchOnly.status).toBe(422);
+    expect((await t.register(helper!, true)).status).toBe(201);
+  });
+
+  it("gives a new server the rule with its first trust", async () => {
+    const { t, phone } = await touchAndPhone("0.3.1", true);
+    for (const id of [A, B])
+      await t.report(id, [phone], [phone], 1, false, true);
+    t.sqlite
+      .prepare("UPDATE nodes SET trust_report = NULL WHERE id = ?")
+      .run(C);
+    const plain = t.change({
+      version: 1,
+      core: [phone],
+      access: { [C]: [phone] },
+    });
+    expect(
+      (await t.call("POST", "/api/trust", { changes: [plain] })).status,
+    ).toBe(400);
+    const ruled = t.change({
+      version: 1,
+      core: [phone],
+      requireUv: true,
+      access: { [C]: [phone] },
+    });
+    expect(
+      (await t.call("POST", "/api/trust", { changes: [ruled] })).status,
+    ).toBe(202);
   });
 });

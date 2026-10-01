@@ -1,8 +1,14 @@
-import { CircleArrowUp } from "lucide-react";
+import { useState } from "react";
+import { CircleArrowUp, Radio, TriangleAlert } from "lucide-react";
 
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Button } from "@/components/ui/button";
-import { useCheckAgentRelease, useRequestAgentUpdate } from "@/lib/api";
-import { agentState } from "@/lib/agent";
+import {
+  useCheckAgentRelease,
+  useRequestAgentUpdate,
+  useSetAgentHttp,
+} from "@/lib/api";
+import { LIVE_ONLY_VERSION, agentState, needsOldPath } from "@/lib/agent";
 import { timeAgo } from "@/lib/format";
 import type { AgentRelease, NodeRecord } from "@/types";
 
@@ -97,4 +103,79 @@ export function LatestAgent({
       </button>
     </span>
   );
+}
+
+export function OldPathNotice({
+  nodes,
+  agentHttp,
+}: {
+  nodes: NodeRecord[];
+  agentHttp: boolean;
+}) {
+  const setAgentHttp = useSetAgentHttp();
+  const [confirming, setConfirming] = useState(false);
+  const stuck = needsOldPath(nodes);
+  const only = stuck.length === 1 ? stuck[0] : undefined;
+
+  if (agentHttp && stuck.length === 0) {
+    return (
+      <div
+        role="status"
+        className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border px-3 py-2.5"
+      >
+        <Radio aria-hidden="true" className="size-4 shrink-0 text-primary" />
+        <p className="min-w-0 flex-1 text-sm">
+          Every server reports over the live connection
+          <span className="text-muted-foreground">
+            {" "}
+            · the old HTTP path is still open for outdated agents
+          </span>
+        </p>
+        <Button size="sm" variant="outline" onClick={() => setConfirming(true)}>
+          Turn off old path
+        </Button>
+        <ConfirmDialog
+          open={confirming}
+          onOpenChange={setConfirming}
+          title="Turn off the old path?"
+          description={`Agents older than ${LIVE_ONLY_VERSION} stop reporting until they are updated. If one shows up later, you can turn the path back on from this page.`}
+          confirmLabel="Turn off"
+          mutation={setAgentHttp}
+          variables={false}
+        />
+      </div>
+    );
+  }
+
+  if (!agentHttp && stuck.length > 0) {
+    return (
+      <div
+        role="alert"
+        className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5"
+      >
+        <TriangleAlert
+          aria-hidden="true"
+          className="size-4 shrink-0 text-warning"
+        />
+        <p className="min-w-0 flex-1 text-sm">
+          {only
+            ? `${only.name} runs an agent older than ${LIVE_ONLY_VERSION}`
+            : `${stuck.length} servers run an agent older than ${LIVE_ONLY_VERSION}`}
+          <span className="text-muted-foreground">
+            {" "}
+            · {only ? "it" : "they"} cannot report while the old path is off
+          </span>
+        </p>
+        <Button
+          size="sm"
+          disabled={setAgentHttp.isPending}
+          onClick={() => setAgentHttp.mutate(true)}
+        >
+          Turn on old path
+        </Button>
+      </div>
+    );
+  }
+
+  return null;
 }

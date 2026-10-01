@@ -53,6 +53,7 @@ type Trust struct {
 	Core       []TrustKey     `json:"core"`
 	Access     []string       `json:"access"`
 	Passphrase *PassphraseKey `json:"passphrase"`
+	RequireUV  bool           `json:"requireUv,omitempty"`
 }
 
 func (t Trust) coreIDs() []string {
@@ -64,7 +65,13 @@ func (t Trust) coreIDs() []string {
 }
 
 func (t Trust) verified(uv bool, proof, purpose string, data []byte) error {
-	if uv || t.Passphrase == nil {
+	if uv {
+		return nil
+	}
+	if t.RequireUV {
+		return errors.New("the passkey did not verify a fingerprint; this server requires one")
+	}
+	if t.Passphrase == nil {
 		return nil
 	}
 	if proof == "" {

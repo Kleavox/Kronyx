@@ -167,6 +167,7 @@ describe("stream state", () => {
     expect(liveView([state, newState("other", "owner", 60)])).toEqual({
       [NODE]: {
         lastSeen: BASE + 5_000,
+        connectedAt: state.connectedAt,
         agentVersion: "0.3.0",
         hostname: "pivox",
         metrics: beat(10).metrics,

@@ -465,6 +465,19 @@ describe("deploy messages", () => {
     expect(
       agentActionsRequestSchema.safeParse(
         inventory({
+          trust: {
+            version: 4,
+            core: [fp],
+            access: [fp],
+            passphrase: false,
+            requireUv: true,
+          },
+        }),
+      ).success,
+    ).toBe(true);
+    expect(
+      agentActionsRequestSchema.safeParse(
+        inventory({
           trust: { version: 3, core: [fp], access: ["xyz"], passphrase: false },
         }),
       ).success,

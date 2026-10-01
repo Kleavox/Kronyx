@@ -4,6 +4,7 @@ import { expandResults, windowSize, type WindowRow } from "../agent/windows";
 import type { KrynodesApp, KrynodesEnv } from "./shared";
 
 const SPAN_MS = 4 * 3_600_000;
+const WINDOW_MS = 300_000;
 const INCIDENT_PAD_MS = 10 * 60_000;
 
 const epoch = (value: string) =>
@@ -54,7 +55,9 @@ export function registerCheckResultRoutes(
 ): void {
   app.get("/api/checks/results", requireAdmin, async (context) => {
     const ownerId = context.get("identity").id;
-    const from = new Date(Date.now() - SPAN_MS).toISOString();
+    const from = new Date(
+      (Math.floor((Date.now() - SPAN_MS) / WINDOW_MS) - 2) * WINDOW_MS,
+    ).toISOString();
     const [rows, owned] = await Promise.all([
       context.env.DB.prepare(CHECK_RESULTS_SQL)
         .bind(ownerId, from)

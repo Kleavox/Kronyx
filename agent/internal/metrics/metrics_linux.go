@@ -12,23 +12,13 @@ import (
 	"time"
 )
 
-type cpuSample struct {
-	idle  uint64
-	total uint64
-}
+var meter cpuMeter
 
 func collectPlatform() (Snapshot, error) {
-	first, err := readCPU()
+	cpu, err := meter.percent(readCPU, time.Sleep)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	time.Sleep(200 * time.Millisecond)
-	second, err := readCPU()
-	if err != nil {
-		return Snapshot{}, err
-	}
-
-	cpu := cpuUsage(first, second)
 	memoryUsed, memoryTotal, err := readMemory()
 	if err != nil {
 		return Snapshot{}, err
@@ -89,15 +79,6 @@ func readCPU() (cpuSample, error) {
 		total += value
 	}
 	return cpuSample{idle: values[3] + values[4], total: total}, nil
-}
-
-func cpuUsage(first, second cpuSample) float64 {
-	totalDelta := second.total - first.total
-	if totalDelta == 0 {
-		return 0
-	}
-	idleDelta := second.idle - first.idle
-	return float64(totalDelta-idleDelta) / float64(totalDelta) * 100
 }
 
 func readMemory() (used int64, total int64, err error) {

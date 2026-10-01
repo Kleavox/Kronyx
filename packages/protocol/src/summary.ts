@@ -3,6 +3,7 @@ export interface ChangeSummary {
   admitted: string[];
   removed: string[];
   passphrase: boolean;
+  requireUv: boolean;
   access: { nodeId: string; added: string[]; removed: string[] }[];
 }
 
@@ -17,6 +18,7 @@ export function summarizeChange(input: {
   change: {
     core: string[] | null;
     passphrase: boolean;
+    requireUv?: boolean;
     access: Record<string, string[]>;
   };
 }): ChangeSummary {
@@ -39,6 +41,7 @@ export function summarizeChange(input: {
     ...admitted.map((id) => `Admit ${name(id)}`),
     ...removed.map((id) => `Remove ${name(id)}`),
   ];
+  if (change.requireUv) parts.push("Require fingerprint");
   if (change.passphrase) {
     parts.push(
       input.currentPassphrase ? "Change passphrase" : "Set passphrase",
@@ -57,6 +60,7 @@ export function summarizeChange(input: {
     admitted,
     removed,
     passphrase: change.passphrase,
+    requireUv: change.requireUv ?? false,
     access,
   };
 }

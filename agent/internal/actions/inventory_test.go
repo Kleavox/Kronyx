@@ -228,6 +228,26 @@ func TestAnInvalidProjectIsLeftOut(t *testing.T) {
 	}
 }
 
+func TestComposeIsOnlyAskedForWhenAStackRuns(t *testing.T) {
+	var calls []string
+	run := func(_ context.Context, name string, args ...string) ([]byte, int, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		if name == "docker" {
+			return []byte("adguard\trunning\t\t\t\t2026-09-30 10:00:00 +0000 UTC\n"), 0, nil
+		}
+		return nil, 0, nil
+	}
+	snapshot, err := Collect(context.Background(), run, nil)
+	if err != nil || len(snapshot.Stacks) != 0 {
+		t.Fatalf("collect %#v err %v", snapshot, err)
+	}
+	for _, call := range calls {
+		if strings.HasPrefix(call, "docker compose") {
+			t.Fatalf("asked for compose without a stack: %q", calls)
+		}
+	}
+}
+
 func TestComposeAvailabilityIsReported(t *testing.T) {
 	for _, available := range []bool{true, false} {
 		run := func(_ context.Context, name string, args ...string) ([]byte, int, error) {

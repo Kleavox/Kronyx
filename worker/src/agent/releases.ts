@@ -87,7 +87,8 @@ export async function requestAutoUpdates(
     due.map((node) =>
       db
         .prepare(
-          `UPDATE nodes SET update_requested_version = ?, update_requested_at = ?
+          `UPDATE nodes SET update_requested_version = ?, update_requested_at = ?,
+             update_attempts = 1, update_error = NULL
            WHERE id = ?`,
         )
         .bind(version, requestedAt, node.id),

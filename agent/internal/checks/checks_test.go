@@ -2,8 +2,11 @@ package checks
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Kleavox/krynodes/agent/internal/reporter"
@@ -45,5 +48,79 @@ func TestRejectsUnsupportedCheck(t *testing.T) {
 	})
 	if result.Status != "DOWN" {
 		t.Fatalf("expected DOWN, got %s", result.Status)
+	}
+}
+
+func TestHTTPChecksReuseTheirConnection(t *testing.T) {
+	var opened atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("page ", 2000)))
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			opened.Add(1)
+		}
+	}
+	server.Start()
+	defer server.Close()
+
+	check := reporter.Check{ID: "check", Kind: "HTTP", Target: server.URL, TimeoutSeconds: 2}
+	for range 3 {
+		if result := RunAll(context.Background(), []reporter.Check{check})[0]; result.Status != "UP" {
+			t.Fatalf("result %+v", result)
+		}
+	}
+	if opened.Load() != 1 {
+		t.Fatalf("opened %d connections for three checks", opened.Load())
+	}
+}
+
+func TestServiceChecksShareOneSystemctlCall(t *testing.T) {
+	var calls [][]string
+	previous := serviceStates
+	serviceStates = func(_ context.Context, units []string) (string, error) {
+		calls = append(calls, units)
+		return "active\ninactive\n", nil
+	}
+	defer func() { serviceStates = previous }()
+
+	results := RunAll(context.Background(), []reporter.Check{
+		{ID: "nginx", Kind: "SERVICE", Target: "nginx.service", TimeoutSeconds: 2},
+		{ID: "bad", Kind: "SERVICE", Target: "bad;unit", TimeoutSeconds: 2},
+		{ID: "docker", Kind: "SERVICE", Target: "docker", TimeoutSeconds: 2},
+	})
+	if len(calls) != 1 || strings.Join(calls[0], " ") != "nginx.service docker" {
+		t.Fatalf("calls %#v", calls)
+	}
+	if results[0].Status != "UP" || results[2].Status != "DOWN" || *results[2].Message != "inactive" {
+		t.Fatalf("results %+v %+v", results[0], results[2])
+	}
+	if results[1].Status != "DOWN" || *results[1].Message != "invalid service unit" {
+		t.Fatalf("invalid unit %+v", results[1])
+	}
+}
+
+func TestServiceChecksFailTogetherWhenSystemctlCannotAnswer(t *testing.T) {
+	previous := serviceStates
+	serviceStates = func(context.Context, []string) (string, error) {
+		return "", context.DeadlineExceeded
+	}
+	defer func() { serviceStates = previous }()
+
+	results := RunAll(context.Background(), []reporter.Check{
+		{ID: "a", Kind: "SERVICE", Target: "a.service", TimeoutSeconds: 2},
+		{ID: "b", Kind: "SERVICE", Target: "b.service", TimeoutSeconds: 2},
+	})
+	for _, result := range results {
+		if result.Status != "DOWN" || result.Message == nil {
+			t.Fatalf("result %+v", result)
+		}
+	}
+}
+
+func TestServiceUnitsNeverReachSystemctlAsOptions(t *testing.T) {
+	args := systemctlArgs([]string{"--help", "nginx.service"})
+	if strings.Join(args, " ") != "is-active -- --help nginx.service" {
+		t.Fatalf("args %q", args)
 	}
 }

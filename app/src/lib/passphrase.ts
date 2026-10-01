@@ -3,30 +3,9 @@ import { proofMessage } from "@krynodes/protocol/quorum";
 import type { PassphraseKey } from "../types";
 import { b64url, fromB64url } from "./passkeys";
 
-const PASSPHRASE_ITERATIONS = 600000;
-const MIN_LENGTH = 12;
 const PKCS8_ED25519 = Uint8Array.from([
   0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04,
   0x22, 0x04, 0x20,
-]);
-const COMMON = new Set([
-  "password",
-  "passphrase",
-  "qwerty",
-  "qwertyuiop",
-  "letmein",
-  "welcome",
-  "admin",
-  "administrator",
-  "iloveyou",
-  "monkey",
-  "dragon",
-  "sunshine",
-  "football",
-  "krynodes",
-  "changeme",
-  "trustno",
-  "abcdefghijkl",
 ]);
 
 const encoder = new TextEncoder();
@@ -67,21 +46,6 @@ async function derive(passphrase: string, salt: string, iterations: number) {
   return { key, publicKey: exported.x ?? "" };
 }
 
-export async function createPassphrase(
-  passphrase: string,
-): Promise<{ record: PassphraseKey; key: CryptoKey }> {
-  const salt = b64url(crypto.getRandomValues(new Uint8Array(16)));
-  const { key, publicKey } = await derive(
-    passphrase,
-    salt,
-    PASSPHRASE_ITERATIONS,
-  );
-  return {
-    record: { salt, iterations: PASSPHRASE_ITERATIONS, publicKey },
-    key,
-  };
-}
-
 export async function unlockPassphrase(
   passphrase: string,
   record: PassphraseKey,
@@ -110,22 +74,4 @@ export async function signProof(
       encoder.encode(proofMessage(purpose, digest)),
     ),
   );
-}
-
-export function passphraseProblem(text: string): string | null {
-  if (text.length < MIN_LENGTH) return `Use at least ${MIN_LENGTH} characters.`;
-  const letters = text.toLowerCase().replace(/[^a-z]/gu, "");
-  const distinct = new Set(text.toLowerCase().replace(/\s/gu, "")).size;
-  if (COMMON.has(letters) || letters === "" || distinct < 5) {
-    return "This passphrase is too common. Pick words nobody would guess.";
-  }
-  return null;
-}
-
-export function passphraseStrength(
-  text: string,
-): "" | "Weak" | "Good" | "Strong" {
-  if (text === "") return "";
-  if (text.length < 16 || passphraseProblem(text)) return "Weak";
-  return text.length < 28 ? "Good" : "Strong";
 }

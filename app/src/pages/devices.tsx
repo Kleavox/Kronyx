@@ -32,7 +32,6 @@ import {
   approvalLine,
   type Review,
 } from "@/features/devices/approval-dialog";
-import { PassphraseForm } from "@/features/devices/passphrase-dialogs";
 import { BigPrint, failure, plural, when } from "@/features/devices/parts";
 import { useFleet, type Fleet } from "@/features/devices/use-fleet";
 import {
@@ -52,12 +51,15 @@ import {
   decodeChange,
   describeChange,
   fingerprint,
+  fingerprintsRequired,
   firstTrusts,
   formatPrint,
   removeChange,
+  requireUvChange,
   serverState,
   speaksQuorum,
   syncChange,
+  uvBlocker,
   type FleetServer,
   type ServerState,
 } from "@/lib/devices";
@@ -96,6 +98,10 @@ function useSetUp(fleet: Fleet, onAdmit: (device: DeviceRecord) => void) {
           name: identity?.email ?? "Krynodes",
         },
         fleet.devices.map((device) => device.id),
+        {
+          required: fingerprintsRequired(fleet.view),
+          guessed: !name.trim() || name.trim() === guessName(),
+        },
       );
       await register.mutateAsync(input);
       const hasCore = fleet.core.some((device) =>
@@ -111,7 +117,7 @@ function useSetUp(fleet: Fleet, onAdmit: (device: DeviceRecord) => void) {
         });
       }
     } catch (error) {
-      toast.error(failure(error));
+      toast.error(failure(error, fingerprintsRequired(fleet.view)));
     } finally {
       setWorking(false);
     }
@@ -273,6 +279,7 @@ function serversText(fleet: Fleet, device: DeviceRecord): string {
 function proofText(fleet: Fleet, device: DeviceRecord): string | null {
   if (device.verifies === null) return null;
   if (device.verifies) return "Fingerprint";
+  if (fingerprintsRequired(fleet.view)) return "Cannot sign";
   return fleet.view.passphrase ? "Needs passphrase" : "Touch only";
 }
 
@@ -675,7 +682,6 @@ function Manage({ fleet }: { fleet: Fleet }) {
   const [review, setReview] = useState<Review | null>(null);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [passphrase, setPassphrase] = useState(false);
   const [renaming, setRenaming] = useState<DeviceRecord | null>(null);
   const [forgetting, setForgetting] = useState<DeviceRecord | null>(null);
   const [cancelling, setCancelling] = useState<ProposalRecord | null>(null);
@@ -695,7 +701,6 @@ function Manage({ fleet }: { fleet: Fleet }) {
   ) {
     before?.();
     setEditing(false);
-    setPassphrase(false);
     setReview({ text, proposal });
   }
 
@@ -723,9 +728,27 @@ function Manage({ fleet }: { fleet: Fleet }) {
   const founder =
     fleet.devices.find((device) => fleet.mine.includes(device.id)) ??
     fleet.devices[0];
-  const hasPass = fleet.view.passphrase !== null;
-  const passphraseWaiting = fleet.open.some(
-    (proposal) => decodeChange(proposal.change)?.passphrase,
+  const ruled = fingerprintsRequired(fleet.view);
+  const uvWaiting = fleet.open.some(
+    (proposal) => decodeChange(proposal.change)?.requireUv,
+  );
+  const blocker = uvBlocker(fleet.view);
+  const offerUv =
+    fleet.core.length > 0 && old.length === 0 && !ruled && !uvWaiting;
+  const leaving = fleet.core
+    .filter((device) => device.verifies === false)
+    .map((device) => device.name);
+  const staying = fleet.core.length - leaving.length;
+  const requireButton = (
+    <Button
+      size="sm"
+      className="h-9 md:h-8"
+      onClick={() =>
+        openReview(buildChange(fleet.view, requireUvChange(fleet.view)))
+      }
+    >
+      Require fingerprint
+    </Button>
   );
 
   const addButton = (
@@ -733,6 +756,7 @@ function Manage({ fleet }: { fleet: Fleet }) {
       Add device
     </Button>
   );
+  let uvNotice = false;
   let notice: ReactNode = null;
   if (fleet.core.length === 0) {
     notice =
@@ -766,23 +790,25 @@ function Manage({ fleet }: { fleet: Fleet }) {
   } else if (fleet.core.length === 1 && fleet.pending.length === 0) {
     notice = (
       <Notice action={addButton}>
-        Add a second device, such as your phone. It gets access to your servers.
+        {ruled
+          ? "Add a second fingerprint device as a backup, such as a security key or another phone."
+          : "Add a second device, such as your phone. It gets access to your servers."}
       </Notice>
     );
-  } else if (fleet.core.length >= 2 && !hasPass && !passphraseWaiting) {
-    notice = (
-      <Notice
-        action={
-          <Button
-            size="sm"
-            className="h-9 md:h-8"
-            onClick={() => setPassphrase(true)}
-          >
-            Set passphrase
-          </Button>
-        }
-      >
-        Servers accept a touch until you set a passphrase.
+  } else if (offerUv) {
+    uvNotice = true;
+    notice = blocker ? (
+      <Notice tone="warning">
+        Servers still accept a touch without a fingerprint. {blocker}
+      </Notice>
+    ) : (
+      <Notice action={requireButton}>
+        Servers still accept a touch without a fingerprint.{" "}
+        {leaving.length > 0
+          ? `Requiring one removes ${leaving.join(", ")}, which only ${leaving.length === 1 ? "takes" : "take"} a touch.`
+          : "Require one so only verified passkeys approve and sign."}
+        {staying === 1 &&
+          " Add a second fingerprint device afterwards as a backup."}
       </Notice>
     );
   } else if (fleet.core.length === 2 && fleet.pending.length === 0) {
@@ -802,24 +828,11 @@ function Manage({ fleet }: { fleet: Fleet }) {
         title="Trusted devices"
         meta={
           <span className="font-mono text-xs text-muted-foreground">
-            {plural(fleet.core.length, "core device")} · Passphrase{" "}
-            {hasPass ? "on" : "off"}
+            {plural(fleet.core.length, "core device")} ·{" "}
+            {ruled ? "Fingerprint required" : "Touch allowed"}
           </span>
         }
-        actions={
-          fleet.core.length >= 2 &&
-          !passphraseWaiting &&
-          (hasPass || notice === null) ? (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-9 md:h-8"
-              onClick={() => setPassphrase(true)}
-            >
-              {hasPass ? "Change passphrase" : "Set passphrase"}
-            </Button>
-          ) : undefined
-        }
+        actions={offerUv && !blocker && !uvNotice ? requireButton : undefined}
       />
       {notice}
 
@@ -873,8 +886,9 @@ function Manage({ fleet }: { fleet: Fleet }) {
             <div className="space-y-2 border-b px-4 py-3">
               <SetUpForm setup={setup} label="Set up with fingerprint" />
               <p className="text-xs text-muted-foreground">
-                To add your phone from here, choose "Use a phone" in the passkey
-                window. It joins as waiting; core devices approve it.
+                {ruled
+                  ? 'Only passkeys that verify a fingerprint can join. On a computer without one, choose "Use a phone" in the passkey window; the phone joins.'
+                  : 'To add your phone from here, choose "Use a phone" in the passkey window. It joins as waiting; core devices approve it.'}
               </p>
             </div>
           )}
@@ -958,12 +972,6 @@ function Manage({ fleet }: { fleet: Fleet }) {
         fleet={fleet}
         open={editing}
         onClose={() => setEditing(false)}
-        onReview={(text) => openReview(text)}
-      />
-      <PassphraseForm
-        fleet={fleet}
-        open={passphrase}
-        onClose={() => setPassphrase(false)}
         onReview={(text) => openReview(text)}
       />
       <RenameDialog device={renaming} onClose={() => setRenaming(null)} />

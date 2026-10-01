@@ -6,223 +6,332 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Kleavox/krynodes/agent/internal/reporter"
 )
 
+var ErrNotConnected = errors.New("no live connection to Krynodes")
+
 const (
-	minBackoff   = time.Minute
-	maxBackoff   = 30 * time.Minute
-	replyTimeout = 30 * time.Second
-	keepalive    = 50 * time.Second
+	codeReplaced = 4000
+	codeRefused  = 4401
 )
 
-var ErrNotConnected = errors.New("no live connection")
+type envelope struct {
+	ID       uint64          `json:"id"`
+	Type     string          `json:"type"`
+	Code     string          `json:"code"`
+	Response json.RawMessage `json:"response"`
+	Config   json.RawMessage `json:"config"`
+}
 
-type Streamer struct {
+type Client struct {
 	endpoint string
 	token    string
 	version  string
-	now      func() time.Time
+
+	keepalive     time.Duration
+	silence       time.Duration
+	reply         time.Duration
+	minDelay      time.Duration
+	maxDelay      time.Duration
+	stable        time.Duration
+	replacedDelay time.Duration
+	refusedDelay  time.Duration
 
 	mu      sync.Mutex
 	conn    *conn
-	replies chan []byte
+	nextID  uint64
+	waiting map[uint64]chan envelope
+	up      chan struct{}
+	ready   chan struct{}
 	pokes   chan struct{}
-	retryAt time.Time
-	backoff time.Duration
-	closed  bool
 }
 
-func New(endpoint, token, version string) *Streamer {
-	return &Streamer{
-		endpoint: endpoint,
-		token:    token,
-		version:  version,
-		now:      time.Now,
-		pokes:    make(chan struct{}, 1),
-	}
-}
-
-func (s *Streamer) Pokes() <-chan struct{} {
-	return s.pokes
-}
-
-func (s *Streamer) ensure(ctx context.Context) (*conn, chan []byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return nil, nil, ErrNotConnected
-	}
-	if s.conn != nil {
-		return s.conn, s.replies, nil
-	}
-	if s.now().Before(s.retryAt) {
-		return nil, nil, ErrNotConnected
-	}
-	c, err := dial(ctx, s.endpoint, s.token, s.version)
-	if err != nil {
-		switch {
-		case errors.Is(err, ErrStreamOff):
-			s.backoff = maxBackoff
-		case s.backoff == 0:
-			s.backoff = minBackoff
-		default:
-			s.backoff = min(2*s.backoff, maxBackoff)
-		}
-		s.retryAt = s.now().Add(s.backoff)
-		return nil, nil, fmt.Errorf("%w: %v", ErrNotConnected, err)
-	}
-	s.backoff = 0
-	s.retryAt = time.Time{}
-	s.conn = c
-	s.replies = make(chan []byte, 4)
-	go s.read(c, s.replies)
-	go s.keepAlive(c)
-	return c, s.replies, nil
-}
-
-func (s *Streamer) drop(c *conn) {
-	s.mu.Lock()
-	if s.conn == c {
-		s.conn = nil
-	}
-	s.mu.Unlock()
-	c.close()
-}
-
-func (s *Streamer) read(c *conn, replies chan []byte) {
-	defer close(replies)
-	defer s.drop(c)
-	for {
-		message, err := c.readMessage()
-		if err != nil {
-			return
-		}
-		var envelope struct {
-			Type string `json:"type"`
-		}
-		if json.Unmarshal(message, &envelope) != nil {
-			continue
-		}
-		switch envelope.Type {
-		case "poke":
-			select {
-			case s.pokes <- struct{}{}:
-			default:
-			}
-		case "heartbeat", "error":
-			select {
-			case replies <- message:
-			default:
-			}
-		}
+func New(endpoint, token, version string) *Client {
+	return &Client{
+		endpoint:      endpoint,
+		token:         token,
+		version:       version,
+		keepalive:     25 * time.Second,
+		silence:       75 * time.Second,
+		reply:         30 * time.Second,
+		minDelay:      time.Second,
+		maxDelay:      time.Minute,
+		stable:        time.Minute,
+		replacedDelay: 30 * time.Second,
+		refusedDelay:  time.Minute,
+		waiting:       map[uint64]chan envelope{},
+		up:            make(chan struct{}),
+		ready:         make(chan struct{}, 1),
+		pokes:         make(chan struct{}, 1),
 	}
 }
 
-func (s *Streamer) keepAlive(c *conn) {
-	ticker := time.NewTicker(keepalive)
-	defer ticker.Stop()
-	for range ticker.C {
-		s.mu.Lock()
-		current := s.conn == c
-		s.mu.Unlock()
-		if !current {
-			return
-		}
-		if err := c.write(opText, []byte("ping")); err != nil {
-			s.drop(c)
-			return
-		}
-	}
+func (c *Client) Ready() <-chan struct{} {
+	return c.ready
 }
 
-func (s *Streamer) SendHeartbeat(ctx context.Context, beat reporter.Heartbeat) (reporter.HeartbeatResponse, error) {
-	c, replies, err := s.ensure(ctx)
-	if err != nil {
-		return reporter.HeartbeatResponse{}, err
-	}
-	for drained := false; !drained; {
-		select {
-		case <-replies:
-		default:
-			drained = true
-		}
-	}
-	payload, err := json.Marshal(struct {
-		Type      string             `json:"type"`
-		Heartbeat reporter.Heartbeat `json:"heartbeat"`
-	}{"heartbeat", beat})
-	if err != nil {
-		return reporter.HeartbeatResponse{}, err
-	}
-	if err := c.write(opText, payload); err != nil {
-		s.drop(c)
-		return reporter.HeartbeatResponse{}, fmt.Errorf("send over the live connection: %w", err)
-	}
-	timer := time.NewTimer(replyTimeout)
+func (c *Client) Pokes() <-chan struct{} {
+	return c.pokes
+}
+
+func (c *Client) WaitConnected(ctx context.Context, limit time.Duration) error {
+	c.mu.Lock()
+	up := c.up
+	c.mu.Unlock()
+	timer := time.NewTimer(limit)
 	defer timer.Stop()
 	select {
-	case message, ok := <-replies:
-		if !ok {
-			return reporter.HeartbeatResponse{}, errors.New("the live connection closed")
-		}
-		var answer struct {
-			Type     string                     `json:"type"`
-			Code     string                     `json:"code"`
-			Response reporter.HeartbeatResponse `json:"response"`
-		}
-		if err := json.Unmarshal(message, &answer); err != nil {
-			return reporter.HeartbeatResponse{}, fmt.Errorf("read the live reply: %w", err)
-		}
-		if answer.Type != "heartbeat" {
-			return reporter.HeartbeatResponse{}, fmt.Errorf("the live connection refused the heartbeat: %s", answer.Code)
-		}
-		return answer.Response, nil
+	case <-up:
+		return nil
 	case <-timer.C:
-		s.drop(c)
-		return reporter.HeartbeatResponse{}, errors.New("the live connection did not answer")
+		return ErrNotConnected
 	case <-ctx.Done():
-		return reporter.HeartbeatResponse{}, ctx.Err()
+		return ctx.Err()
 	}
 }
 
-func (s *Streamer) Close() {
-	s.mu.Lock()
-	s.closed = true
-	c := s.conn
-	s.conn = nil
-	s.mu.Unlock()
-	if c != nil {
-		c.close()
+func (c *Client) delay(attempt int) time.Duration {
+	base := c.minDelay << min(attempt, 16)
+	if base > c.maxDelay || base <= 0 {
+		base = c.maxDelay
+	}
+	return base/2 + time.Duration(rand.Int64N(int64(base)+1))
+}
+
+func pause(ctx context.Context, wait time.Duration) bool {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
-type HTTPReporter interface {
-	SendHeartbeat(context.Context, reporter.Heartbeat) (reporter.HeartbeatResponse, error)
-	FetchConfig(context.Context) (reporter.AgentConfig, error)
-}
-
-type Hybrid struct {
-	Stream *Streamer
-	HTTP   HTTPReporter
-}
-
-func (h Hybrid) SendHeartbeat(ctx context.Context, beat reporter.Heartbeat) (reporter.HeartbeatResponse, error) {
-	if h.Stream != nil {
-		response, err := h.Stream.SendHeartbeat(ctx, beat)
-		if err == nil {
-			return response, nil
+func (c *Client) Run(ctx context.Context) {
+	attempt := 0
+	for ctx.Err() == nil {
+		connection, err := dial(ctx, c.endpoint, c.token, c.version)
+		if err != nil {
+			wait := c.delay(attempt)
+			attempt++
+			log.Printf("live connection to Krynodes failed: %v; retrying in %s", err, wait.Round(time.Second))
+			if !pause(ctx, wait) {
+				return
+			}
+			continue
 		}
-		if !errors.Is(err, ErrNotConnected) {
-			log.Printf("live connection failed, reporting over HTTP: %v", err)
+		log.Printf("live connection to Krynodes open")
+		opened := time.Now()
+		code := c.serve(ctx, connection)
+		if ctx.Err() != nil {
+			return
+		}
+		if time.Since(opened) >= c.stable {
+			attempt = 0
+		}
+		wait := c.delay(attempt)
+		attempt++
+		switch code {
+		case codeReplaced:
+			wait = max(wait, c.replacedDelay)
+		case codeRefused:
+			wait = max(wait, c.refusedDelay)
+		}
+		log.Printf("live connection to Krynodes closed (%s); reconnecting in %s", describe(code), wait.Round(time.Second))
+		if !pause(ctx, wait) {
+			return
 		}
 	}
-	return h.HTTP.SendHeartbeat(ctx, beat)
 }
 
-func (h Hybrid) FetchConfig(ctx context.Context) (reporter.AgentConfig, error) {
-	return h.HTTP.FetchConfig(ctx)
+func describe(code int) string {
+	switch code {
+	case 0:
+		return "connection lost"
+	case codeReplaced:
+		return "another agent with this token connected"
+	case codeRefused:
+		return "the server is unknown or disabled"
+	default:
+		return fmt.Sprintf("code %d", code)
+	}
+}
+
+func (c *Client) serve(ctx context.Context, connection *conn) int {
+	c.mu.Lock()
+	c.conn = connection
+	close(c.up)
+	c.mu.Unlock()
+	select {
+	case c.ready <- struct{}{}:
+	default:
+	}
+	defer c.detach(connection)
+
+	var lastRead atomic.Int64
+	lastRead.Store(time.Now().UnixNano())
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		ticker := time.NewTicker(c.keepalive)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				connection.close()
+				return
+			case <-ticker.C:
+				if time.Since(time.Unix(0, lastRead.Load())) > c.silence {
+					log.Printf("live connection to Krynodes went silent")
+					connection.close()
+					return
+				}
+				if err := connection.write(opText, []byte("ping")); err != nil {
+					connection.close()
+					return
+				}
+			}
+		}
+	}()
+
+	for {
+		message, err := connection.readMessage()
+		if err != nil {
+			var closed *closeError
+			if errors.As(err, &closed) {
+				return closed.code
+			}
+			return 0
+		}
+		lastRead.Store(time.Now().UnixNano())
+		c.dispatch(message)
+	}
+}
+
+func (c *Client) detach(connection *conn) {
+	connection.close()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == connection {
+		c.conn = nil
+		c.up = make(chan struct{})
+	}
+	for id, waiter := range c.waiting {
+		close(waiter)
+		delete(c.waiting, id)
+	}
+}
+
+func (c *Client) dispatch(message []byte) {
+	var answer envelope
+	if json.Unmarshal(message, &answer) != nil {
+		return
+	}
+	if answer.Type == "poke" {
+		select {
+		case c.pokes <- struct{}{}:
+		default:
+		}
+		return
+	}
+	c.mu.Lock()
+	waiter, ok := c.waiting[answer.ID]
+	delete(c.waiting, answer.ID)
+	c.mu.Unlock()
+	if ok {
+		waiter <- answer
+	}
+}
+
+func (c *Client) call(ctx context.Context, kind string, fields map[string]any) (envelope, error) {
+	c.mu.Lock()
+	connection := c.conn
+	if connection == nil {
+		c.mu.Unlock()
+		return envelope{}, ErrNotConnected
+	}
+	c.nextID++
+	id := c.nextID
+	waiter := make(chan envelope, 1)
+	c.waiting[id] = waiter
+	c.mu.Unlock()
+	forget := func() {
+		c.mu.Lock()
+		delete(c.waiting, id)
+		c.mu.Unlock()
+	}
+
+	request := map[string]any{"id": id, "type": kind}
+	for key, value := range fields {
+		request[key] = value
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		forget()
+		return envelope{}, err
+	}
+	if err := connection.write(opText, payload); err != nil {
+		forget()
+		connection.close()
+		return envelope{}, fmt.Errorf("send %s: %w", kind, err)
+	}
+	timer := time.NewTimer(c.reply)
+	defer timer.Stop()
+	select {
+	case answer, ok := <-waiter:
+		if !ok {
+			return envelope{}, fmt.Errorf("send %s: %w", kind, ErrNotConnected)
+		}
+		if answer.Type == "error" {
+			return envelope{}, fmt.Errorf("Krynodes refused the %s: %s", kind, answer.Code)
+		}
+		if answer.Type != kind {
+			return envelope{}, fmt.Errorf("Krynodes answered the %s with %q", kind, answer.Type)
+		}
+		return answer, nil
+	case <-timer.C:
+		forget()
+		connection.close()
+		return envelope{}, fmt.Errorf("Krynodes did not answer the %s", kind)
+	case <-ctx.Done():
+		forget()
+		return envelope{}, ctx.Err()
+	}
+}
+
+func (c *Client) SendHeartbeat(ctx context.Context, beat reporter.Heartbeat) (reporter.HeartbeatResponse, error) {
+	var response reporter.HeartbeatResponse
+	answer, err := c.call(ctx, "heartbeat", map[string]any{"heartbeat": beat})
+	if err != nil {
+		return response, err
+	}
+	return response, json.Unmarshal(answer.Response, &response)
+}
+
+func (c *Client) FetchConfig(ctx context.Context) (reporter.AgentConfig, error) {
+	var config reporter.AgentConfig
+	answer, err := c.call(ctx, "config", nil)
+	if err != nil {
+		return config, err
+	}
+	return config, json.Unmarshal(answer.Config, &config)
+}
+
+func (c *Client) PostActions(ctx context.Context, report reporter.ActionsReport) (reporter.ActionsResponse, error) {
+	var response reporter.ActionsResponse
+	answer, err := c.call(ctx, "actions", map[string]any{"report": report})
+	if err != nil {
+		return response, err
+	}
+	return response, json.Unmarshal(answer.Response, &response)
 }

@@ -239,8 +239,10 @@ func Collect(ctx context.Context, run Runner, remembered []string) (Snapshot, er
 		services, stacks := parseContainers(string(containers))
 		snapshot.Services = append(snapshot.Services, services...)
 		snapshot.Stacks = stacks
-		if _, err := step("docker", "compose", "version"); err == nil {
-			snapshot.Compose = true
+		if len(stacks) > 0 {
+			if _, err := step("docker", "compose", "version"); err == nil {
+				snapshot.Compose = true
+			}
 		}
 	}
 	return snapshot, nil

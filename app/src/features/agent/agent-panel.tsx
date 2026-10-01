@@ -13,7 +13,7 @@ import {
   useRequestAgentUpdate,
   useUpdateNode,
 } from "@/lib/api";
-import { agentState } from "@/lib/agent";
+import { UPDATE_ATTEMPTS, agentState } from "@/lib/agent";
 import { timeAgo } from "@/lib/format";
 import type { AgentRelease, NodeRecord } from "@/types";
 
@@ -92,7 +92,14 @@ export function AgentPanel({
             <span>
               Updating to <span className="font-mono">{target}</span>. The agent
               restarts on its own after its next report.
+              {(node.update_attempts ?? 1) > 1 &&
+                ` Attempt ${node.update_attempts} of ${UPDATE_ATTEMPTS}.`}
             </span>
+          </p>
+        )}
+        {state === "updating" && node.update_error && (
+          <p className="text-xs text-muted-foreground">
+            Last attempt: {node.update_error}
           </p>
         )}
         {state === "failed" && (
@@ -101,7 +108,8 @@ export function AgentPanel({
               <CircleX aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
               <span>
                 The update to <span className="font-mono">{target}</span> did
-                not finish in 10 minutes.
+                not finish
+                {node.update_error ? `: ${node.update_error}` : "."}
               </span>
             </p>
             <Button

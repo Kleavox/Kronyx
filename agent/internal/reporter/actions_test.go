@@ -1,11 +1,7 @@
 package reporter
 
 import (
-	"context"
 	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
@@ -20,33 +16,24 @@ func TestHeartbeatResponseCarriesActionsAndARefresh(t *testing.T) {
 	}
 }
 
-func TestPostActionsSendsTheReportAndReadsTheHash(t *testing.T) {
-	var path, auth, body string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path, auth = r.URL.Path, r.Header.Get("Authorization")
-		raw, _ := io.ReadAll(r.Body)
-		body = string(raw)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true,"inventoryHash":"abc"}`))
-	}))
-	defer server.Close()
-
+func TestAnActionsReportAndItsAnswerKeepTheirShape(t *testing.T) {
 	code := 1
 	empty := []ServiceEntry{}
-	response, err := New(server.URL, "token", "0.6.0").PostActions(context.Background(), ActionsReport{
+	encoded, err := json.Marshal(ActionsReport{
 		NodeID:    "n",
 		Results:   []ActionResult{{ID: "r", OK: false, ExitCode: &code, Output: "Job failed", FinishedAt: "t"}},
 		Inventory: &InventoryReport{Hash: "h", Services: &empty},
 	})
 	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
-	if path != "/api/agent/actions" || auth != "Bearer token" {
-		t.Fatalf("unexpected request %s %q", path, auth)
+		t.Fatal(err)
 	}
 	want := `{"nodeId":"n","results":[{"id":"r","ok":false,"exitCode":1,"output":"Job failed","finishedAt":"t"}],"inventory":{"hash":"h","services":[]}}`
-	if body != want {
-		t.Fatalf("body\n got %s\nwant %s", body, want)
+	if string(encoded) != want {
+		t.Fatalf("body\n got %s\nwant %s", encoded, want)
+	}
+	var response ActionsResponse
+	if err := json.Unmarshal([]byte(`{"ok":true,"inventoryHash":"abc"}`), &response); err != nil {
+		t.Fatal(err)
 	}
 	if response.InventoryHash == nil || *response.InventoryHash != "abc" {
 		t.Fatalf("unexpected response %#v", response)

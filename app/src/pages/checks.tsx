@@ -294,6 +294,7 @@ function CheckRow({
         since={check.enabled ? parseTimestamp(check.created_at) : null}
         windowSeconds={windowSeconds}
         graceSeconds={graceSeconds(node?.interval_seconds ?? 0)}
+        settleSeconds={node?.transport === "stream" ? windowSeconds : 0}
         now={now}
         asOf={asOf}
         count={48}

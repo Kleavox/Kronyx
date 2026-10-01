@@ -1,16 +1,22 @@
 package update
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestWriteRequestWritesOnlyWhenTheRequestChanges(t *testing.T) {
@@ -59,24 +65,57 @@ func signedRelease(t *testing.T, private ed25519.PrivateKey, binary []byte) rele
 	}
 }
 
-type harness struct {
-	options Options
-	runs    []string
+func gzipped(t *testing.T, data []byte) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	writer := gzip.NewWriter(&buffer)
+	if _, err := writer.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
 }
+
+type harness struct {
+	options  Options
+	mu       sync.Mutex
+	runs     []string
+	requests []string
+	files    map[string][]byte
+	serve    func(w http.ResponseWriter, r *http.Request, name string) bool
+	health   string
+	reported string
+}
+
+const asset = "/agent-v0.5.2/krynodes-linux-amd64"
 
 func newHarness(t *testing.T, public ed25519.PublicKey, published release) *harness {
 	t.Helper()
+	h := &harness{
+		files: map[string][]byte{
+			asset:             published.binary,
+			asset + ".sha256": []byte(published.checksum),
+			asset + ".sig":    published.signature,
+		},
+		health:   "ActiveState=active\nMainPID=42\n",
+		reported: "0.5.2\n",
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/agent-v0.5.2/krynodes-linux-amd64":
-			_, _ = w.Write(published.binary)
-		case "/agent-v0.5.2/krynodes-linux-amd64.sha256":
-			_, _ = w.Write([]byte(published.checksum))
-		case "/agent-v0.5.2/krynodes-linux-amd64.sig":
-			_, _ = w.Write(published.signature)
-		default:
-			http.NotFound(w, r)
+		h.mu.Lock()
+		h.requests = append(h.requests, r.URL.Path+" "+r.Header.Get("Range"))
+		serve := h.serve
+		h.mu.Unlock()
+		if serve != nil && serve(w, r, r.URL.Path) {
+			return
 		}
+		body, ok := h.files[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(body))
 	}))
 	t.Cleanup(server.Close)
 
@@ -89,18 +128,28 @@ func newHarness(t *testing.T, public ed25519.PublicKey, published release) *harn
 	if _, err := WriteRequest(request, "0.5.2", "t1"); err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{}
 	h.options = Options{
 		RequestPath:    request,
+		StatusPath:     filepath.Join(dir, "update-status"),
 		BinaryPath:     binary,
 		Base:           server.URL,
 		Arch:           "amd64",
 		CurrentVersion: "0.5.1",
 		PublicKey:      public,
 		Client:         server.Client(),
+		Stall:          300 * time.Millisecond,
+		Sleep:          func(time.Duration) {},
 		Run: func(name string, args ...string) error {
+			h.mu.Lock()
+			defer h.mu.Unlock()
 			h.runs = append(h.runs, strings.Join(append([]string{filepath.Base(name)}, args...), " "))
 			return nil
+		},
+		Output: func(name string, args ...string) (string, error) {
+			if filepath.Base(name) == "systemctl" {
+				return h.health, nil
+			}
+			return h.reported, nil
 		},
 	}
 	return h
@@ -124,6 +173,19 @@ func contentOf(t *testing.T, path string) string {
 	return string(content)
 }
 
+func statusOf(t *testing.T, h *harness) Status {
+	t.Helper()
+	var status Status
+	raw, err := os.ReadFile(h.options.StatusPath)
+	if err != nil {
+		return status
+	}
+	if err := json.Unmarshal(raw, &status); err != nil {
+		t.Fatal(err)
+	}
+	return status
+}
+
 func TestApplyInstallsASignedReleaseAndRestarts(t *testing.T) {
 	public, private := keys(t)
 	h := newHarness(t, public, signedRelease(t, private, []byte("new agent")))
@@ -140,6 +202,138 @@ func TestApplyInstallsASignedReleaseAndRestarts(t *testing.T) {
 	want := []string{"kry install-service", "systemctl restart krynodes.service"}
 	if strings.Join(h.runs, "|") != strings.Join(want, "|") {
 		t.Fatalf("ran %#v", h.runs)
+	}
+	if _, err := os.Stat(h.options.StatusPath); !os.IsNotExist(err) {
+		t.Fatalf("a successful update leaves no status: %v", err)
+	}
+	if leftovers, _ := filepath.Glob(h.options.BinaryPath + ".*.download"); len(leftovers) != 0 {
+		t.Fatalf("left %v behind", leftovers)
+	}
+}
+
+func TestApplyPrefersTheCompressedBinary(t *testing.T) {
+	public, private := keys(t)
+	h := newHarness(t, public, signedRelease(t, private, []byte("new agent")))
+	h.files[asset+".gz"] = gzipped(t, []byte("new agent"))
+
+	if err := Apply(h.options); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got := contentOf(t, h.options.BinaryPath); got != "new agent" {
+		t.Fatalf("binary is %q", got)
+	}
+	for _, request := range h.requests {
+		if strings.HasPrefix(request, asset+" ") {
+			t.Fatalf("downloaded the raw binary too: %v", h.requests)
+		}
+	}
+}
+
+func TestApplyResumesADownloadThatStalls(t *testing.T) {
+	public, private := keys(t)
+	binary := bytes.Repeat([]byte("new agent "), 4096)
+	h := newHarness(t, public, signedRelease(t, private, binary))
+	var stalled atomic.Bool
+	h.serve = func(w http.ResponseWriter, r *http.Request, name string) bool {
+		if name != asset || !stalled.CompareAndSwap(false, true) {
+			return false
+		}
+		w.Header().Set("Content-Length", "40960")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(binary[:10000])
+		w.(http.Flusher).Flush()
+		time.Sleep(time.Second)
+		return true
+	}
+
+	if err := Apply(h.options); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got := contentOf(t, h.options.BinaryPath); got != string(binary) {
+		t.Fatalf("binary has %d bytes", len(got))
+	}
+	if !strings.Contains(strings.Join(h.requests, "|"), asset+" bytes=10000-") {
+		t.Fatalf("did not resume: %v", h.requests)
+	}
+}
+
+func TestApplyRetriesUntilTheReleaseIsUploaded(t *testing.T) {
+	public, private := keys(t)
+	h := newHarness(t, public, signedRelease(t, private, []byte("new agent")))
+	var missing atomic.Int32
+	missing.Store(2)
+	h.serve = func(w http.ResponseWriter, r *http.Request, name string) bool {
+		if name == asset && missing.Add(-1) >= 0 {
+			http.NotFound(w, r)
+			return true
+		}
+		return false
+	}
+
+	if err := Apply(h.options); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got := contentOf(t, h.options.BinaryPath); got != "new agent" {
+		t.Fatalf("binary is %q", got)
+	}
+}
+
+func TestApplyGivesUpAndSaysWhyAfterItsAttempts(t *testing.T) {
+	public, private := keys(t)
+	h := newHarness(t, public, signedRelease(t, private, []byte("new agent")))
+	delete(h.files, asset)
+
+	if err := Apply(h.options); err == nil {
+		t.Fatal("expected a failure")
+	}
+	status := statusOf(t, h)
+	if status.Version != "0.5.2" || !strings.Contains(status.Message, "HTTP 404") {
+		t.Fatalf("status %+v", status)
+	}
+	if got := contentOf(t, h.options.BinaryPath); got != "old agent" {
+		t.Fatalf("binary is %q", got)
+	}
+}
+
+func TestApplyRefusesABinaryThatDoesNotRunHere(t *testing.T) {
+	public, private := keys(t)
+	h := newHarness(t, public, signedRelease(t, private, []byte("new agent")))
+	h.reported = "0.5.1\n"
+
+	if err := Apply(h.options); err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if got := contentOf(t, h.options.BinaryPath); got != "old agent" {
+		t.Fatalf("binary is %q", got)
+	}
+	if len(h.runs) != 0 {
+		t.Fatalf("ran %#v", h.runs)
+	}
+	if status := statusOf(t, h); !strings.Contains(status.Message, "does not run") {
+		t.Fatalf("status %+v", status)
+	}
+}
+
+func TestApplyRollsBackWhenTheNewAgentDoesNotStayUp(t *testing.T) {
+	public, private := keys(t)
+	h := newHarness(t, public, signedRelease(t, private, []byte("new agent")))
+	h.health = "ActiveState=activating\nMainPID=0\n"
+
+	if err := Apply(h.options); err == nil {
+		t.Fatal("expected a failure")
+	}
+	if got := contentOf(t, h.options.BinaryPath); got != "old agent" {
+		t.Fatalf("binary is %q", got)
+	}
+	want := []string{
+		"kry install-service", "systemctl restart krynodes.service",
+		"kry install-service", "systemctl restart krynodes.service",
+	}
+	if strings.Join(h.runs, "|") != strings.Join(want, "|") {
+		t.Fatalf("ran %#v", h.runs)
+	}
+	if status := statusOf(t, h); !strings.Contains(status.Message, "rolled back") {
+		t.Fatalf("status %+v", status)
 	}
 }
 
@@ -170,6 +364,9 @@ func TestApplyRefusesAReleaseThatFailsVerification(t *testing.T) {
 			if len(h.runs) != 0 {
 				t.Fatalf("ran %#v", h.runs)
 			}
+			if leftovers, _ := filepath.Glob(h.options.BinaryPath + ".*.download"); len(leftovers) != 0 {
+				t.Fatalf("kept a download that failed verification: %v", leftovers)
+			}
 		})
 	}
 }
@@ -194,6 +391,23 @@ func TestApplyRefusesDowngradesAndUnknownArchitectures(t *testing.T) {
 	arch.options.Arch = "mips"
 	if err := Apply(arch.options); err == nil {
 		t.Fatal("accepted an unknown architecture")
+	}
+}
+
+func TestReadStatusOnlyReportsAFailureForANewerVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "update-status")
+	if _, ok := ReadStatus(path, "0.5.1"); ok {
+		t.Fatal("no file, no status")
+	}
+	if err := os.WriteFile(path, []byte(`{"version":"0.5.2","message":"download stalled","at":"t"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	status, ok := ReadStatus(path, "0.5.1")
+	if !ok || status.Message != "download stalled" {
+		t.Fatalf("status %+v %v", status, ok)
+	}
+	if _, ok := ReadStatus(path, "0.5.2"); ok {
+		t.Fatal("a status for the running version is stale")
 	}
 }
 

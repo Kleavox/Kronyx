@@ -31,10 +31,17 @@ export function ChangeDetails({
         fleet.devices.find((device) => device.id === id)?.verifies === false,
     )
     .map(fleet.name);
+  const leavingTouch = summary.removed
+    .filter(
+      (id) =>
+        fleet.devices.find((device) => device.id === id)?.verifies === false,
+    )
+    .map(fleet.name);
   const empty =
     admitted.length === 0 &&
     summary.removed.length === 0 &&
     !summary.passphrase &&
+    !summary.requireUv &&
     summary.access.length === 0;
 
   return (
@@ -74,6 +81,33 @@ export function ChangeDetails({
               </li>
             ))}
           </ul>
+        </section>
+      )}
+      {summary.requireUv && (
+        <section>
+          <h3 className={HEADING}>Require fingerprint</h3>
+          <p>
+            Servers then accept only passkeys that verify you, with a
+            fingerprint, a face or a security key, for approvals and actions. A
+            touch alone stops working, the passphrase is dropped, and this
+            cannot be turned off from the dashboard.
+          </p>
+          {leavingTouch.length > 0 && (
+            <p className="mt-1">
+              {leavingTouch.join(", ")} only{" "}
+              {leavingTouch.length === 1
+                ? "takes a touch, so it leaves"
+                : "take a touch, so they leave"}{" "}
+              the core.
+            </p>
+          )}
+          {touchOnly.length > 0 && (
+            <p className="mt-1 text-destructive">
+              {touchOnly.join(", ")} only{" "}
+              {touchOnly.length === 1 ? "takes" : "take"} a touch and must leave
+              the core in this change.
+            </p>
+          )}
         </section>
       )}
       {summary.passphrase && (

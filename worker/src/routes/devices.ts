@@ -5,7 +5,7 @@ import { z } from "zod";
 import { createBatch, sweepStatements } from "../actions/store";
 import { pokeSoon } from "../fleet/client";
 import { fromB64url } from "../lib/b64url";
-import { loadFleet, speaksQuorum, type Fleet } from "../trust/fleet";
+import { loadFleet, speaksQuorum, speaksUv, type Fleet } from "../trust/fleet";
 import {
   invalidRequest,
   readJson,
@@ -73,7 +73,8 @@ function firstTrustAllowed(fleet: Fleet, change: TrustChange): boolean {
   if (!expected || !sameIds(core, expected)) return false;
   const founding = expected.length < 2;
   if (!sameIds(access, founding ? core : [])) return false;
-  const passphrase = fleet.passphrase;
+  if ((change.requireUv === true) !== fleet.requireUv) return false;
+  const passphrase = fleet.requireUv ? null : fleet.passphrase;
   return passphrase
     ? change.passphrase?.salt === passphrase.salt &&
         change.passphrase.iterations === passphrase.iterations &&
@@ -109,6 +110,17 @@ export function registerDeviceRoutes(
     const parsed = deviceSchema.safeParse(await readJson(context));
     if (!parsed.success) return invalidRequest(context);
     const device = parsed.data;
+    const fleet = await loadFleet(context.env.DB, context.get("identity").id);
+    if (fleet.requireUv && device.verifies !== true) {
+      return context.json(
+        {
+          code: "CANNOT_VERIFY",
+          message:
+            "This passkey cannot verify a fingerprint. Choose Use a phone or a security key instead.",
+        },
+        422,
+      );
+    }
     try {
       await context.env.DB.prepare(
         `INSERT INTO devices (id, owner_user_id, name, alg, public_key, created_at, verifies)
@@ -222,11 +234,11 @@ export function registerDeviceRoutes(
           404,
         );
       }
-      if (!speaksQuorum(node)) {
+      if (!speaksQuorum(node) || (fleet.requireUv && !speaksUv(node))) {
         return context.json(
           {
             code: "NEEDS_AGENT",
-            message: `${node.name} needs agent 0.3.0 or later.`,
+            message: `${node.name} needs agent ${fleet.requireUv ? "0.3.1" : "0.3.0"} or later.`,
           },
           422,
         );

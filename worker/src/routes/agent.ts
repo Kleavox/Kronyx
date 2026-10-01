@@ -1,11 +1,7 @@
 import { agentConfigResponseSchema } from "@krynodes/protocol";
 
-import { applyInventory } from "../actions/inventory";
-import {
-  actionResultStatements,
-  heartbeatActions,
-  sweepStatements,
-} from "../actions/store";
+import { receiveReport } from "../actions/report";
+import { heartbeatActions } from "../actions/store";
 import {
   acceptResults,
   commit,
@@ -14,8 +10,10 @@ import {
   loadAgentConfig,
   resultStatements,
   type AgentNode,
+  updateRetry,
   windowStatements,
 } from "../agent/ingest";
+import { agentHttpGone, agentHttpOn } from "../agent/legacy";
 import { hubFor, streamsOn } from "../fleet/client";
 import { randomToken, readBearerToken, sha256 } from "../lib/crypto";
 import { actionsSchema, heartbeatSchema, hostSchema } from "../schemas";
@@ -100,15 +98,18 @@ export function registerAgentRoutes(app: KrynodesApp): void {
   });
 
   app.post("/api/agent/heartbeat", async (context) => {
-    const node = await authenticateAgent(context);
-    if (!node) return context.json({ code: "UNAUTHORIZED" }, 401);
+    if (!(await agentHttpOn(context.env.DB))) return agentHttpGone(context);
+    const known = await authenticateAgent(context);
+    if (!known) return context.json({ code: "UNAUTHORIZED" }, 401);
     const heartbeat = heartbeatSchema.safeParse(await readJson(context));
-    if (!heartbeat.success || heartbeat.data.nodeId !== node.id) {
+    if (!heartbeat.success || heartbeat.data.nodeId !== known.id) {
       return context.json({ code: "INVALID_HEARTBEAT" }, 400);
     }
 
     const now = Date.now();
     const db = context.env.DB;
+    const retried = updateRetry(db, known, heartbeat.data, now);
+    const node = retried.node;
     const agent = await loadAgentConfig(db, node);
     const accepted = acceptResults(agent.checks, heartbeat.data.results ?? []);
     await commit(
@@ -116,6 +117,7 @@ export function registerAgentRoutes(app: KrynodesApp): void {
       node.id,
       [
         ...heartbeatStatements(db, node, heartbeat.data, now),
+        ...retried.statements,
         ...(await windowStatements(
           db,
           node,
@@ -163,6 +165,7 @@ export function registerAgentRoutes(app: KrynodesApp): void {
   });
 
   app.get("/api/agent/config", async (context) => {
+    if (!(await agentHttpOn(context.env.DB))) return agentHttpGone(context);
     const node = await authenticateAgent(context);
     if (!node) return context.json({ code: "UNAUTHORIZED" }, 401);
     const agent = await loadAgentConfig(context.env.DB, node);
@@ -175,33 +178,16 @@ export function registerAgentRoutes(app: KrynodesApp): void {
   });
 
   app.post("/api/agent/actions", async (context) => {
+    if (!(await agentHttpOn(context.env.DB))) return agentHttpGone(context);
     const node = await authenticateAgent(context);
     if (!node) return context.json({ code: "UNAUTHORIZED" }, 401);
     const payload = actionsSchema.safeParse(await readJson(context));
     if (!payload.success || payload.data.nodeId !== node.id) {
       return context.json({ code: "INVALID_ACTIONS" }, 400);
     }
-    const db = context.env.DB;
-    const now = Date.now();
-    if (payload.data.results && payload.data.results.length > 0) {
-      await db.batch([
-        ...actionResultStatements(db, node.id, payload.data.results, now),
-        ...sweepStatements(db, now),
-      ]);
-    }
-    const inventoryHash = payload.data.inventory
-      ? await applyInventory(
-          db,
-          {
-            id: node.id,
-            inventory_hash: node.inventory_hash ?? null,
-            refresh_requested_at: node.refresh_requested_at ?? null,
-          },
-          payload.data.inventory,
-          now,
-        )
-      : (node.inventory_hash ?? null);
-    return context.json({ ok: true, inventoryHash });
+    return context.json(
+      await receiveReport(context.env.DB, node, payload.data, Date.now()),
+    );
   });
 }
 
@@ -212,7 +198,8 @@ async function authenticateAgent(
   if (!token) return null;
   return context.env.DB.prepare(
     `SELECT id, owner_user_id, interval_seconds, update_requested_version,
-            update_requested_at, inventory_hash, refresh_requested_at
+            update_requested_at, update_attempts, update_error, inventory_hash,
+            refresh_requested_at
      FROM nodes
      WHERE agent_token_hash = ? AND enrolled_at IS NOT NULL
        AND disabled_at IS NULL LIMIT 1`,

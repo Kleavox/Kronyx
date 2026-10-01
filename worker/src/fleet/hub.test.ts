@@ -268,4 +268,120 @@ describe("FleetHub", () => {
     expect(await poke.json()).toEqual({ poked: 1 });
     expect(ws.replies().at(-1)).toEqual({ type: "poke" });
   });
+
+  it("answers config and action reports over the socket, echoing the request id", async () => {
+    const t = setup();
+    const ws = await t.connect();
+    await t.hub.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ id: 1, type: "config" }),
+    );
+    expect(ws.replies()[0]).toMatchObject({
+      id: 1,
+      type: "config",
+      config: {
+        nodeId: NODE,
+        intervalSeconds: 60,
+        checks: [{ id: CHECK }],
+      },
+    });
+    expect(
+      (ws.replies()[0] as { config: { configVersion: string } }).config
+        .configVersion,
+    ).toMatch(/^[0-9a-f]{16}$/u);
+    await t.hub.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({
+        id: 2,
+        type: "actions",
+        report: {
+          nodeId: NODE,
+          inventory: {
+            hash: "a".repeat(64),
+            services: [
+              {
+                kind: "systemd",
+                name: "nginx.service",
+                state: "running",
+                since: null,
+                system: false,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    expect(ws.replies()[1]).toEqual({
+      id: 2,
+      type: "actions",
+      response: { ok: true, inventoryHash: "a".repeat(64) },
+    });
+    expect(
+      t.sqlite.prepare("SELECT name FROM services WHERE node_id = ?").all(NODE),
+    ).toEqual([{ name: "nginx.service" }]);
+    await t.send(ws, BASE + 5_000, heartbeat(10));
+    expect(ws.replies()[2]).not.toHaveProperty("id");
+    vi.setSystemTime(BASE + 6_000);
+    await t.hub.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ id: 3, type: "heartbeat", heartbeat: heartbeat(10) }),
+    );
+    expect(ws.replies()[3]).toMatchObject({ id: 3, type: "heartbeat" });
+    await t.hub.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ id: 4, type: "actions", report: { nodeId: "other" } }),
+    );
+    expect(ws.replies()[4]).toEqual({
+      id: 4,
+      type: "error",
+      code: "INVALID_MESSAGE",
+    });
+  });
+
+  it("asks again for a stalled update and keeps the agent's reason, like the HTTP route", async () => {
+    const t = setup();
+    t.sqlite
+      .prepare(
+        "UPDATE nodes SET update_requested_version = '0.3.1', update_requested_at = ?, update_attempts = 1 WHERE id = ?",
+      )
+      .run(new Date(BASE - 16 * 60_000).toISOString(), NODE);
+    const ws = await t.connect();
+    await t.send(ws, BASE + 5_000, {
+      ...heartbeat(10),
+      update: { version: "0.3.1", message: "download stalled" },
+    });
+    const row = t.sqlite
+      .prepare(
+        "SELECT update_requested_at, update_attempts, update_error FROM nodes WHERE id = ?",
+      )
+      .get(NODE) as {
+      update_requested_at: string;
+      update_attempts: number;
+      update_error: string;
+    };
+    expect(row).toMatchObject({
+      update_requested_at: new Date(BASE + 5_000).toISOString(),
+      update_attempts: 2,
+      update_error: "download stalled",
+    });
+    expect(ws.replies().at(-1)).toMatchObject({
+      response: {
+        update: {
+          version: "0.3.1",
+          requestedAt: new Date(BASE + 5_000).toISOString(),
+        },
+      },
+    });
+  });
+
+  it("tells the live view when each server connected", async () => {
+    const t = setup();
+    vi.setSystemTime(BASE + 1_000);
+    const ws = await t.connect();
+    await t.send(ws, BASE + 5_000, heartbeat(10));
+    const live = (await (
+      await t.hub.fetch(new Request("https://fleet/live"))
+    ).json()) as Record<string, { connectedAt: number }>;
+    expect(live[NODE]?.connectedAt).toBe(BASE + 1_000);
+  });
 });

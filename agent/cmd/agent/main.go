@@ -212,11 +212,26 @@ func runDaemon(args []string, once bool) error {
 	if err != nil {
 		return err
 	}
-	client := reporter.New(cfg.Endpoint, cfg.Token, version)
 	host, err := currentHost()
 	if err != nil {
 		return err
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	client := stream.New(cfg.Endpoint, cfg.Token, version)
+	connection, closeConnection := context.WithCancel(ctx)
+	closed := make(chan struct{})
+	go func() {
+		client.Run(connection)
+		close(closed)
+	}()
+	defer func() {
+		closeConnection()
+		select {
+		case <-closed:
+		case <-time.After(3 * time.Second):
+		}
+	}()
 	relay := &actions.Relay{
 		RequestDir: actions.RequestDir,
 		StateDir:   actions.StateDir,
@@ -224,20 +239,24 @@ func runDaemon(args []string, once bool) error {
 		Server:     client,
 		Now:        time.Now,
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	monitoringCycle := cycle.New(client, host, requestFile{}, relay)
 
 	if once {
-		_, err := cycle.New(client, host, requestFile{}, relay).Execute(ctx, cfg.NodeID)
+		if err := client.WaitConnected(ctx, 30*time.Second); err != nil {
+			return fmt.Errorf("connect to Krynodes: %w", err)
+		}
+		_, err := monitoringCycle.Execute(ctx, cfg.NodeID)
 		return err
 	}
 
-	streamer := stream.New(cfg.Endpoint, cfg.Token, version)
-	defer streamer.Close()
-	monitoringCycle := cycle.New(stream.Hybrid{Stream: streamer, HTTP: client}, host, requestFile{}, relay)
-
 	log.Printf("%s %s started for node %s", unitName, version, cfg.NodeID)
 	go relay.Watch(ctx, 2*time.Second)
+	if err := client.WaitConnected(ctx, 15*time.Second); err == nil {
+		select {
+		case <-client.Ready():
+		default:
+		}
+	}
 	interval := cfg.Interval
 	for {
 		nextInterval, err := monitoringCycle.Execute(ctx, cfg.NodeID)
@@ -256,7 +275,9 @@ func runDaemon(args []string, once bool) error {
 			log.Printf("%s stopped", unitName)
 			return nil
 		case <-timer.C:
-		case <-streamer.Pokes():
+		case <-client.Pokes():
+			timer.Stop()
+		case <-client.Ready():
 			timer.Stop()
 		}
 	}
@@ -476,6 +497,14 @@ func prepareActionDirectories(uid, gid int) error {
 
 type requestFile struct{}
 
+func (requestFile) Failure() *reporter.UpdateFailure {
+	status, ok := update.ReadStatus(update.StatusPath, version)
+	if !ok {
+		return nil
+	}
+	return &reporter.UpdateFailure{Version: status.Version, Message: status.Message}
+}
+
 func (requestFile) Request(version, requestedAt string) error {
 	changed, err := update.WriteRequest(update.RequestPath, version, requestedAt)
 	if changed {
@@ -502,14 +531,25 @@ func selfUpdate() error {
 	}
 	err = update.Apply(update.Options{
 		RequestPath:    update.RequestPath,
+		StatusPath:     update.StatusPath,
 		BinaryPath:     executable,
 		Base:           update.DefaultBase,
 		Arch:           runtime.GOARCH,
 		CurrentVersion: version,
 		PublicKey:      key,
-		Client:         &http.Client{Timeout: 2 * time.Minute},
+		Client: &http.Client{Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			TLSHandshakeTimeout:   30 * time.Second,
+			ResponseHeaderTimeout: time.Minute,
+		}},
 		Run: func(name string, args ...string) error {
 			return exec.Command(name, args...).Run()
+		},
+		Output: func(name string, args ...string) (string, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			output, err := exec.CommandContext(ctx, name, args...).Output()
+			return string(output), err
 		},
 	})
 	if err != nil {

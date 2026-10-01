@@ -46,16 +46,9 @@ const upgrade = {
 };
 
 describe("agent stream route", () => {
-  it("answers 404 when streams are off or not bound, so agents stay on HTTP", async () => {
-    const hub = fleet(() => new Response("hub"));
-    const off = await setup({
-      FLEET: hub.binding as unknown as DurableObjectNamespace,
-      AGENT_STREAM: "off",
-    });
-    expect((await off.call("/api/agent/stream", upgrade)).status).toBe(404);
+  it("answers 404 when the hub is not bound", async () => {
     const unbound = await setup();
     expect((await unbound.call("/api/agent/stream", upgrade)).status).toBe(404);
-    expect(hub.calls).toHaveLength(0);
   });
 
   it("wants a WebSocket upgrade and a valid agent token", async () => {
@@ -114,6 +107,7 @@ describe("overview with live connections", () => {
           JSON.stringify({
             [NODE]: {
               lastSeen: LAST_SEEN,
+              connectedAt: LAST_SEEN - 600_000,
               agentVersion: "0.3.0",
               hostname: "pivox",
               metrics: {
@@ -141,6 +135,7 @@ describe("overview with live connections", () => {
     const node = body.nodes.find((entry) => entry.id === NODE)!;
     expect(node).toMatchObject({
       last_seen_at: "2026-10-01 08:04:30",
+      connected_at: "2026-10-01T07:54:30.000Z",
       cpu_percent: 42,
       uptime_seconds: 900,
       agent_version: "0.3.0",

@@ -21,6 +21,7 @@ import { b64url, fromB64url } from "./passkeys";
 export const DEPLOY_SINCE = "0.2.0";
 const QUORUM_SINCE = "0.3.0";
 const RESTART_SINCE = "0.2.2";
+const UV_SINCE = "0.3.1";
 const VERSION = /^\d+\.\d+\.\d+$/u;
 const CHANGE_MS = 24 * 3_600_000;
 
@@ -39,6 +40,7 @@ export interface FleetView {
 export interface Plan {
   core: TrustKeyRecord[] | null;
   passphrase: PassphraseKeyRecord | null;
+  requireUv?: true;
   access: Record<string, string[]>;
 }
 
@@ -121,11 +123,17 @@ const sameSet = (a: string[], b: string[]) =>
 export const trustedServers = (view: FleetView) =>
   view.servers.filter((server) => (server.trust?.core.length ?? 0) > 0);
 
+export const fingerprintsRequired = (view: FleetView) =>
+  view.servers.some((server) => server.trust?.requireUv === true);
+
 export function serverState(view: FleetView, server: FleetServer): ServerState {
   if (!speaksQuorum(server.node)) return "update";
   if (!server.trust || server.trust.core.length === 0) return "empty";
   const core = coreOf(view).map((device) => device.fingerprint);
   if (!sameSet(server.trust.core, core)) return "behind";
+  if (fingerprintsRequired(view)) {
+    return server.trust.requireUv ? "current" : "behind";
+  }
   if (view.passphrase && !server.trust.passphrase) return "behind";
   return "current";
 }
@@ -158,6 +166,7 @@ export function buildChange(
     expiresAt: new Date(now + CHANGE_MS).toISOString(),
     core: plan.core,
     passphrase: plan.passphrase,
+    ...(plan.requireUv ? { requireUv: true as const } : {}),
     access: plan.access,
   };
   return b64url(new TextEncoder().encode(JSON.stringify(change)));
@@ -216,13 +225,6 @@ export function removeChange(view: FleetView, device: DeviceRecord): Plan {
   };
 }
 
-export function passphraseChange(
-  view: FleetView,
-  passphrase: PassphraseKey,
-): Plan {
-  return { core: null, passphrase, access: currentAccess(view) };
-}
-
 export function accessChange(
   view: FleetView,
   desired: Record<string, string[]>,
@@ -240,14 +242,47 @@ export function accessChange(
 }
 
 export function syncChange(view: FleetView): Plan {
+  const ruled = fingerprintsRequired(view);
   const missing = trustedServers(view).some(
     (server) => view.passphrase && !server.trust?.passphrase,
   );
   return {
     core: coreOf(view).map(keyOf),
-    passphrase: missing ? view.passphrase : null,
+    passphrase: !ruled && missing ? view.passphrase : null,
+    ...(ruled && trustedServers(view).some((server) => !server.trust?.requireUv)
+      ? { requireUv: true as const }
+      : {}),
     access: currentAccess(view),
   };
+}
+
+export function requireUvChange(view: FleetView): Plan {
+  const keep = coreOf(view).filter((device) => device.verifies !== false);
+  const ids = keep.map((device) => device.id);
+  return {
+    core: keep.map(keyOf),
+    passphrase: null,
+    requireUv: true,
+    access: Object.fromEntries(
+      Object.entries(currentAccess(view)).map(([nodeId, list]) => [
+        nodeId,
+        list.filter((id) => ids.includes(id)),
+      ]),
+    ),
+  };
+}
+
+export function uvBlocker(view: FleetView): string | null {
+  const old = view.servers.filter(
+    (server) => !atLeast(server.node.agent_version, UV_SINCE),
+  );
+  if (old.length > 0) {
+    return `Update ${old.map((server) => server.node.name).join(", ")} to agent ${UV_SINCE} first.`;
+  }
+  if (!coreOf(view).some((device) => device.verifies !== false)) {
+    return "Add a device that verifies a fingerprint first, such as your phone or a security key.";
+  }
+  return null;
 }
 
 export function firstTrusts(
@@ -262,10 +297,12 @@ export function firstTrusts(
       ? known
       : view.devices.filter((device) => device.id === founder);
   const access = core.length < 2 ? core.map((device) => device.id) : [];
+  const ruled = fingerprintsRequired(view);
   return nodeIds.map((nodeId) =>
     buildChange(view, {
       core: core.map(keyOf),
-      passphrase: view.passphrase,
+      passphrase: ruled ? null : view.passphrase,
+      ...(ruled ? { requireUv: true as const } : {}),
       access: { [nodeId]: access },
       version: 1,
       now,
@@ -300,6 +337,7 @@ export function describeChange(
     change: {
       core: change.core?.map((key) => key.id) ?? null,
       passphrase,
+      requireUv: change.requireUv === true && !fingerprintsRequired(view),
       access: change.access,
     },
   });
@@ -324,9 +362,14 @@ export function predictMissing(
           change.passphrase !== null &&
           (!trust?.passphrase ||
             change.passphrase.publicKey !== view.passphrase?.publicKey),
+        requireUv: change.requireUv === true && !trust?.requireUv,
         access,
       },
-      approvals: approvers.map((id) => ({ id, verified: true })),
+      approvals: approvers.map((id) => ({
+        id,
+        verified: true,
+        uv: view.devices.find((device) => device.id === id)?.verifies !== false,
+      })),
     });
     if (!result.ok) return result.reason;
   }

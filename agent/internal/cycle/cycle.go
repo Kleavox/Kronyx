@@ -23,6 +23,7 @@ type Cycle interface {
 
 type Updater interface {
 	Request(version, requestedAt string) error
+	Failure() *reporter.UpdateFailure
 }
 
 type Actions interface {
@@ -59,6 +60,9 @@ func (cycle *implementation) Execute(ctx context.Context, nodeID string) (int, e
 		return 0, fmt.Errorf("collect metrics: %w", err)
 	}
 	beat := reporter.Heartbeat{NodeID: nodeID, Host: cycle.host, Metrics: snapshot}
+	if cycle.updates != nil {
+		beat.Update = cycle.updates.Failure()
+	}
 	interval := 0
 	if cycle.config != nil {
 		beat.Results = checks.RunAll(ctx, cycle.config.Checks)

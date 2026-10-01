@@ -58,9 +58,17 @@ done
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+fetch() {
+  curl -fsSL --retry 5 --retry-delay 3 --speed-limit 1024 --speed-time 60 "$1" -o "$2"
+}
+
 echo "Downloading $artifact"
-curl -fsSL "$base/$artifact" -o "$tmp/$artifact"
-curl -fsSL "$base/$artifact.sha256" -o "$tmp/$artifact.sha256"
+if command -v gzip >/dev/null 2>&1 && fetch "$base/$artifact.gz" "$tmp/$artifact.gz" 2>/dev/null; then
+  gzip -dc "$tmp/$artifact.gz" >"$tmp/$artifact"
+else
+  fetch "$base/$artifact" "$tmp/$artifact"
+fi
+fetch "$base/$artifact.sha256" "$tmp/$artifact.sha256"
 (cd "$tmp" && sha256sum -c "$artifact.sha256" >/dev/null)
 install -m 0755 "$tmp/$artifact" "$bin"
 

@@ -1,6 +1,8 @@
 import type { NodeRecord } from "../types";
 
-const UPDATE_TIMEOUT_MS = 10 * 60_000;
+const ATTEMPT_MS = 15 * 60_000;
+const SILENT_MS = 20 * 60_000;
+export const UPDATE_ATTEMPTS = 3;
 const VERSION = /^\d+\.\d+\.\d+$/u;
 
 export type AgentState =
@@ -19,7 +21,10 @@ export function compareVersions(a: string, b: string): number {
 export function agentState(
   node: Pick<
     NodeRecord,
-    "agent_version" | "update_requested_version" | "update_requested_at"
+    | "agent_version"
+    | "update_requested_version"
+    | "update_requested_at"
+    | "update_attempts"
   >,
   latest: string | null,
   now: number,
@@ -32,9 +37,25 @@ export function agentState(
     VERSION.test(version) &&
     compareVersions(version, requested) >= 0;
   if (requested && !passed) {
-    const at = Date.parse(node.update_requested_at ?? "");
-    return now - at < UPDATE_TIMEOUT_MS ? "updating" : "failed";
+    const elapsed = now - Date.parse(node.update_requested_at ?? "");
+    const last = (node.update_attempts ?? 1) >= UPDATE_ATTEMPTS;
+    return elapsed >= SILENT_MS || (last && elapsed >= ATTEMPT_MS)
+      ? "failed"
+      : "updating";
   }
   if (!latest || !version || !VERSION.test(version)) return "unknown";
   return compareVersions(version, latest) >= 0 ? "current" : "available";
+}
+
+export const LIVE_ONLY_VERSION = "0.3.1";
+
+export function needsOldPath<T extends Pick<NodeRecord, "agent_version">>(
+  nodes: T[],
+): T[] {
+  return nodes.filter(
+    (node) =>
+      !node.agent_version ||
+      !VERSION.test(node.agent_version) ||
+      compareVersions(node.agent_version, LIVE_ONLY_VERSION) < 0,
+  );
 }

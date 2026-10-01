@@ -15,5 +15,4 @@ export interface Env {
   KRY_D1_ID?: string;
   KRY_SCRIPTS?: string;
   FLEET?: DurableObjectNamespace;
-  AGENT_STREAM?: string;
 }

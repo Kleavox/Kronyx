@@ -1,0 +1,2 @@
+ALTER TABLE nodes ADD COLUMN update_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE nodes ADD COLUMN update_error TEXT;

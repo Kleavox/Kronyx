@@ -2,12 +2,14 @@ import { compareVersions } from "../agent/releases";
 import { fingerprint } from "../lib/webauthn";
 
 const QUORUM_SINCE = "0.3.0";
+const UV_SINCE = "0.3.1";
 
 export interface TrustReport {
   version: number;
   core: string[];
   access: string[];
   passphrase: boolean;
+  requireUv: boolean;
 }
 
 interface FleetDevice {
@@ -40,6 +42,7 @@ export interface Fleet {
   nodes: FleetNode[];
   core: string[];
   passphrase: PassphraseRecord | null;
+  requireUv: boolean;
   ids: (prints: string[]) => string[];
 }
 
@@ -55,6 +58,7 @@ export function readReport(text: string | null): TrustReport | null {
         core: parsed.keys,
         access: parsed.keys,
         passphrase: false,
+        requireUv: false,
       };
     }
     return {
@@ -62,20 +66,21 @@ export function readReport(text: string | null): TrustReport | null {
       core: parsed.core ?? [],
       access: parsed.access ?? [],
       passphrase: parsed.passphrase ?? false,
+      requireUv: parsed.requireUv ?? false,
     };
   } catch {
     return null;
   }
 }
 
-export function speaksQuorum(node: FleetNode): boolean {
-  const version = node.agentVersion;
-  return (
-    version !== null &&
-    /^\d+\.\d+\.\d+$/u.test(version) &&
-    compareVersions(version, QUORUM_SINCE) >= 0
-  );
-}
+const atLeast = (node: FleetNode, since: string) =>
+  node.agentVersion !== null &&
+  /^\d+\.\d+\.\d+$/u.test(node.agentVersion) &&
+  compareVersions(node.agentVersion, since) >= 0;
+
+export const speaksQuorum = (node: FleetNode) => atLeast(node, QUORUM_SINCE);
+
+export const speaksUv = (node: FleetNode) => atLeast(node, UV_SINCE);
 
 export async function loadFleet(
   db: D1Database,
@@ -153,6 +158,7 @@ export async function loadFleet(
           publicKey: passphrase.public_key,
         }
       : null,
+    requireUv: listedNodes.some((node) => node.report?.requireUv),
     ids,
   };
 }

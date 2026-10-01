@@ -3,8 +3,7 @@ import type { Env } from "../env";
 import type { KrynodesContext } from "../routes/shared";
 import type { LiveNode } from "./stream";
 
-export const streamsOn = (env: Env) =>
-  Boolean(env.FLEET) && env.AGENT_STREAM !== "off";
+export const streamsOn = (env: Env) => Boolean(env.FLEET);
 
 export function hubFor(env: Env, ownerId: string) {
   const namespace = env.FLEET!;
@@ -82,6 +81,7 @@ export function mergeLive<T extends NodeRow>(
     return {
       ...row,
       last_seen_at: sqliteTime(entry.lastSeen),
+      connected_at: new Date(entry.connectedAt).toISOString(),
       agent_version: entry.agentVersion,
       hostname: entry.hostname,
       cpu_percent: entry.metrics.cpuPercent,

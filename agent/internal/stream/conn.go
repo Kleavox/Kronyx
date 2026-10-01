@@ -28,7 +28,11 @@ const (
 	maxMessage     = 1 << 20
 )
 
-var ErrStreamOff = errors.New("the server has live connections turned off")
+type closeError struct{ code int }
+
+func (e *closeError) Error() string {
+	return fmt.Sprintf("closed with code %d", e.code)
+}
 
 type conn struct {
 	rwc       io.ReadWriteCloser
@@ -71,10 +75,6 @@ func dial(ctx context.Context, endpoint, token, version string) (*conn, error) {
 	response, err := dialer.Do(request)
 	if err != nil {
 		return nil, err
-	}
-	if response.StatusCode == http.StatusNotFound {
-		response.Body.Close()
-		return nil, ErrStreamOff
 	}
 	if response.StatusCode != http.StatusSwitchingProtocols {
 		response.Body.Close()
@@ -171,7 +171,11 @@ func (c *conn) readMessage() ([]byte, error) {
 			continue
 		case opClose:
 			c.write(opClose, payload)
-			return nil, io.EOF
+			code := 1005
+			if len(payload) >= 2 {
+				code = int(binary.BigEndian.Uint16(payload[:2]))
+			}
+			return nil, &closeError{code: code}
 		case opText, opBinary:
 			message = append([]byte(nil), payload...)
 			reading = true

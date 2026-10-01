@@ -26,6 +26,7 @@ export const trustChangeSchema = z
     expiresAt: z.string().datetime(),
     core: z.array(trustKeySchema).min(1).max(20).nullable(),
     passphrase: passphraseKeySchema.nullable(),
+    requireUv: z.literal(true).optional(),
     access: z.record(z.string().uuid(), z.array(credential).max(20)),
   })
   .refine((change) => {

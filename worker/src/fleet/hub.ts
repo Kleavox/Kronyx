@@ -1,3 +1,4 @@
+import { receiveReport } from "../actions/report";
 import { heartbeatActions } from "../actions/store";
 import {
   acceptResults,
@@ -5,13 +6,15 @@ import {
   heartbeatResponse,
   heartbeatStatements,
   insertWindow,
+  updateRetry,
   loadAgentConfig,
   resultStatements,
   type AgentNode,
 } from "../agent/ingest";
 import { windowStart } from "../agent/windows";
 import type { Env } from "../env";
-import { heartbeatSchema } from "../schemas";
+import { actionsSchema, heartbeatSchema } from "../schemas";
+import { agentConfigResponseSchema } from "@krynodes/protocol";
 import {
   drain,
   fold,
@@ -23,7 +26,12 @@ import {
   type StreamState,
 } from "./stream";
 
-const invalid = JSON.stringify({ type: "error", code: "INVALID_MESSAGE" });
+const NODE_SQL = `SELECT id, interval_seconds, update_requested_version, update_requested_at,
+         update_attempts, update_error, inventory_hash, refresh_requested_at
+  FROM nodes
+  WHERE id = ? AND enrolled_at IS NOT NULL AND disabled_at IS NULL`;
+
+type Reply = (message: Record<string, unknown>) => void;
 
 export class FleetHub {
   private readonly ctx: DurableObjectState;
@@ -102,26 +110,71 @@ export class FleetHub {
           : new TextDecoder().decode(message),
       );
     } catch {
-      ws.send(invalid);
+      ws.send(JSON.stringify({ type: "error", code: "INVALID_MESSAGE" }));
       return;
     }
+    const envelope = (body ?? {}) as {
+      id?: unknown;
+      type?: unknown;
+      heartbeat?: unknown;
+      report?: unknown;
+    };
+    const id = typeof envelope.id === "number" ? envelope.id : undefined;
+    const reply: Reply = (answer) =>
+      ws.send(JSON.stringify(id === undefined ? answer : { id, ...answer }));
+    const invalid = () => reply({ type: "error", code: "INVALID_MESSAGE" });
     const state = ws.deserializeAttachment() as StreamState;
-    const envelope = body as { type?: unknown; heartbeat?: unknown };
-    const parsed = heartbeatSchema.safeParse(envelope.heartbeat);
-    if (
-      envelope.type !== "heartbeat" ||
-      !parsed.success ||
-      parsed.data.nodeId !== state.nodeId
-    ) {
-      ws.send(invalid);
-      return;
-    }
     try {
-      await this.heartbeat(ws, state, parsed.data);
+      if (envelope.type === "heartbeat") {
+        const parsed = heartbeatSchema.safeParse(envelope.heartbeat);
+        if (!parsed.success || parsed.data.nodeId !== state.nodeId) {
+          invalid();
+          return;
+        }
+        await this.heartbeat(ws, state, parsed.data, reply);
+      } else if (envelope.type === "config") {
+        const node = await this.node(ws, state);
+        if (!node) return;
+        const agent = await loadAgentConfig(this.env.DB, node);
+        reply({
+          type: "config",
+          config: agentConfigResponseSchema.parse({
+            ...agent.config,
+            configVersion: agent.configVersion,
+          }),
+        });
+      } else if (envelope.type === "actions") {
+        const parsed = actionsSchema.safeParse(envelope.report);
+        if (!parsed.success || parsed.data.nodeId !== state.nodeId) {
+          invalid();
+          return;
+        }
+        const node = await this.node(ws, state);
+        if (!node) return;
+        reply({
+          type: "actions",
+          response: await receiveReport(
+            this.env.DB,
+            node,
+            parsed.data,
+            Date.now(),
+          ),
+        });
+      } else {
+        invalid();
+      }
     } catch (error) {
       console.error("[kry fleet]", error);
-      ws.send(JSON.stringify({ type: "error", code: "SERVER_ERROR" }));
+      reply({ type: "error", code: "SERVER_ERROR" });
     }
+  }
+
+  private async node(ws: WebSocket, state: StreamState) {
+    const node = await this.env.DB.prepare(NODE_SQL)
+      .bind(state.nodeId)
+      .first<AgentNode>();
+    if (!node) ws.close(4401, "Unknown or disabled server");
+    return node;
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
@@ -136,22 +189,14 @@ export class FleetHub {
     ws: WebSocket,
     current: StreamState,
     beat: Parameters<typeof fold>[1],
+    reply: Reply,
   ) {
     const db = this.env.DB;
     const now = Date.now();
-    const node = await db
-      .prepare(
-        `SELECT id, interval_seconds, update_requested_version, update_requested_at,
-                inventory_hash, refresh_requested_at
-         FROM nodes
-         WHERE id = ? AND enrolled_at IS NOT NULL AND disabled_at IS NULL`,
-      )
-      .bind(current.nodeId)
-      .first<AgentNode>();
-    if (!node) {
-      ws.close(4401, "Unknown or disabled server");
-      return;
-    }
+    const known = await this.node(ws, current);
+    if (!known) return;
+    const retried = updateRetry(db, known, beat, now);
+    const node = retried.node;
     let state: StreamState = { ...current, interval: node.interval_seconds };
     if (state.lastSeen === null) {
       const row = await db
@@ -174,6 +219,7 @@ export class FleetHub {
     if (folded.writeNode) {
       leading.push(...heartbeatStatements(db, node, beat, now, "stream"));
     }
+    leading.push(...retried.statements);
     await commit(
       this.env,
       node.id,
@@ -182,17 +228,15 @@ export class FleetHub {
     );
     const actions = await heartbeatActions(db, node.id, now);
     ws.serializeAttachment(folded.state);
-    ws.send(
-      JSON.stringify({
-        type: "heartbeat",
-        response: heartbeatResponse(
-          node,
-          agent.configVersion,
-          beat.agentVersion,
-          actions,
-        ),
-      }),
-    );
+    reply({
+      type: "heartbeat",
+      response: heartbeatResponse(
+        node,
+        agent.configVersion,
+        beat.agentVersion,
+        actions,
+      ),
+    });
   }
 
   private flushStatement(nodeId: string, flush: Flush) {

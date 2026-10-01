@@ -9,6 +9,7 @@ import (
 type quorumApproval struct {
 	ID       string `json:"id"`
 	Verified bool   `json:"verified"`
+	UV       bool   `json:"uv"`
 }
 
 type quorumInput struct {
@@ -19,6 +20,7 @@ type quorumInput struct {
 	Change struct {
 		Core              []string `json:"core"`
 		PassphraseChanged bool     `json:"passphraseChanged"`
+		RequireUV         bool     `json:"requireUv"`
 		Access            []string `json:"access"`
 	} `json:"change"`
 	Approvals []quorumApproval `json:"approvals"`
@@ -68,7 +70,7 @@ func evaluateQuorum(in quorumInput) error {
 		}
 	}
 	coreChanged := in.Change.Core != nil && !sameSet(in.Change.Core, in.Current.Core)
-	if coreChanged || in.Change.PassphraseChanged {
+	if coreChanged || in.Change.PassphraseChanged || in.Change.RequireUV {
 		need := min(2, len(in.Current.Core))
 		if len(approvers) < need {
 			missing := need - len(approvers)
@@ -77,6 +79,13 @@ func evaluateQuorum(in quorumInput) error {
 				plural = ""
 			}
 			return fmt.Errorf("needs %d more core device%s", missing, plural)
+		}
+	}
+	if in.Change.RequireUV {
+		for _, id := range core {
+			if !slices.ContainsFunc(in.Approvals, func(approval quorumApproval) bool { return approval.ID == id && approval.UV }) {
+				return errors.New("every core device that stays must approve with a fingerprint")
+			}
 		}
 	}
 	for _, id := range in.Change.Access {

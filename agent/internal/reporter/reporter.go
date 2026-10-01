@@ -31,6 +31,12 @@ type Heartbeat struct {
 	Host
 	Metrics metrics.Snapshot `json:"metrics"`
 	Results []CheckResult    `json:"results,omitempty"`
+	Update  *UpdateFailure   `json:"update,omitempty"`
+}
+
+type UpdateFailure struct {
+	Version string `json:"version"`
+	Message string `json:"message"`
 }
 
 type HeartbeatResponse struct {
@@ -86,6 +92,7 @@ type TrustReport struct {
 	Core       []string `json:"core"`
 	Access     []string `json:"access"`
 	Passphrase bool     `json:"passphrase"`
+	RequireUV  bool     `json:"requireUv,omitempty"`
 }
 
 type InventoryReport struct {
@@ -160,24 +167,6 @@ func (c *Client) Enroll(ctx context.Context, host Host) (Enrollment, error) {
 	var enrollment Enrollment
 	err := c.doJSON(ctx, http.MethodPost, "/api/agent/enroll", host, &enrollment)
 	return enrollment, err
-}
-
-func (c *Client) SendHeartbeat(ctx context.Context, heartbeat Heartbeat) (HeartbeatResponse, error) {
-	var response HeartbeatResponse
-	err := c.doJSON(ctx, http.MethodPost, "/api/agent/heartbeat", heartbeat, &response)
-	return response, err
-}
-
-func (c *Client) FetchConfig(ctx context.Context) (AgentConfig, error) {
-	var cfg AgentConfig
-	err := c.doJSON(ctx, http.MethodGet, "/api/agent/config", nil, &cfg)
-	return cfg, err
-}
-
-func (c *Client) PostActions(ctx context.Context, report ActionsReport) (ActionsResponse, error) {
-	var response ActionsResponse
-	err := c.doJSON(ctx, http.MethodPost, "/api/agent/actions", report, &response)
-	return response, err
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, input, output any) error {

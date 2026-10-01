@@ -110,6 +110,10 @@ jobs:
             done
           done
 
+      - name: Compress the binaries for slow links
+        if: steps.version.outputs.released == 'false'
+        run: gzip -9 -n -k krynodes-linux-amd64 krynodes-linux-arm64
+
       - name: Attest amd64 binary
         if: steps.version.outputs.released == 'false'
         uses: actions/attest-build-provenance@v4
@@ -138,7 +142,10 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: Krynodes Agent ${{ steps.version.outputs.version }}
+          draft: true
           files: |
+            agent/krynodes-linux-amd64.gz
+            agent/krynodes-linux-arm64.gz
             agent/krynodes-linux-amd64
             agent/krynodes-linux-amd64.sha256
             agent/krynodes-linux-amd64.sig
@@ -151,3 +158,10 @@ jobs:
             agent/krynode-linux-arm64
             agent/krynode-linux-arm64.sha256
             agent/krynode-linux-arm64.sig
+
+      - name: Publish the release once every file is uploaded
+        if: steps.version.outputs.released == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh release edit "$TAG" --repo "${{ github.repository }}" --draft=false --latest

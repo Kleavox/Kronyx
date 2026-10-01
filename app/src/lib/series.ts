@@ -54,6 +54,7 @@ export function layoutReportSlots<T extends { t: string }>(options: {
   slots: T[];
   slotSeconds: number;
   graceSeconds: number;
+  settleSeconds?: number;
   since: number | null;
   now: number;
   asOf?: number;
@@ -76,7 +77,8 @@ export function layoutReportSlots<T extends { t: string }>(options: {
       ? "received"
       : options.since === null || start + size <= options.since
         ? "none"
-        : reference - start < options.graceSeconds * 1000
+        : reference - start <
+            (options.graceSeconds + (options.settleSeconds ?? 0)) * 1000
           ? "pending"
           : "missed";
     return { start, state, sample };
@@ -91,7 +93,7 @@ export function layoutReportSlots<T extends { t: string }>(options: {
 export function untilWindowSettles(
   now: number,
   windowMs = 300_000,
-  settleMs = 15_000,
+  settleMs = 45_000,
 ): number {
   const settled = Math.floor((now - settleMs) / windowMs) * windowMs + settleMs;
   return settled + windowMs - now;

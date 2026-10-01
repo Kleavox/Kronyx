@@ -15,15 +15,17 @@ import {
   decodeChange,
   describeChange,
   fingerprint,
+  fingerprintsRequired,
   firstTrusts,
   formatPrint,
   nextVersion,
-  passphraseChange,
   predictMissing,
   removeChange,
+  requireUvChange,
   serverState,
   signersFor,
   syncChange,
+  uvBlocker,
   type FleetView,
 } from "./devices";
 
@@ -248,14 +250,6 @@ describe("changes", () => {
     expect(change.access).toEqual({ [N1]: ["laptop"], [N2]: ["laptop"] });
   });
 
-  it("sets the passphrase on every trusted server, access unchanged", () => {
-    expect(passphraseChange(two, PASS)).toEqual({
-      core: null,
-      passphrase: PASS,
-      access: { [N1]: ["laptop", "phone"], [N2]: ["laptop"] },
-    });
-  });
-
   it("changes access only on the servers that differ", () => {
     expect(
       accessChange(two, {
@@ -339,7 +333,12 @@ describe("changes", () => {
       title: "Change access on 1 server",
       access: [{ nodeId: N2, added: ["phone"], removed: [] }],
     });
-    const pass = buildChange(two, { ...passphraseChange(two, PASS), now: T });
+    const pass = buildChange(two, {
+      core: null,
+      passphrase: PASS,
+      access: { [N1]: ["laptop", "phone"], [N2]: ["laptop"] },
+      now: T,
+    });
     expect(describeChange(two, decodeChange(pass)!).title).toBe(
       "Set passphrase",
     );
@@ -373,5 +372,96 @@ describe("prediction", () => {
       "needs approval from another device with access here",
     );
     expect(predictMissing(fleet, grant, ["laptop"])).toBeNull();
+  });
+});
+
+describe("fingerprint rule", () => {
+  const touch = { ...laptop, verifies: false };
+  const ruled = (
+    core: DeviceRecord[],
+    access: DeviceRecord[],
+    version = 4,
+  ): NodeTrust => ({ ...trust(version, core, access), requireUv: true });
+  const before = view(
+    [touch, phone],
+    [
+      {
+        node: node(N1, "0.3.1"),
+        trust: trust(4, [touch, phone], [touch, phone], true),
+      },
+      { node: node(N2, "0.3.1"), trust: trust(4, [touch, phone], [touch]) },
+      { node: node(N3, "0.3.1"), trust: null },
+    ],
+    PASS,
+  );
+
+  it("turns the rule on by removing devices that only touch, everywhere", () => {
+    const plan = requireUvChange(before);
+    expect(plan.core?.map((key) => key.id)).toEqual(["phone"]);
+    expect(plan.passphrase).toBeNull();
+    expect(plan.requireUv).toBe(true);
+    expect(plan.access).toEqual({ [N1]: ["phone"], [N2]: [] });
+    expect(bytes(buildChange(before, { ...plan, now: T }))).toMatchObject({
+      requireUv: true,
+      passphrase: null,
+    });
+    expect(
+      describeChange(before, decodeChange(buildChange(before, plan))!).title,
+    ).toBe("Remove Laptop · Require fingerprint");
+  });
+
+  it("predicts the approvals the rule needs", () => {
+    const change = decodeChange(
+      buildChange(before, { ...requireUvChange(before), now: T }),
+    )!;
+    expect(predictMissing(before, change, ["laptop"])).toBe(
+      "needs 1 more core device",
+    );
+    expect(predictMissing(before, change, ["laptop", "phone"])).toBeNull();
+    const keeping = decodeChange(
+      buildChange(before, {
+        core: null,
+        passphrase: null,
+        requireUv: true,
+        access: { [N1]: ["laptop", "phone"], [N2]: ["laptop"] },
+        now: T,
+      }),
+    )!;
+    expect(predictMissing(before, keeping, ["laptop", "phone"])).toBe(
+      "every core device that stays must approve with a fingerprint",
+    );
+  });
+
+  it("says why the rule cannot be turned on yet", () => {
+    expect(uvBlocker(before)).toBeNull();
+    const old = view(
+      [touch, phone],
+      [{ node: node(N1, "0.3.0"), trust: trust(4, [touch, phone], [touch]) }],
+    );
+    expect(uvBlocker(old)).toBe("Update 11 to agent 0.3.1 first.");
+    const onlyTouch = view(
+      [touch],
+      [{ node: node(N1, "0.3.1"), trust: trust(4, [touch], [touch]) }],
+    );
+    expect(uvBlocker(onlyTouch)).toMatch(/^Add a device that verifies/u);
+  });
+
+  it("keeps the rule on new and lagging servers", () => {
+    const after = view(
+      [phone, tablet],
+      [
+        { node: node(N1, "0.3.1"), trust: ruled([phone], [phone], 5) },
+        { node: node(N2, "0.3.1"), trust: trust(4, [phone], [phone]) },
+        { node: node(N3, "0.3.1"), trust: null },
+      ],
+    );
+    expect(fingerprintsRequired(after)).toBe(true);
+    expect(fingerprintsRequired(before)).toBe(false);
+    expect(serverState(after, after.servers[1]!)).toBe("behind");
+    const sync = syncChange(after);
+    expect(sync.requireUv).toBe(true);
+    expect(sync.passphrase).toBeNull();
+    const [first] = firstTrusts(after, [N3], "phone", T);
+    expect(bytes(first!)).toMatchObject({ requireUv: true, passphrase: null });
   });
 });

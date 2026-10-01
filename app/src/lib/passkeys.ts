@@ -73,6 +73,19 @@ const random = (length: number) =>
 const NOT_TOUCHED =
   "The passkey was not touched. Try again and confirm on your device.";
 
+const NO_FINGERPRINT =
+  "This passkey did not confirm a fingerprint. Choose Use a phone, or use a security key.";
+
+export type Proof = Prove | "fingerprint" | null;
+
+export function nameFor(transports: string[], fallback: string): string {
+  if (transports.includes("hybrid")) return "Phone";
+  if (transports.some((item) => ["usb", "nfc", "ble"].includes(item))) {
+    return "Security key";
+  }
+  return fallback;
+}
+
 function requirePresent(
   authenticatorData: ArrayBuffer,
   attachment: string | null | undefined,
@@ -117,6 +130,7 @@ export async function registerDevice(
   rpId: string,
   user: { id: string; name: string },
   existing: string[],
+  options: { required?: boolean; guessed?: boolean } = {},
 ): Promise<DeviceInput> {
   const credential = (await navigator.credentials.create({
     publicKey: {
@@ -132,7 +146,7 @@ export async function registerDevice(
         { type: "public-key", alg: -257 },
       ],
       authenticatorSelection: {
-        userVerification: "preferred",
+        userVerification: options.required ? "required" : "preferred",
         residentKey: "preferred",
       },
       attestation: "none",
@@ -149,6 +163,11 @@ export async function registerDevice(
     response.getAuthenticatorData(),
     credential.authenticatorAttachment,
   );
+  if (options.required && !verifies) {
+    throw new Error(
+      "This passkey cannot verify a fingerprint. Choose Use a phone, or use a security key.",
+    );
+  }
   const publicKey = response.getPublicKey();
   if (!publicKey)
     throw new Error("This browser does not share the passkey's public key.");
@@ -157,7 +176,9 @@ export async function registerDevice(
   }
   return {
     id: credential.id,
-    name,
+    name: options.guessed
+      ? nameFor(response.getTransports?.() ?? [], name)
+      : name,
     alg: response.getPublicKeyAlgorithm(),
     publicKey: b64url(publicKey),
     verifies,
@@ -168,6 +189,7 @@ async function assert(
   challenge: Uint8Array<ArrayBuffer>,
   rpId: string,
   devices: string[],
+  required: boolean,
 ): Promise<{ assertion: Assertion; verified: boolean }> {
   const credential = (await navigator.credentials.get({
     publicKey: {
@@ -177,7 +199,7 @@ async function assert(
         type: "public-key" as const,
         id: fromB64url(id),
       })),
-      userVerification: "preferred",
+      userVerification: required ? "required" : "preferred",
       timeout: 120_000,
     },
   })) as PublicKeyCredential | null;
@@ -187,6 +209,7 @@ async function assert(
     response.authenticatorData,
     credential.authenticatorAttachment,
   );
+  if (required && !verified) throw new Error(NO_FINGERPRINT);
   if (credential.authenticatorAttachment !== "cross-platform") {
     remember(credential.id);
   }
@@ -205,15 +228,16 @@ async function approveBytes(
   bytes: Uint8Array<ArrayBuffer>,
   rpId: string,
   devices: string[],
-  prove: Prove | null,
+  prove: Proof,
   purpose: (credentialId: string) => string,
 ): Promise<Approval> {
   const { assertion, verified } = await assert(
     await sha256(bytes),
     rpId,
     devices,
+    prove === "fingerprint",
   );
-  if (verified || !prove) return assertion;
+  if (verified || !prove || prove === "fingerprint") return assertion;
   return {
     ...assertion,
     proof: await prove(purpose(assertion.credentialId), bytes),
@@ -224,7 +248,7 @@ export function approveChange(
   change: string,
   devices: string[],
   rpId: string,
-  prove: Prove | null = null,
+  prove: Proof = null,
 ): Promise<Approval> {
   return approveBytes(
     fromB64url(change),
@@ -235,10 +259,15 @@ export function approveChange(
   );
 }
 
+export function grantVerified(session: Session): boolean {
+  const flags = fromB64url(session.grant.authenticatorData)[32] ?? 0;
+  return (flags & 0x04) === 0x04;
+}
+
 export async function createSession(
   devices: string[],
   rpId: string,
-  prove: Prove | null = null,
+  prove: Proof = null,
   now = Date.now(),
 ): Promise<Session> {
   const pair = await crypto.subtle.generateKey(

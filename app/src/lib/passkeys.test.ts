@@ -9,6 +9,8 @@ import {
   signCommand,
   signTargets,
   approveChange,
+  grantVerified,
+  nameFor,
   thisBrowser,
 } from "./passkeys";
 
@@ -348,5 +350,109 @@ describe("passkeys", () => {
     await expect(
       registerDevice("Laptop", "kry.example.test", user, []),
     ).resolves.toMatchObject({ verifies: true });
+  });
+});
+
+describe("fingerprint rule", () => {
+  it("requires verification and refuses a touch-only answer", async () => {
+    const asked: CredentialRequestOptions[] = [];
+    const answer = (flags: number) =>
+      vi.stubGlobal("navigator", {
+        credentials: {
+          get: async (options: CredentialRequestOptions) => {
+            asked.push(options);
+            return {
+              id: "ZGV2aWNl",
+              authenticatorAttachment: "platform",
+              response: {
+                authenticatorData: authData(flags),
+                clientDataJSON: new TextEncoder().encode("{}").buffer,
+                signature: new Uint8Array([4, 5]).buffer,
+              },
+            };
+          },
+        },
+      });
+    answer(0x01);
+    await expect(
+      createSession(["ZGV2aWNl"], "kry.example.test", "fingerprint", T),
+    ).rejects.toThrow(/did not confirm a fingerprint/u);
+    expect(asked[0]?.publicKey?.userVerification).toBe("required");
+    await expect(
+      approveChange(
+        b64url(new Uint8Array([1])),
+        ["ZGV2aWNl"],
+        "kry.example.test",
+        "fingerprint",
+      ),
+    ).rejects.toThrow(/did not confirm a fingerprint/u);
+    answer(0x05);
+    const approval = await approveChange(
+      b64url(new Uint8Array([1])),
+      ["ZGV2aWNl"],
+      "kry.example.test",
+      "fingerprint",
+    );
+    expect(approval).not.toHaveProperty("proof");
+  });
+
+  it("names a passkey after where it lives and refuses a touch-only one", async () => {
+    expect(nameFor(["hybrid", "internal"], "Laptop")).toBe("Phone");
+    expect(nameFor(["usb"], "Laptop")).toBe("Security key");
+    expect(nameFor(["nfc"], "Phone")).toBe("Security key");
+    expect(nameFor(["internal"], "Laptop")).toBe("Laptop");
+    const created = (flags: number, transports: string[]) => ({
+      create: async (options: CredentialCreationOptions) => {
+        expect(
+          options.publicKey?.authenticatorSelection?.userVerification,
+        ).toBe("required");
+        return {
+          id: "bmV3",
+          authenticatorAttachment: "cross-platform",
+          response: {
+            getAuthenticatorData: () => authData(flags),
+            getPublicKey: () => new Uint8Array([9, 9]).buffer,
+            getPublicKeyAlgorithm: () => -7,
+            getTransports: () => transports,
+          },
+        };
+      },
+    });
+    const user = { id: "operator", name: "operator" };
+    vi.stubGlobal("navigator", { credentials: created(0x01, ["internal"]) });
+    await expect(
+      registerDevice("Laptop", "kry.example.test", user, [], {
+        required: true,
+        guessed: true,
+      }),
+    ).rejects.toThrow(/cannot verify a fingerprint/u);
+    vi.stubGlobal("navigator", { credentials: created(0x05, ["hybrid"]) });
+    await expect(
+      registerDevice("Laptop", "kry.example.test", user, [], {
+        required: true,
+        guessed: true,
+      }),
+    ).resolves.toMatchObject({ name: "Phone", verifies: true });
+  });
+});
+
+describe("sessions under the fingerprint rule", () => {
+  it("knows whether a session's grant proved a fingerprint", async () => {
+    authenticator(0x01);
+    const touched = await createSession(
+      ["ZGV2aWNl"],
+      "kry.example.test",
+      null,
+      T,
+    );
+    authenticator(0x05);
+    const verified = await createSession(
+      ["ZGV2aWNl"],
+      "kry.example.test",
+      null,
+      T,
+    );
+    expect(grantVerified(touched)).toBe(false);
+    expect(grantVerified(verified)).toBe(true);
   });
 });

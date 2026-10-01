@@ -8,7 +8,12 @@ import {
   subscribe,
   withPrompt,
 } from "@/lib/deploy-session";
-import { createSession, type Prove, type Session } from "@/lib/passkeys";
+import {
+  createSession,
+  grantVerified,
+  type Proof,
+  type Session,
+} from "@/lib/passkeys";
 
 export function useDeploySession() {
   const state = useSyncExternalStore(
@@ -18,10 +23,14 @@ export function useDeploySession() {
   );
   const open = async (
     devices: string[],
-    prove: Prove | null = null,
+    prove: Proof = null,
   ): Promise<Session> => {
     const current = activeSession();
-    if (current && devices.includes(current.grant.credentialId)) {
+    if (
+      current &&
+      devices.includes(current.grant.credentialId) &&
+      (prove !== "fingerprint" || grantVerified(current))
+    ) {
       return current;
     }
     const session = await withPrompt(() =>

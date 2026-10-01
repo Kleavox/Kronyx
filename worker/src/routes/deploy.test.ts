@@ -239,6 +239,7 @@ describe("compose actions", () => {
       core: ["0123456789abcdef"],
       access: [],
       passphrase: true,
+      requireUv: false,
     });
     expect(body.nodes!.find((node) => node.id === B)!.trust).toBeNull();
   });
