@@ -165,9 +165,9 @@ export type ServiceState = "running" | "stopped" | "failed" | "starting";
 export type ServiceAction = "start" | "stop" | "restart";
 export type ActionKind = ServiceKind | "compose" | "trust" | "host";
 export type ActionVerb =
-  ServiceAction | "deploy" | "rollback" | "trust" | "reboot";
+  ServiceAction | "deploy" | "rollback" | "trust" | "reboot" | "logs";
 export type BatchMode = "rolling" | "parallel";
-type ActionStatus =
+export type ActionStatus =
   "queued" | "sent" | "done" | "failed" | "expired" | "cancelled" | "skipped";
 
 export interface ServiceEntry {
@@ -253,6 +253,7 @@ export interface ActionRecord {
   name: string;
   action: ActionVerb;
   status: ActionStatus;
+  requestedBy: string;
   requestedAt: string;
   deliverableAt: string | null;
   sentAt: string | null;

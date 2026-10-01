@@ -5,6 +5,7 @@ import { CHECK_LIMIT } from "../agent/ingest";
 import { readAgentRelease } from "../agent/releases";
 import { fleetLive, mergeLive, pokeSoon } from "../fleet/client";
 import { validateCheckTarget } from "../lib/checks";
+import { confirmed } from "../trust/intent";
 import {
   agentOrigin,
   findOwnedNode,
@@ -105,6 +106,8 @@ export function registerAdminRoutes(
   app.delete("/api/nodes/:id", requireAdmin, async (context) => {
     const node = await ownedNode(context);
     if (!node) return context.json({ code: "NOT_FOUND" }, 404);
+    const refused = await confirmed(context, "node.delete", node.id);
+    if (refused) return refused;
     await context.env.DB.prepare("DELETE FROM nodes WHERE id = ?")
       .bind(context.req.param("id"))
       .run();
@@ -230,6 +233,10 @@ export function registerAdminRoutes(
       kind !== check.kind ||
       target !== check.target ||
       nodeId !== check.node_id;
+    if (fresh) {
+      const refused = await confirmed(context, "check.change", check.id);
+      if (refused) return refused;
+    }
 
     const updates: string[] = [];
     const values: unknown[] = [];
@@ -283,6 +290,8 @@ export function registerAdminRoutes(
   app.delete("/api/checks/:id", requireAdmin, async (context) => {
     const check = await ownedCheck(context);
     if (!check) return context.json({ code: "NOT_FOUND" }, 404);
+    const refused = await confirmed(context, "check.delete", check.id);
+    if (refused) return refused;
     await context.env.DB.prepare("DELETE FROM checks WHERE id = ?")
       .bind(check.id)
       .run();

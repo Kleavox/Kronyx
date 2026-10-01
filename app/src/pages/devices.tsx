@@ -33,7 +33,8 @@ import {
   approvalLine,
   type Review,
 } from "@/features/devices/approval-dialog";
-import { BigPrint, failure, plural, when } from "@/features/devices/parts";
+import { BigPrint, plural, when } from "@/features/devices/parts";
+import { failure } from "@/lib/proof";
 import { useFleet, type Fleet } from "@/features/devices/use-fleet";
 import {
   useCancelProposal,

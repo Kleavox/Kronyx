@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 
+import { announceSoon } from "./fleet/client";
 import { securityHeaders } from "./lib/security-headers";
 import {
   requireGuardInProduction,
@@ -13,6 +14,7 @@ import { registerDeviceRoutes } from "./routes/devices";
 import { registerProposalRoutes } from "./routes/proposals";
 import { registerCheckResultRoutes } from "./routes/check-results";
 import { registerEnrollmentRoutes } from "./routes/enrollments";
+import { registerLiveRoutes } from "./routes/live";
 import { registerMetricRoutes } from "./routes/metrics";
 import { registerServiceRoutes } from "./routes/services";
 import { registerUsageRoutes } from "./usage/usage";
@@ -47,7 +49,34 @@ app.get("/api/session", async (context) => {
     : context.json({ authenticated: false, via });
 });
 
+const MUTATIONS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+const topicsFor = (path: string) =>
+  path.startsWith("/api/checks")
+    ? ["checks"]
+    : path.startsWith("/api/actions")
+      ? ["actions"]
+      : path.startsWith("/api/services")
+        ? ["services"]
+        : ["all"];
+
+app.use("/api/*", async (context, next) => {
+  await next();
+  if (
+    !MUTATIONS.has(context.req.method) ||
+    context.req.path.startsWith("/api/agent/") ||
+    context.res.status >= 400
+  ) {
+    return;
+  }
+  const identity = context.get("identity");
+  if (identity) {
+    announceSoon(context, identity.id, topicsFor(context.req.path));
+  }
+});
+
 registerAdminRoutes(app, requireOperator);
+registerLiveRoutes(app, requireOperator);
 registerMetricRoutes(app, requireOperator);
 registerCheckResultRoutes(app, requireOperator);
 registerEnrollmentRoutes(app, requireOperator);

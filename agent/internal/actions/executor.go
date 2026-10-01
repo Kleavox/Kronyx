@@ -81,7 +81,9 @@ func (e Executor) Execute(ctx context.Context) error {
 				return err
 			}
 			result := e.refuse(item.id, item.refusal)
-			if item.refusal == nil {
+			if item.refusal == nil && item.request.Action == "logs" {
+				result = e.logs(ctx, item.request, snapshot)
+			} else if item.refusal == nil {
 				switch item.request.Kind {
 				case "trust":
 					result = e.trustChange(item.request)

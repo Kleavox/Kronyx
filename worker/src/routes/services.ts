@@ -1,5 +1,7 @@
 import { pokeSoon } from "../fleet/client";
 import {
+  LOGS_AGENT,
+  compareVersions,
   isProtectedTarget,
   isValidTarget,
   signedCommandSchema,
@@ -26,7 +28,15 @@ import {
 const RECENT_MS = 24 * 3_600_000;
 
 const actionRequestSchema = z.object({
-  action: z.enum(["start", "stop", "restart", "deploy", "rollback", "reboot"]),
+  action: z.enum([
+    "start",
+    "stop",
+    "restart",
+    "deploy",
+    "rollback",
+    "reboot",
+    "logs",
+  ]),
   mode: z.enum(["rolling", "parallel"]).default("rolling"),
   targets: z
     .array(
@@ -66,6 +76,7 @@ function toActionRecord(row: ActionRow) {
     name: row.name,
     action: row.action,
     status: row.status,
+    requestedBy: row.requested_by,
     requestedAt: row.requested_at,
     deliverableAt: row.deliverable_at,
     sentAt: row.sent_at,
@@ -168,8 +179,21 @@ export function registerServiceRoutes(
             system: service.system === 1,
           })),
       })),
-      actions: actions.results.map(toActionRecord),
+      actions: actions.results.map((row) =>
+        toActionRecord(row.action === "logs" ? { ...row, output: null } : row),
+      ),
     });
+  });
+
+  app.get("/api/actions/:id", requireOperator, async (context) => {
+    const row = await context.env.DB.prepare(
+      `SELECT * FROM actions WHERE id = ?
+         AND node_id IN (SELECT id FROM nodes WHERE owner_user_id = ?)`,
+    )
+      .bind(context.req.param("id"), context.get("identity").id)
+      .first<ActionRow>();
+    if (!row) return context.json({ code: "NOT_FOUND" }, 404);
+    return context.json({ action: toActionRecord(row) });
   });
 
   app.get("/api/nodes/:id/actions", requireOperator, async (context) => {
@@ -182,7 +206,7 @@ export function registerServiceRoutes(
     await db.batch(sweepStatements(db, Date.now()));
     const rows = await db
       .prepare(
-        `SELECT * FROM actions WHERE node_id = ?
+        `SELECT * FROM actions WHERE node_id = ? AND action <> 'logs'
          ORDER BY requested_at DESC, position DESC LIMIT 10`,
       )
       .bind(node.id)
@@ -196,12 +220,13 @@ export function registerServiceRoutes(
     const { action, mode, targets } = parsed.data;
     const compose = action === "deploy" || action === "rollback";
     const reboot = action === "reboot";
+    const logs = action === "logs";
     if (
       new Set(targets.map(targetKey)).size !== targets.length ||
       targets.some(
         (target) =>
           !isValidTarget(target.kind, target.name) ||
-          (target.kind === "compose") !== compose ||
+          (!logs && (target.kind === "compose") !== compose) ||
           (target.kind === "host") !== reboot ||
           target.signed === undefined ||
           target.id === undefined,
@@ -232,7 +257,10 @@ export function registerServiceRoutes(
         400,
       );
     }
-    if (targets.some((target) => isProtectedTarget(target.kind, target.name))) {
+    if (
+      !logs &&
+      targets.some((target) => isProtectedTarget(target.kind, target.name))
+    ) {
       return context.json(
         {
           code: "PROTECTED_TARGET",
@@ -249,16 +277,31 @@ export function registerServiceRoutes(
     const nodeIds = JSON.stringify([...wanted]);
     const nodes = await db
       .prepare(
-        `SELECT id FROM nodes
+        `SELECT id, name, agent_version FROM nodes
          WHERE owner_user_id = ? AND enrolled_at IS NOT NULL AND disabled_at IS NULL
            AND id IN (SELECT value FROM json_each(?))`,
       )
       .bind(identity.id, nodeIds)
-      .all<{ id: string }>();
+      .all<{ id: string; name: string; agent_version: string | null }>();
     if (nodes.results.length !== wanted.size) {
       return context.json(
         { code: "NOT_FOUND", message: "A server was not found." },
         404,
+      );
+    }
+    const old = logs
+      ? nodes.results.find(
+          (node) =>
+            compareVersions(node.agent_version ?? "0.0.0", LOGS_AGENT) < 0,
+        )
+      : undefined;
+    if (old) {
+      return context.json(
+        {
+          code: "AGENT_TOO_OLD",
+          message: `Update the agent on ${old.name} to ${LOGS_AGENT} or newer to read logs.`,
+        },
+        422,
       );
     }
 
@@ -273,25 +316,35 @@ export function registerServiceRoutes(
     const [known, pending] = await Promise.all([
       reboot
         ? servers
-        : (compose
+        : (logs
             ? db
                 .prepare(
-                  `SELECT node_id AS nodeId, 'compose' AS kind, project AS name FROM stacks
-               WHERE node_id IN (SELECT value FROM json_each(?)) AND compose = 1
-                 AND (? = 'deploy' OR rollback = 1)`,
-                )
-                .bind(nodeIds, action)
-            : db
-                .prepare(
                   `SELECT node_id AS nodeId, kind, name FROM services
-               WHERE node_id IN (SELECT value FROM json_each(?))`,
+               WHERE node_id IN (SELECT value FROM json_each(?1))
+               UNION ALL
+               SELECT node_id AS nodeId, 'compose' AS kind, project AS name FROM stacks
+               WHERE node_id IN (SELECT value FROM json_each(?1)) AND compose = 1`,
                 )
                 .bind(nodeIds)
+            : compose
+              ? db
+                  .prepare(
+                    `SELECT node_id AS nodeId, 'compose' AS kind, project AS name FROM stacks
+               WHERE node_id IN (SELECT value FROM json_each(?)) AND compose = 1
+                 AND (? = 'deploy' OR rollback = 1)`,
+                  )
+                  .bind(nodeIds, action)
+              : db
+                  .prepare(
+                    `SELECT node_id AS nodeId, kind, name FROM services
+               WHERE node_id IN (SELECT value FROM json_each(?))`,
+                  )
+                  .bind(nodeIds)
           ).all<{ nodeId: string; kind: string; name: string }>(),
       db
         .prepare(
           `SELECT node_id AS nodeId, kind, name FROM actions
-           WHERE status IN ('queued', 'sent')
+           WHERE status IN ('queued', 'sent') AND action <> 'logs'
              AND node_id IN (SELECT value FROM json_each(?))`,
         )
         .bind(nodeIds)
@@ -308,7 +361,7 @@ export function registerServiceRoutes(
       );
     }
     const busy = new Set(pending.results.map(targetKey));
-    if (targets.some((target) => busy.has(targetKey(target)))) {
+    if (!logs && targets.some((target) => busy.has(targetKey(target)))) {
       return context.json(
         {
           code: "ACTION_PENDING",

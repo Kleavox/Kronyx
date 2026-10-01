@@ -7,6 +7,7 @@ import {
   actionCommand,
   fromB64url,
   signCommand,
+  signIntent,
   signTargets,
   approveChange,
   grantVerified,
@@ -454,5 +455,52 @@ describe("sessions under the fingerprint rule", () => {
     );
     expect(grantVerified(touched)).toBe(false);
     expect(grantVerified(verified)).toBe(true);
+  });
+});
+
+describe("dashboard intents", () => {
+  it("signs what is about to happen with the session key", async () => {
+    authenticator();
+    const session = await createSession(
+      ["ZGV2aWNl"],
+      "kry.example.test",
+      null,
+      T,
+    );
+    const header = await signIntent(
+      session,
+      "node.delete",
+      "n1",
+      "https://kry.example.test",
+      T + MINUTE,
+    );
+    const signed = decode(header) as {
+      grant: { grant: string };
+      command: string;
+      signature: string;
+    };
+    expect(signed.grant.grant).toBe(session.grant.grant);
+    expect(decode(signed.command)).toEqual({
+      v: 1,
+      op: "node.delete",
+      target: "n1",
+      at: new Date(T + MINUTE).toISOString(),
+      origin: "https://kry.example.test",
+    });
+    const key = await crypto.subtle.importKey(
+      "spki",
+      fromB64url(decode(session.grant.grant).sessionKey as string),
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["verify"],
+    );
+    expect(
+      await crypto.subtle.verify(
+        { name: "ECDSA", hash: "SHA-256" },
+        key,
+        fromB64url(signed.signature),
+        fromB64url(signed.command),
+      ),
+    ).toBe(true);
   });
 });

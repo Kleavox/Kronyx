@@ -228,9 +228,7 @@ describe("proposals", () => {
     expect(
       (JSON.parse(actions[0]!.signed) as { approvals: unknown[] }).approvals,
     ).toHaveLength(1);
-    expect(t.mail.map((message) => message.subject)).toEqual([
-      "[Krynodes] Applied: Admit Phone",
-    ]);
+    expect(t.mail).toEqual([]);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(t.pokes).toEqual([[A, B]]);
     await t.report(A, [laptop!, phone!], [laptop!, phone!], 2);
@@ -273,7 +271,6 @@ describe("proposals", () => {
     ).toHaveLength(2);
     expect(t.mail.map((message) => message.subject)).toEqual([
       "[Krynodes] Waiting for approval: Admit Tablet",
-      "[Krynodes] Applied: Admit Tablet",
     ]);
   });
 
@@ -417,7 +414,9 @@ describe("proposals", () => {
       [second.id!]: "cancelled",
       [late.id!]: "expired",
     });
-    expect(t.mail.at(-1)!.subject).toMatch(/^\[Krynodes\] Expired: /u);
+    expect(
+      t.mail.filter((message) => !message.subject.includes("Waiting")),
+    ).toEqual([]);
   });
 
   it("marks a device removed when a removal applies", async () => {

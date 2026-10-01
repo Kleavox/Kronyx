@@ -1,10 +1,7 @@
 import type { AgentHeartbeat, CheckResult } from "@krynodes/protocol";
 
 import type { Env } from "../env";
-import {
-  createIncidentNotifier,
-  type IncidentNotifier,
-} from "../incident/notify";
+import type { IncidentNotice } from "../incident/notify";
 import type { CheckKind } from "../lib/checks";
 import { sha256 } from "../lib/crypto";
 import { compareVersions } from "@krynodes/protocol";
@@ -279,6 +276,7 @@ export function resultStatements(
   checks: LiveCheck[],
   accepted: CheckResult[],
   now: number,
+  maintenance = false,
 ): Ingestion {
   const byId = new Map(checks.map((check) => [check.id, check]));
   if (accepted.length === 0) return { statements: [], transitions: [] };
@@ -292,7 +290,10 @@ export function resultStatements(
 
     const failures =
       result.status === "DOWN"
-        ? Math.min(check.consecutive_failures + 1, INCIDENT_THRESHOLD)
+        ? Math.min(
+            check.consecutive_failures + 1,
+            maintenance ? INCIDENT_THRESHOLD - 1 : INCIDENT_THRESHOLD,
+          )
         : 0;
     if (
       result.status === check.status &&
@@ -357,25 +358,22 @@ export async function commit(
   nodeId: string,
   leading: D1PreparedStatement[],
   ingestion: Ingestion,
-  notifier: IncidentNotifier = createIncidentNotifier(env),
-): Promise<void> {
+): Promise<IncidentNotice[]> {
   const statements = [
     ...leading,
     ...ingestion.statements,
     ...ingestion.transitions.map((transition) => transition.statement),
   ];
-  if (statements.length === 0) return;
+  if (statements.length === 0) return [];
   const results = await env.DB.batch(statements);
   const offset = leading.length + ingestion.statements.length;
-  for (const [index, transition] of ingestion.transitions.entries()) {
-    if ((results[offset + index]?.meta.changes ?? 0) > 0) {
-      await notifier({
-        nodeId,
-        checkName: transition.checkName,
-        kind: transition.kind,
-        summary: transition.summary,
-        occurredAt: transition.occurredAt,
-      });
-    }
-  }
+  return ingestion.transitions
+    .filter((_, index) => (results[offset + index]?.meta.changes ?? 0) > 0)
+    .map((transition) => ({
+      nodeId,
+      checkName: transition.checkName,
+      kind: transition.kind,
+      summary: transition.summary,
+      occurredAt: transition.occurredAt,
+    }));
 }

@@ -6,12 +6,8 @@ import { EmptyState } from "@/components/empty-state";
 import { FilterChips } from "@/components/filter-chips";
 import { MetricChart, type ChartRow } from "@/components/metric-chart";
 import { PageHeader } from "@/components/page-header";
-import {
-  StatusChip,
-  StatusDot,
-  checkTone,
-  nodeTone,
-} from "@/components/status";
+import { NodeStatus } from "@/components/node-status";
+import { StatusDot, checkTone } from "@/components/status";
 import { HeartbeatStrip, newestLatency } from "@/components/strips";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -44,6 +40,7 @@ import {
 } from "@/lib/format";
 import { usageLevel } from "@/lib/health";
 import { findGaps, seriesSummary, withGapBreaks } from "@/lib/series";
+import { maintenanceSpans, serverOperation } from "@/lib/operations";
 import { useNow } from "@/lib/use-now";
 import type { MetricRange, NodeMetrics, NodeRecord } from "@/types";
 
@@ -71,6 +68,7 @@ export function NodeDetailPage() {
   const overview = useOverview();
   const metrics = useNodeMetrics(id, range);
   const results = useCheckResults();
+  const services = useServices();
   const now = useNow(5_000);
 
   if (!overview.data) {
@@ -118,14 +116,10 @@ export function NodeDetailPage() {
         }
         title={node.name}
         meta={
-          <StatusChip
-            tone={nodeTone(state)}
-            label={state}
-            detail={
-              state === "offline"
-                ? `reported ${timeAgo(node.last_seen_at, now)}`
-                : undefined
-            }
+          <NodeStatus
+            state={state}
+            operation={serverOperation(node, services.data?.actions ?? [], now)}
+            offlineDetail={`reported ${timeAgo(node.last_seen_at, now)}`}
           />
         }
         actions={
@@ -255,6 +249,10 @@ export function NodeDetailPage() {
                         </span>
                       </span>
                       <HeartbeatStrip
+                        maintenance={maintenanceSpans(
+                          services.data?.actions ?? [],
+                          node.id,
+                        )}
                         results={results.data?.checks[check.id]?.results}
                         since={
                           check.enabled

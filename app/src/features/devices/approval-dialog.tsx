@@ -24,7 +24,8 @@ import { proverFor } from "@/lib/passphrase-prompt";
 import type { ProposalRecord } from "@/types";
 
 import { ChangeDetails } from "./change-details";
-import { failure, when } from "./parts";
+import { failure } from "@/lib/proof";
+import { when } from "./parts";
 import type { Fleet } from "./use-fleet";
 
 export interface Review {

@@ -13,7 +13,8 @@ import { pokeNodes } from "../fleet/client";
 import type { Env } from "../env";
 import { fromB64url } from "../lib/b64url";
 import { sendProposalEmail } from "../lib/mail";
-import { assertionUv, verifyAssertion, verifyProof } from "../lib/webauthn";
+import { assertionUv } from "../lib/webauthn";
+import { Refusal, verifyApproval } from "../trust/approval";
 import { agentCurrent, loadFleet, type Fleet } from "../trust/fleet";
 import {
   invalidRequest,
@@ -65,21 +66,6 @@ interface ProposalRow {
 const DAY_MS = 24 * 3_600_000;
 const SKEW_MS = 60_000;
 const MAX_OPEN = 5;
-
-class Refusal extends Error {
-  readonly status: 400 | 403 | 404 | 409 | 410 | 422;
-  readonly code: string;
-
-  constructor(
-    status: 400 | 403 | 404 | 409 | 410 | 422,
-    code: string,
-    message: string,
-  ) {
-    super(message);
-    this.status = status;
-    this.code = code;
-  }
-}
 
 function decodeChange(text: string): TrustChange | null {
   try {
@@ -240,84 +226,13 @@ function checkFingerprints(fleet: Fleet, change: TrustChange) {
   }
 }
 
-async function verifyApproval(
-  env: Env,
-  fleet: Fleet,
-  bytes: Uint8Array<ArrayBuffer>,
-  approval: Approval,
-) {
-  const device = fleet.devices.find(
-    (entry) => entry.id === approval.credentialId && entry.removedAt === null,
-  );
-  if (!device || !fleet.core.includes(device.id)) {
-    throw new Refusal(403, "NOT_CORE", "Only core devices approve changes.");
-  }
-  const origin = new URL(env.PUBLIC_ORIGIN);
-  let uv: boolean;
+async function notify(env: Env, fleet: Fleet, title: string, openedBy: string) {
   try {
-    ({ uv } = await verifyAssertion(device, approval, {
-      origin: origin.origin,
-      rpId: origin.hostname,
-      challenge: new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
-    }));
-  } catch (error) {
-    throw new Refusal(
-      400,
-      "BAD_APPROVAL",
-      `The approval did not verify: ${(error as Error).message}.`,
-    );
-  }
-  if (uv) return;
-  if (fleet.requireUv) {
-    throw new Refusal(
-      400,
-      "FINGERPRINT_NEEDED",
-      "This passkey did not confirm a fingerprint. Use your phone or a security key.",
-    );
-  }
-  if (!fleet.passphrase) return;
-  if (!approval.proof) {
-    throw new Refusal(
-      400,
-      "PASSPHRASE_NEEDED",
-      "This device cannot prove a fingerprint. Enter the passphrase.",
-    );
-  }
-  if (
-    !(await verifyProof(
-      fleet.passphrase.publicKey,
-      `approve:${approval.credentialId}`,
-      bytes,
-      approval.proof,
-    ))
-  ) {
-    throw new Refusal(400, "PASSPHRASE_WRONG", "The passphrase is wrong.");
-  }
-}
-
-async function notify(
-  env: Env,
-  state: "opened" | "applied" | "expired",
-  fleet: Fleet,
-  title: string,
-  openedBy: string,
-) {
-  try {
-    const detail = {
-      opened:
-        "A core device opened this change. It needs more approvals before it reaches your servers.",
-      applied:
-        "The change is on its way to your servers. They apply it within a minute.",
-      expired:
-        "Nobody approved this change within 24 hours, so it was dropped.",
-    }[state];
     await sendProposalEmail(env, {
-      state,
       title,
       openedBy:
         fleet.devices.find((device) => device.id === openedBy)?.name ??
         "an unknown device",
-      detail,
     });
   } catch (error) {
     console.error("[kry proposals]", error);
@@ -325,18 +240,12 @@ async function notify(
 }
 
 async function sweepExpired(env: Env, ownerId: string, now: number) {
-  const expired = await env.DB.prepare(
+  await env.DB.prepare(
     `UPDATE proposals SET status = 'expired', closed_at = ?
-     WHERE owner_user_id = ? AND status = 'open' AND expires_at < ?
-     RETURNING title, opened_by`,
+     WHERE owner_user_id = ? AND status = 'open' AND expires_at < ?`,
   )
     .bind(new Date(now).toISOString(), ownerId, new Date(now).toISOString())
-    .all<{ title: string; opened_by: string }>();
-  if (expired.results.length === 0) return;
-  const fleet = await loadFleet(env.DB, ownerId);
-  for (const row of expired.results) {
-    await notify(env, "expired", fleet, row.title, row.opened_by);
-  }
+    .run();
 }
 
 async function apply(
@@ -468,7 +377,6 @@ async function apply(
     );
   }
   await pokeNodes(env, input.ownerId, Object.keys(input.change.access));
-  await notify(env, "applied", input.fleet, input.title, input.openedBy);
 }
 
 export function registerProposalRoutes(
@@ -547,7 +455,13 @@ export function registerProposalRoutes(
         );
       }
       const bytes = fromB64url(parsed.data.change);
-      await verifyApproval(context.env, fleet, bytes, parsed.data.approval);
+      await verifyApproval(
+        context.env,
+        fleet,
+        bytes,
+        parsed.data.approval,
+        `approve:${parsed.data.approval.credentialId}`,
+      );
       const approvals = [parsed.data.approval];
       const id = crypto.randomUUID();
       const title = describe(fleet, change);
@@ -585,7 +499,7 @@ export function registerProposalRoutes(
           change.expiresAt,
         )
         .run();
-      await notify(context.env, "opened", fleet, title, openedBy);
+      await notify(context.env, fleet, title, openedBy);
       return context.json({ id, status: "open", missing: waiting }, 201);
     } catch (error) {
       return refused(context, error);
@@ -633,6 +547,7 @@ export function registerProposalRoutes(
         fleet,
         fromB64url(row.change),
         parsed.data.approval,
+        `approve:${parsed.data.approval.credentialId}`,
       );
       approvals.push(parsed.data.approval);
       const waiting = missing(fleet, change, approvals);

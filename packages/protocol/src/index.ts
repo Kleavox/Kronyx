@@ -12,7 +12,12 @@ export {
   type TrustKeyRecord,
 } from "./change";
 export { summarizeChange, type ChangeSummary } from "./summary";
-export { agentSupported, compareVersions, MIN_AGENT_VERSION } from "./versions";
+export {
+  agentSupported,
+  compareVersions,
+  LOGS_AGENT,
+  MIN_AGENT_VERSION,
+} from "./versions";
 export {
   evaluateQuorum,
   proofMessage,
@@ -114,6 +119,7 @@ export const agentActionSchema = z
       "rollback",
       "trust",
       "reboot",
+      "logs",
     ]),
     expiresAt: z.string().datetime(),
     signed: z.union([signedCommandSchema, signedTrustSchema]).optional(),
@@ -128,10 +134,10 @@ export const agentActionSchema = z
     }
     const allowed =
       action.kind === "compose"
-        ? ["deploy", "rollback"]
+        ? ["deploy", "rollback", "logs"]
         : action.kind === "host"
           ? ["reboot"]
-          : ["start", "stop", "restart"];
+          : ["start", "stop", "restart", "logs"];
     return (
       allowed.includes(action.action) &&
       signedCommandSchema.safeParse(action.signed).success
@@ -187,7 +193,7 @@ export const actionResultSchema = z.strictObject({
   id: z.string().uuid(),
   ok: z.boolean(),
   exitCode: z.number().int().nullable(),
-  output: z.string().max(2048),
+  output: z.string().max(65536),
   finishedAt: z.string().datetime(),
 });
 

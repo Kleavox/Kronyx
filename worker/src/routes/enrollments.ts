@@ -3,6 +3,7 @@ import type { MiddlewareHandler } from "hono";
 import type { Env } from "../env";
 import { randomToken, sha256 } from "../lib/crypto";
 import { loadFleet, type Fleet } from "../trust/fleet";
+import { confirmed } from "../trust/intent";
 import { agentOrigin, type KrynodesApp, type KrynodesEnv } from "./shared";
 
 const ENROLLMENT_TTL_MS = 30 * 60_000;
@@ -28,6 +29,9 @@ export function registerEnrollmentRoutes(
   requireOperator: MiddlewareHandler<KrynodesEnv>,
 ): void {
   app.post("/api/enrollments", requireOperator, async (context) => {
+    const fleet = await loadFleet(context.env.DB, context.get("identity").id);
+    const refused = await confirmed(context, "enrollment.create", "new", fleet);
+    if (refused) return refused;
     const id = crypto.randomUUID();
     const token = randomToken();
     const expiresAt = new Date(Date.now() + ENROLLMENT_TTL_MS).toISOString();
@@ -42,11 +46,7 @@ export function registerEnrollmentRoutes(
         id,
         enrollmentToken: token,
         enrollmentExpiresAt: expiresAt,
-        command: installCommand(
-          context.env,
-          token,
-          await loadFleet(context.env.DB, context.get("identity").id),
-        ),
+        command: installCommand(context.env, token, fleet),
       },
       201,
     );

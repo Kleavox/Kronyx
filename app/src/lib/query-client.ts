@@ -16,6 +16,7 @@ export const queryKeys = {
   checkResults: ["checks", "results"],
   services: ["services"],
   nodeActions: (id: string) => ["actions", "node", id],
+  action: (id: string | null) => ["actions", "one", id],
   incident: (id: string) => ["incidents", id],
   enrollment: (id: string) => ["enrollments", id],
   devices: ["devices"],

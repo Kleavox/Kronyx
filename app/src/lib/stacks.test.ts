@@ -97,6 +97,35 @@ describe("stacks", () => {
     ).toEqual(["listmonk"]);
   });
 
+  it("keeps reading logs out of a stack's last action", () => {
+    const entry = (id: string, action: "deploy" | "logs") => ({
+      id,
+      batchId: id,
+      position: 0,
+      mode: "rolling" as const,
+      nodeId: "n1",
+      kind: "compose" as const,
+      name: "listmonk",
+      action,
+      status: "done" as const,
+      requestedBy: "owner@example.test",
+      requestedAt: "2026-09-29T09:00:00.000Z",
+      deliverableAt: "2026-09-29T09:00:00.000Z",
+      deviceId: null,
+      sentAt: null,
+      finishedAt: null,
+      exitCode: null,
+      output: null,
+    });
+    const groups = groupStacks(
+      { ...data, actions: [entry("a1", "deploy"), entry("a2", "logs")] },
+      nodes,
+      "",
+    );
+    const listmonk = groups.find((group) => group.project === "listmonk")!;
+    expect(listmonk.members[0]!.action?.id).toBe("a1");
+  });
+
   it("offers rollback only when a version is kept", () => {
     const [, listmonk] = groupStacks(data, nodes, "");
     expect(listmonk!.members.map((member) => member.stack.rollback)).toEqual([
@@ -142,6 +171,7 @@ describe("stacks", () => {
       name: "listmonk",
       action: "deploy" as const,
       status: "sent" as const,
+      requestedBy: "owner@example.test",
       requestedAt: "2026-09-29T10:00:00.000Z",
       deliverableAt: "2026-09-29T10:00:00.000Z",
       sentAt: "2026-09-29T10:00:30.000Z",

@@ -1,5 +1,5 @@
 import { receiveReport } from "../actions/report";
-import { heartbeatActions } from "../actions/store";
+import { heartbeatActions, inMaintenance } from "../actions/store";
 import {
   acceptResults,
   commit,
@@ -13,6 +13,15 @@ import {
 } from "../agent/ingest";
 import { windowStart } from "../agent/windows";
 import type { Env } from "../env";
+import {
+  drain as drainMail,
+  emptyBox,
+  enqueue,
+  nextAlarm,
+  type IncidentNotice,
+  type MailBox,
+} from "../incident/notify";
+import { sendDigestEmail, sendServerEmail } from "../lib/mail";
 import { actionsSchema, heartbeatSchema } from "../schemas";
 import { agentConfigResponseSchema } from "@krynodes/protocol";
 import {
@@ -32,6 +41,12 @@ const NODE_SQL = `SELECT id, interval_seconds, update_requested_version, update_
   WHERE id = ? AND enrolled_at IS NOT NULL AND disabled_at IS NULL`;
 
 type Reply = (message: Record<string, unknown>) => void;
+
+const WATCH = "watch";
+const MAIL = "mail";
+
+const watching = (ws: WebSocket) =>
+  (ws.deserializeAttachment() as { watch?: boolean } | null)?.watch === true;
 
 export class FleetHub {
   private readonly ctx: DurableObjectState;
@@ -56,11 +71,29 @@ export class FleetHub {
       await this.accept(server!, nodeId, ownerId, interval);
       return new Response(null, { status: 101, webSocket: client });
     }
+    if (url.pathname === "/watch") {
+      const [client, server] = Object.values(new WebSocketPair());
+      await this.watch(server!);
+      return new Response(null, { status: 101, webSocket: client });
+    }
+    if (url.pathname === "/announce" && request.method === "POST") {
+      const body = (await request.json().catch(() => null)) as {
+        topics?: unknown;
+      } | null;
+      const topics = Array.isArray(body?.topics)
+        ? body.topics.filter(
+            (topic): topic is string => typeof topic === "string",
+          )
+        : [];
+      if (topics.length > 0) this.announce(topics);
+      return Response.json({ announced: topics.length > 0 });
+    }
     if (url.pathname === "/live") {
       return Response.json(
         liveView(
           this.ctx
             .getWebSockets()
+            .filter((ws) => !watching(ws))
             .map((ws) => ws.deserializeAttachment() as StreamState),
         ),
       );
@@ -98,10 +131,27 @@ export class FleetHub {
     ws.serializeAttachment(newState(nodeId, ownerId, interval));
   }
 
+  async watch(ws: WebSocket): Promise<void> {
+    this.ctx.acceptWebSocket(ws, [WATCH]);
+    ws.serializeAttachment({ watch: true });
+  }
+
+  announce(topics: string[]): void {
+    const message = JSON.stringify({ type: "changed", topics });
+    for (const ws of this.ctx.getWebSockets(WATCH)) {
+      try {
+        ws.send(message);
+      } catch {
+        continue;
+      }
+    }
+  }
+
   async webSocketMessage(
     ws: WebSocket,
     message: string | ArrayBuffer,
   ): Promise<void> {
+    if (watching(ws)) return;
     let body: unknown;
     try {
       body = JSON.parse(
@@ -163,6 +213,7 @@ export class FleetHub {
             Date.now(),
           ),
         });
+        this.announce(["actions", "services"]);
       } else {
         invalid();
       }
@@ -181,11 +232,56 @@ export class FleetHub {
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
+    if (watching(ws)) return;
     await this.leave(ws);
+    this.announce(["nodes"]);
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
+    if (watching(ws)) return;
     await this.leave(ws);
+    this.announce(["nodes"]);
+  }
+
+  private async queueMail(notices: IncidentNotice[], now: number) {
+    const box = enqueue(
+      (await this.ctx.storage.get<MailBox>(MAIL)) ?? emptyBox(),
+      notices,
+      now,
+    );
+    await this.ctx.storage.put(MAIL, box);
+    await this.ctx.storage.setAlarm(nextAlarm(box) ?? now);
+  }
+
+  async alarm(): Promise<void> {
+    const { send, digest, box } = drainMail(
+      (await this.ctx.storage.get<MailBox>(MAIL)) ?? emptyBox(),
+      Date.now(),
+    );
+    await this.ctx.storage.put(MAIL, box);
+    const next = nextAlarm(box);
+    if (next === null) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(next);
+    try {
+      if (send.length > 0) {
+        const ids = send.map((server) => server.nodeId);
+        const rows = await this.env.DB.prepare(
+          `SELECT id, name FROM nodes WHERE id IN (${ids.map(() => "?").join(", ")})`,
+        )
+          .bind(...ids)
+          .all<{ id: string; name: string }>();
+        const names = new Map(rows.results.map((row) => [row.id, row.name]));
+        for (const server of send) {
+          const nodeName = names.get(server.nodeId);
+          if (nodeName) {
+            await sendServerEmail(this.env, { nodeName, ...server });
+          }
+        }
+      }
+      if (digest) await sendDigestEmail(this.env, digest);
+    } catch (error) {
+      console.error("[kry mail]", error);
+    }
   }
 
   private async heartbeat(
@@ -215,6 +311,16 @@ export class FleetHub {
     }
     const agent = await loadAgentConfig(db, node);
     const accepted = acceptResults(agent.checks, beat.results ?? []);
+    const maintenance =
+      accepted.some((result) => result.status === "DOWN") &&
+      (await inMaintenance(db, node.id, now, current.connectedAt));
+    const ingestion = resultStatements(
+      db,
+      agent.checks,
+      accepted,
+      now,
+      maintenance,
+    );
     const folded = fold(state, beat, accepted, now);
     const leading: D1PreparedStatement[] = [];
     if (folded.flushed)
@@ -223,12 +329,8 @@ export class FleetHub {
       leading.push(...heartbeatStatements(db, node, beat, now));
     }
     leading.push(...retried.statements);
-    await commit(
-      this.env,
-      node.id,
-      leading,
-      resultStatements(db, agent.checks, accepted, now),
-    );
+    const notices = await commit(this.env, node.id, leading, ingestion);
+    if (notices.length > 0) await this.queueMail(notices, now);
     const actions = await heartbeatActions(db, node.id, now);
     ws.serializeAttachment(folded.state);
     reply({
@@ -240,6 +342,14 @@ export class FleetHub {
         actions,
       ),
     });
+    const topics = [
+      ...(current.lastSeen === null ? ["nodes"] : []),
+      ...(ingestion.statements.length > 0 || ingestion.transitions.length > 0
+        ? ["checks"]
+        : []),
+      ...(actions.length > 0 ? ["actions"] : []),
+    ];
+    if (topics.length > 0) this.announce(topics);
   }
 
   private flushStatement(nodeId: string, flush: Flush) {

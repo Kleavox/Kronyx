@@ -10,6 +10,8 @@ import type {
   ServicesResponse,
   ServiceState,
 } from "../types";
+import { LOGS_AGENT, compareVersions } from "@krynodes/protocol/versions";
+
 import { clockTime, nodeState, parseTimestamp } from "./format";
 import { untilWindowSettles } from "./series";
 
@@ -29,6 +31,7 @@ const WORDS: Record<ActionVerb, { verb: string; doing: string; done: string }> =
     },
     trust: { verb: "Update", doing: "Updating…", done: "Updated" },
     reboot: { verb: "Restart", doing: "Restarting…", done: "Restarted" },
+    logs: { verb: "Logs", doing: "Fetching logs…", done: "Fetched logs" },
   };
 
 export interface ActionTarget {
@@ -65,6 +68,9 @@ export function isPending(action: ActionRecord | null | undefined): boolean {
   return action?.status === "queued" || action?.status === "sent";
 }
 
+export const canReadLogs = (node: NodeRecord) =>
+  compareVersions(node.agent_version ?? "0.0.0", LOGS_AGENT) >= 0;
+
 export function primaryAction(state: ServiceState): ServiceAction {
   return state === "running" || state === "starting" ? "restart" : "start";
 }
@@ -88,6 +94,7 @@ export function groupByServer(
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const latest = new Map<string, ActionRecord>();
   for (const action of data.actions) {
+    if (action.action === "logs") continue;
     latest.set(`${action.nodeId}|${action.kind}:${action.name}`, action);
   }
   const query = options.query.trim().toLowerCase();
@@ -168,7 +175,9 @@ export function pollServices(
 ): number {
   const busy =
     data !== undefined &&
-    (data.actions.some(isPending) ||
+    (data.actions.some(
+      (action) => action.action !== "logs" && isPending(action),
+    ) ||
       data.nodes.some((node) => refreshPending(node, now)));
   return busy ? PENDING_POLL_MS : untilWindowSettles(now);
 }
@@ -199,14 +208,11 @@ export function serviceForCheck(
   );
 }
 
-export function newlyFinished(
-  previous: ActionRecord[],
-  next: ActionRecord[],
-): ActionRecord[] {
-  const pending = new Set(
-    previous.filter(isPending).map((action) => action.id),
-  );
-  return next.filter((action) => pending.has(action.id) && !isPending(action));
+export function runningText(action: ActionRecord, nodeName?: string): string {
+  const doing = WORDS[action.action].doing.replace(/…$/u, "");
+  if (action.kind === "host") return `${doing} ${nodeName ?? "server"}`;
+  const target = `${doing} ${displayName(action.kind, action.name)}`;
+  return nodeName ? `${target} on ${nodeName}` : target;
 }
 
 export function outcomeText(

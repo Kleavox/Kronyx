@@ -19,7 +19,7 @@ import {
 } from "@/lib/passphrase-prompt";
 import { cn } from "@/lib/utils";
 
-import { failure } from "./parts";
+import { failure } from "@/lib/proof";
 
 export function PassphrasePrompt() {
   const question = useSyncExternalStore(

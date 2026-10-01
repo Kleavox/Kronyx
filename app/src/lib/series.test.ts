@@ -395,3 +395,28 @@ describe("bar tones", () => {
     expect(barTone("received", "DOWN", false)).toBe("brief");
   });
 });
+
+describe("maintenance", () => {
+  it("paints a silent or failing window during planned work as maintenance", () => {
+    const now = Date.parse("2026-10-01T12:00:00.000Z");
+    const laid = layoutReportSlots({
+      slots: [{ t: "2026-10-01T11:40:00.000Z" }],
+      slotSeconds: 300,
+      graceSeconds: 120,
+      since: now - 3_600_000,
+      now,
+      count: 4,
+      maintenance: [{ from: now - 15 * 60_000, to: now - 12 * 60_000 }],
+    });
+    expect(laid.map((slot) => slot.state)).toEqual([
+      "received",
+      "maintenance",
+      "missed",
+      "missed",
+    ]);
+    expect(barTone("maintenance", null, false)).toBe("maintenance");
+    expect(barTone("received", "DOWN", false, true)).toBe("maintenance");
+    expect(barTone("received", "DOWN", true, true)).toBe("down");
+    expect(barTone("received", "UP", false, true)).toBe("up");
+  });
+});

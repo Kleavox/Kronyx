@@ -7,7 +7,8 @@ import { FilterChips } from "@/components/filter-chips";
 import { Meter } from "@/components/meter";
 import { PageHeader } from "@/components/page-header";
 import { Sparkline } from "@/components/sparkline";
-import { StatusChip, StatusDot, nodeTone } from "@/components/status";
+import { NodeStatus, OperationText } from "@/components/node-status";
+import { StatusDot, nodeTone } from "@/components/status";
 import { ReportStrip } from "@/components/strips";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,7 +25,12 @@ import { LatestAgent, UpdateNotice } from "@/features/agent/update-notice";
 import { EnrollDialog } from "@/features/nodes/enroll-dialog";
 import { NodeActions } from "@/features/nodes/node-actions";
 import { UsageDialog } from "@/features/usage/usage-dialog";
-import { useOverview, useRecentMetrics, useUsage } from "@/lib/api";
+import {
+  useOverview,
+  useRecentMetrics,
+  useServices,
+  useUsage,
+} from "@/lib/api";
 import { agentState, type AgentState } from "@/lib/agent";
 import { budgetLevel, estimateDailyUse, quotaLine } from "@/lib/budget";
 import {
@@ -46,11 +52,19 @@ import {
   nodeUsage,
   type Severity,
 } from "@/lib/health";
-import { layoutReportSlots } from "@/lib/series";
+import {
+  handleOf,
+  maintenanceSpans,
+  serverOperation,
+  type ServerOperation,
+} from "@/lib/operations";
+import { isPending, runningText } from "@/lib/services";
+import { layoutReportSlots, type Span } from "@/lib/series";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 import type {
+  ActionRecord,
   AgentRelease,
   CheckRecord,
   Incident,
@@ -64,6 +78,7 @@ function laidSlots(
   recent: RecentNode | undefined,
   now: number,
   asOf: number | null,
+  maintenance: Span[],
 ) {
   return layoutReportSlots<RecentSlot>({
     slots: recent?.slots ?? [],
@@ -76,6 +91,7 @@ function laidSlots(
         : null,
     now,
     asOf: asOf ?? undefined,
+    maintenance,
   });
 }
 
@@ -122,10 +138,14 @@ interface Row {
   severity: Severity;
   reasons: string[];
   agent: AgentState;
+  operation: ServerOperation | null;
+  busy: ActionRecord | null;
+  maintenance: Span[];
 }
 
 export function FleetPage() {
   const overview = useOverview();
+  const services = useServices();
   const recent = useRecentMetrics();
   const now = useNow(5_000);
   const desktop = useMediaQuery("(min-width: 768px)");
@@ -198,6 +218,16 @@ export function FleetPage() {
         system: node.operating_system,
         state: nodeState(node, seen),
         agent: agentState(node, agentRelease.version, now),
+        operation: serverOperation(node, services.data?.actions ?? [], now),
+        maintenance: maintenanceSpans(services.data?.actions ?? [], node.id),
+        busy:
+          services.data?.actions.find(
+            (action) =>
+              action.nodeId === node.id &&
+              action.kind !== "host" &&
+              action.action !== "logs" &&
+              isPending(action),
+          ) ?? null,
         ...health,
       };
     })
@@ -209,6 +239,12 @@ export function FleetPage() {
   const panel = selected && (
     <NodePanel
       node={selected}
+      operation={
+        rows.find((row) => row.node.id === selected.id)?.operation ?? null
+      }
+      maintenance={
+        rows.find((row) => row.node.id === selected.id)?.maintenance ?? []
+      }
       checks={checksFor(selected.id)}
       recent={recent.data?.nodes[selected.id]}
       release={agentRelease}
@@ -654,8 +690,8 @@ function NodeCard({
   selected: boolean;
   onSelect: () => void;
 }) {
-  const { node, state, severity, reasons } = row;
-  const laid = laidSlots(node, recent, now, asOf);
+  const { node, state, severity, reasons, operation, busy, maintenance } = row;
+  const laid = laidSlots(node, recent, now, asOf, maintenance);
   const live = state === "online" || state === "offline";
   return (
     <article
@@ -677,17 +713,23 @@ function NodeCard({
               {node.name}
             </button>
           </h2>
-          <StatusChip
-            tone={nodeTone(state)}
-            label={state}
-            detail={
-              state === "offline" ? timeAgo(node.last_seen_at, now) : undefined
-            }
+          <NodeStatus
+            state={state}
+            operation={operation}
+            offlineDetail={timeAgo(node.last_seen_at, now)}
           />
         </div>
         {systemLine(node) && (
           <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
             {systemLine(node)}
+          </p>
+        )}
+        {busy && !operation && (
+          <p className="mt-1 flex items-center gap-1.5 truncate font-mono text-[11px] text-warning">
+            <StatusDot tone="warn" pulse />
+            <span className="truncate">
+              {runningText(busy)} · {handleOf(busy.requestedBy)}
+            </span>
           </p>
         )}
       </div>
@@ -805,7 +847,7 @@ function FleetTable({
           </tr>
         </thead>
         <tbody className="divide-y">
-          {rows.map(({ node, state, severity, reasons }) => (
+          {rows.map(({ node, state, severity, reasons, operation }) => (
             <tr
               key={node.id}
               className={cn(
@@ -815,7 +857,10 @@ function FleetTable({
             >
               <td className="px-3 py-2.5">
                 <div className="flex min-w-0 items-center gap-2">
-                  <StatusDot tone={nodeTone(state)} />
+                  <StatusDot
+                    tone={operation ? "warn" : nodeTone(state)}
+                    pulse={operation !== null}
+                  />
                   <button
                     type="button"
                     onClick={() => onSelect(node.id)}
@@ -834,11 +879,17 @@ function FleetTable({
                       SEVERITY_TEXT[severity],
                   )}
                 >
-                  {state === "offline"
-                    ? "Offline"
-                    : reasons.length > 0
-                      ? reasons.join(" · ")
-                      : systemLine(node)}
+                  {operation ? (
+                    <span className="text-warning">
+                      <OperationText operation={operation} />
+                    </span>
+                  ) : state === "offline" ? (
+                    "Offline"
+                  ) : reasons.length > 0 ? (
+                    reasons.join(" · ")
+                  ) : (
+                    systemLine(node)
+                  )}
                 </p>
               </td>
               {nodeUsage(node).map((item) => (
@@ -881,6 +932,8 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 function NodePanel({
   node,
+  operation,
+  maintenance,
   checks,
   recent,
   release,
@@ -891,6 +944,8 @@ function NodePanel({
   onClose,
 }: {
   node: NodeRecord;
+  operation: ServerOperation | null;
+  maintenance: Span[];
   checks: CheckRecord[];
   recent: RecentNode | undefined;
   release: AgentRelease;
@@ -901,7 +956,7 @@ function NodePanel({
   onClose: () => void;
 }) {
   const state = nodeState(node, seen);
-  const laid = laidSlots(node, recent, now, asOf);
+  const laid = laidSlots(node, recent, now, asOf, maintenance);
   const { severity, reasons } = nodeHealth(node, checks, seen);
   return (
     <div className="flex flex-col gap-4">
@@ -912,14 +967,10 @@ function NodePanel({
               {node.name}
             </h2>
           )}
-          <StatusChip
-            tone={nodeTone(state)}
-            label={state}
-            detail={
-              state === "offline"
-                ? `reported ${timeAgo(node.last_seen_at, now)}`
-                : undefined
-            }
+          <NodeStatus
+            state={state}
+            operation={operation}
+            offlineDetail={`reported ${timeAgo(node.last_seen_at, now)}`}
           />
           {systemLine(node) && (
             <p className="truncate font-mono text-[11px] text-muted-foreground">

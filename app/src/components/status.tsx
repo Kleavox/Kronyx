@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import { capitalize, type CheckDisplay, type NodeState } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -25,17 +27,20 @@ export function checkTone(status: CheckDisplay): Tone {
 
 export function StatusDot({
   tone,
+  pulse = false,
   className,
 }: {
   tone: Tone;
+  pulse?: boolean;
   className?: string;
 }) {
   return (
     <span
       aria-hidden="true"
       className={cn(
-        "inline-block size-2 shrink-0 rounded-full",
+        "inline-block size-2 shrink-0 rounded-full transition-colors duration-500",
         TONE[tone],
+        pulse && "motion-safe:animate-pulse",
         className,
       )}
     />
@@ -46,14 +51,21 @@ export function StatusChip({
   tone,
   label,
   detail,
+  pulse = false,
 }: {
   tone: Tone;
   label: string;
-  detail?: string;
+  detail?: ReactNode;
+  pulse?: boolean;
 }) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[11px] whitespace-nowrap text-muted-foreground">
-      <StatusDot tone={tone} />
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[11px] whitespace-nowrap text-muted-foreground transition-colors duration-500",
+        pulse && "border-warning/40",
+      )}
+    >
+      <StatusDot tone={tone} pulse={pulse} />
       <span className="text-foreground">{capitalize(label)}</span>
       {detail && <span>· {detail}</span>}
     </span>

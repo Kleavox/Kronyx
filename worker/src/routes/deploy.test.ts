@@ -244,39 +244,3 @@ describe("compose actions", () => {
     expect(body.nodes!.find((node) => node.id === B)!.trust).toBeNull();
   });
 });
-
-describe("enroll command", () => {
-  it("carries the core devices once servers report some", async () => {
-    const { call, device, sqlite } = setup();
-    await device();
-    expect(
-      (await reply(call("POST", "/api/enrollments"))).command,
-    ).not.toContain("--trust");
-    const digest = new Uint8Array(
-      await crypto.subtle.digest(
-        "SHA-256",
-        Uint8Array.from(
-          atob("TUZrd0V3WUhLb1pJemowQ0FRWUlLb1pJemowREFRY0RRZ0FF"),
-          (char) => char.charCodeAt(0),
-        ),
-      ),
-    );
-    const print = Array.from(digest, (byte) =>
-      byte.toString(16).padStart(2, "0"),
-    )
-      .join("")
-      .slice(0, 16);
-    sqlite.prepare("UPDATE nodes SET trust_report = ? WHERE id = ?").run(
-      JSON.stringify({
-        version: 1,
-        core: [print],
-        access: [print],
-        passphrase: false,
-      }),
-      A,
-    );
-    expect((await reply(call("POST", "/api/enrollments"))).command).toMatch(
-      / --trust https:\/\/kry\.example\.test --grant -- ZGV2aWNlLTE\.-7\.TUZrd0V3WUhLb1pJemowQ0FRWUlLb1pJemowREFRY0RRZ0FF$/u,
-    );
-  });
-});

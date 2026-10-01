@@ -42,7 +42,16 @@ export function withGapBreaks<T extends { time: number }>(
   return [...rows, ...breaks].sort((a, b) => a.time - b.time);
 }
 
-export type SlotState = "received" | "missed" | "pending" | "none";
+export type SlotState =
+  "received" | "missed" | "pending" | "none" | "maintenance";
+
+export interface Span {
+  from: number;
+  to: number;
+}
+
+export const overlaps = (spans: Span[], start: number, size: number) =>
+  spans.some((span) => span.from < start + size && span.to > start);
 
 interface LaidSlot<T> {
   start: number;
@@ -59,6 +68,7 @@ export function layoutReportSlots<T extends { t: string }>(options: {
   now: number;
   asOf?: number;
   count?: number;
+  maintenance?: Span[];
 }): LaidSlot<T>[] {
   const count = options.count ?? 30;
   const reference = options.asOf ?? options.now;
@@ -80,7 +90,9 @@ export function layoutReportSlots<T extends { t: string }>(options: {
         : reference - start <
             (options.graceSeconds + (options.settleSeconds ?? 0)) * 1000
           ? "pending"
-          : "missed";
+          : overlaps(options.maintenance ?? [], start, size)
+            ? "maintenance"
+            : "missed";
     return { start, state, sample };
   };
   let last = current;
@@ -114,15 +126,20 @@ export function incidentDuring<
   });
 }
 
-export type BarTone = "up" | "down" | "brief" | "missed" | "empty";
+export type BarTone =
+  "up" | "down" | "brief" | "missed" | "maintenance" | "empty";
 
 export function barTone(
   state: SlotState,
   status: "UP" | "DOWN" | null,
   inIncident: boolean,
+  inMaintenance = false,
 ): BarTone {
   if (status === "UP") return "up";
-  if (status === "DOWN") return inIncident ? "down" : "brief";
+  if (status === "DOWN") {
+    return inIncident ? "down" : inMaintenance ? "maintenance" : "brief";
+  }
+  if (state === "maintenance") return "maintenance";
   return state === "missed" ? "missed" : "empty";
 }
 
@@ -131,11 +148,18 @@ export function slotTip(
   result: { status: "UP" | "DOWN"; latencyMs: number | null } | null,
   brief: boolean,
   clock: (value: number) => string,
+  maintenance = false,
 ): string {
-  if (!result) return `${clock(start)} · no result`;
+  if (!result) {
+    return `${clock(start)} · ${maintenance ? "maintenance" : "no result"}`;
+  }
   return [
     clock(start),
-    brief ? "DOWN, no incident" : result.status,
+    maintenance && result.status === "DOWN"
+      ? "DOWN, maintenance"
+      : brief
+        ? "DOWN, no incident"
+        : result.status,
     result.latencyMs === null ? null : `${result.latencyMs}ms`,
   ]
     .filter(Boolean)

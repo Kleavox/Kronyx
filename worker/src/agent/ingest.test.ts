@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { app } from "../app";
 import type { Env } from "../env";
+import type { IncidentNotice } from "../incident/notify";
 import { sha256 } from "../lib/crypto";
 import { hubHarness } from "../test/hub";
 import { seedCheck, seedNode } from "../test/seed";
@@ -57,17 +58,18 @@ function setup() {
   const { db, sqlite } = createTestDb();
   seedNode(sqlite, { id: NODE.id });
   seedCheck(sqlite, { id: CHECK, nodeId: NODE.id });
-  const notifier = vi.fn(async () => undefined);
+  const notices: IncidentNotice[] = [];
   const env = { DB: db } as unknown as Env;
   const beat = async (now: number, results?: CheckResult[]) => {
     const agent = await loadAgentConfig(db, NODE);
     const accepted = acceptResults(agent.checks, results ?? []);
-    await commit(
-      env,
-      NODE.id,
-      heartbeatStatements(db, NODE, heartbeat(results), now),
-      resultStatements(db, agent.checks, accepted, now),
-      notifier,
+    notices.push(
+      ...(await commit(
+        env,
+        NODE.id,
+        heartbeatStatements(db, NODE, heartbeat(results), now),
+        resultStatements(db, agent.checks, accepted, now),
+      )),
     );
   };
   const changes = () =>
@@ -78,19 +80,19 @@ function setup() {
         n: number;
       }
     ).n;
-  return { db, sqlite, notifier, beat, changes, count };
+  return { db, sqlite, notices, beat, changes, count };
 }
 
 describe("agent ingestion budget", () => {
   it("opens an incident at the second failure, then stays quiet until it resolves", async () => {
-    const { beat, changes, count, notifier, sqlite } = setup();
+    const { beat, changes, count, notices, sqlite } = setup();
     await beat(BASE + 10_000, [result("DOWN")]);
     expect(count("incidents")).toBe(0);
 
     await beat(BASE + 70_000, [result("DOWN")]);
     expect(count("incidents")).toBe(1);
-    expect(notifier).toHaveBeenCalledTimes(1);
-    expect(notifier).toHaveBeenLastCalledWith(
+    expect(notices).toHaveLength(1);
+    expect(notices.at(-1)).toEqual(
       expect.objectContaining({
         kind: "opened",
         summary: `${CHECK} is down: timeout`,
@@ -102,8 +104,8 @@ describe("agent ingestion budget", () => {
     expect(changes() - before).toBe(1);
 
     await beat(BASE + 190_000, [result("UP")]);
-    expect(notifier).toHaveBeenCalledTimes(2);
-    expect(notifier).toHaveBeenLastCalledWith(
+    expect(notices).toHaveLength(2);
+    expect(notices.at(-1)).toEqual(
       expect.objectContaining({ kind: "resolved" }),
     );
     expect(sqlite.prepare("SELECT status FROM incidents").get()).toEqual({

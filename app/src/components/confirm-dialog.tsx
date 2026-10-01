@@ -1,4 +1,7 @@
 import type { UseMutationResult } from "@tanstack/react-query";
+import { Fingerprint } from "lucide-react";
+
+import { useDevices } from "@/lib/api";
 import { errorMessage } from "@/lib/http";
 
 import {
@@ -12,6 +15,11 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 
+export function GuardIcon() {
+  const core = useDevices().data?.devices.some((device) => device.core);
+  return core ? <Fingerprint aria-hidden="true" /> : null;
+}
+
 export function ConfirmDialog<TData, TVariables>({
   open,
   onOpenChange,
@@ -21,6 +29,7 @@ export function ConfirmDialog<TData, TVariables>({
   mutation,
   variables,
   onDone,
+  guarded = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -30,6 +39,7 @@ export function ConfirmDialog<TData, TVariables>({
   mutation: UseMutationResult<TData, Error, TVariables>;
   variables: TVariables;
   onDone?: () => void;
+  guarded?: boolean;
 }) {
   const close = (next: boolean) => {
     if (!next) mutation.reset();
@@ -61,6 +71,7 @@ export function ConfirmDialog<TData, TVariables>({
               })
             }
           >
+            {guarded && !mutation.isPending && <GuardIcon />}
             {mutation.isPending ? "Working…" : confirmLabel}
           </Button>
         </AlertDialogFooter>

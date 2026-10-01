@@ -5,7 +5,7 @@ import {
   useDevices,
   useServices,
 } from "@/lib/api";
-import { failure } from "@/features/devices/parts";
+import { failure } from "@/lib/proof";
 import { signersFor } from "@/lib/devices";
 import { proverFor } from "@/lib/passphrase-prompt";
 import { signTargets, type CommandTarget } from "@/lib/passkeys";

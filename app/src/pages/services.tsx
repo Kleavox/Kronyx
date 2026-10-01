@@ -211,6 +211,7 @@ export function ServicesPage() {
       ) : (
         <ServerServiceList
           groups={groups}
+          actions={services.data.actions}
           seen={seen}
           filtering={query.trim() !== "" || notRunning}
           onRequest={setRequest}

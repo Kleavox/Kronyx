@@ -1,3 +1,5 @@
+import { maintenanceSpans, plannedNow } from "@/lib/operations";
+import type { Span } from "@/lib/series";
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
@@ -175,6 +177,10 @@ export function ChecksPage() {
                 now={now}
                 seen={seen}
                 asOf={results.data ? results.dataUpdatedAt : undefined}
+                maintenance={maintenanceSpans(
+                  services.data?.actions ?? [],
+                  check.node_id,
+                )}
                 restart={(() => {
                   const node = nodeById.get(check.node_id);
                   const entry = serviceForCheck(check, services.data);
@@ -230,6 +236,7 @@ function CheckRow({
   now,
   seen,
   asOf,
+  maintenance,
   restart,
 }: {
   check: CheckRecord;
@@ -241,6 +248,7 @@ function CheckRow({
   seen: number;
   restart: (() => void) | undefined;
   asOf: number | undefined;
+  maintenance: Span[];
 }) {
   const windowSeconds = Math.max(300, node?.interval_seconds ?? 0);
   const status = checkDisplayStatus(
@@ -257,8 +265,20 @@ function CheckRow({
       )}
     >
       <span className="flex items-center gap-1.5 font-mono text-[11px]">
-        <StatusDot tone={checkTone(status)} />
-        {status}
+        {status === "DOWN" && plannedNow(maintenance, now) ? (
+          <span
+            className="flex items-center gap-1.5"
+            title="Down during planned work on its server. No incident opens unless it stays down afterwards."
+          >
+            <StatusDot tone="warn" pulse />
+            PLANNED
+          </span>
+        ) : (
+          <>
+            <StatusDot tone={checkTone(status)} />
+            {status}
+          </>
+        )}
       </span>
       <span className="min-w-0 truncate font-medium" title={check.name}>
         {check.name}
@@ -298,6 +318,7 @@ function CheckRow({
         now={now}
         asOf={asOf}
         count={48}
+        maintenance={maintenance}
         className="col-span-3 md:col-span-1"
       />
       <span className="hidden text-right font-mono text-xs md:block">

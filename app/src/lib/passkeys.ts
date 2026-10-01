@@ -342,6 +342,23 @@ export async function signCommand(
   };
 }
 
+export async function signIntent(
+  session: Session,
+  op: string,
+  target: string,
+  origin: string,
+  now = Date.now(),
+): Promise<string> {
+  const signed = await signCommand(session, {
+    v: 1,
+    op,
+    target,
+    at: iso(now),
+    origin,
+  });
+  return b64url(encoder.encode(JSON.stringify(signed)));
+}
+
 export interface SignedTarget extends CommandTarget {
   id: string;
   signed: SignedCommand;

@@ -2,14 +2,18 @@ import { ArrowUpRight, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router";
 
+import { Elapsed, OperationText } from "@/components/node-status";
 import { RowMenu } from "@/components/row-menu";
 import { StatusDot } from "@/components/status";
 import { Button } from "@/components/ui/button";
 import { useSignedAction } from "@/features/deploy/use-signed-action";
+import { NodeActions } from "@/features/nodes/node-actions";
 import { useCancelActions } from "@/lib/api";
-import { capitalize, nodeState } from "@/lib/format";
+import { capitalize, nodeState, parseTimestamp } from "@/lib/format";
+import { handleOf, serverOperation } from "@/lib/operations";
 import {
   actionText,
+  canReadLogs,
   displayName,
   isPending,
   primaryAction,
@@ -22,6 +26,7 @@ import { cn } from "@/lib/utils";
 import type { ActionRecord, ServiceAction, ServiceState } from "@/types";
 
 import type { ActionRequest } from "./action-dialog";
+import { LogsDialog } from "./logs-dialog";
 
 const TONE: Record<ServiceState, "ok" | "bad" | "warn" | "idle"> = {
   running: "ok",
@@ -50,12 +55,16 @@ export function ActionOutcome({
   action: ActionRecord;
   nodeName: string;
 }) {
-  const text = actionText(action, nodeName);
+  const text = `${actionText(action, nodeName)} · ${handleOf(action.requestedBy)}`;
   if (
     !action.output ||
     (action.status !== "failed" && action.status !== "expired")
   ) {
-    return <span className="truncate">{text}</span>;
+    return (
+      <span className="truncate motion-safe:animate-in motion-safe:fade-in">
+        {text}
+      </span>
+    );
   }
   return (
     <details className="min-w-0">
@@ -77,7 +86,17 @@ export function PendingText({
   nodeName: string;
 }) {
   return (
-    <span className="font-mono text-xs">{actionText(action, nodeName)}</span>
+    <span className="font-mono text-xs text-warning">
+      {actionText(action, nodeName)} · {handleOf(action.requestedBy)}
+      {action.status === "sent" && (
+        <>
+          {" · "}
+          <Elapsed
+            since={parseTimestamp(action.sentAt ?? action.requestedAt)}
+          />
+        </>
+      )}
+    </span>
   );
 }
 
@@ -88,6 +107,7 @@ function MemberControls({
   member: ServiceMember;
   onRequest: (request: ActionRequest) => void;
 }) {
+  const [reading, setReading] = useState(false);
   const run = useSignedAction();
   const cancel = useCancelActions();
   const target = toTarget(member);
@@ -127,6 +147,9 @@ function MemberControls({
             ? []
             : [{ label: "Start", onSelect: () => direct("start") }]),
           { label: "Restart", onSelect: () => direct("restart") },
+          ...(canReadLogs(member.node)
+            ? [{ label: "Logs", onSelect: () => setReading(true) }]
+            : []),
           {
             label: "Stop",
             destructive: true,
@@ -134,6 +157,7 @@ function MemberControls({
           },
         ]}
       />
+      <LogsDialog target={target} open={reading} onOpenChange={setReading} />
     </div>
   );
 }
@@ -144,6 +168,7 @@ export function ServiceRows({
   seen,
   trusted,
   branch = false,
+  locked,
   onRequest,
 }: {
   id?: string;
@@ -151,12 +176,14 @@ export function ServiceRows({
   seen: number;
   trusted: boolean;
   branch?: boolean;
+  locked?: string;
   onRequest: (request: ActionRequest) => void;
 }) {
   return (
     <ul id={id} className={branch ? "py-1" : "divide-y"}>
       {members.map((member) => {
         const label = stateLabel(member);
+        const pending = isPending(member.action);
         return (
           <li
             key={`${member.entry.kind}:${member.entry.name}`}
@@ -167,7 +194,10 @@ export function ServiceRows({
             )}
           >
             <span className="flex min-h-8 min-w-0 items-center gap-2">
-              <StatusDot tone={TONE[member.entry.state]} />
+              <StatusDot
+                tone={locked ? "idle" : TONE[member.entry.state]}
+                pulse={pending}
+              />
               <span className="truncate font-medium" title={member.entry.name}>
                 {displayName(member.entry.kind, member.entry.name)}
               </span>
@@ -182,7 +212,10 @@ export function ServiceRows({
               className="col-span-2 min-w-0 truncate font-mono text-xs text-muted-foreground empty:hidden md:col-span-1 md:empty:block"
               aria-live="polite"
             >
-              {member.action &&
+              {locked && !pending ? (
+                <span className="text-warning">{locked}</span>
+              ) : (
+                member.action &&
                 (isPending(member.action) ? (
                   <PendingText
                     action={member.action}
@@ -193,10 +226,11 @@ export function ServiceRows({
                     action={member.action}
                     nodeName={member.node.name}
                   />
-                ))}
+                ))
+              )}
             </span>
             <div className="col-start-2 row-start-1 md:col-start-auto md:row-start-auto">
-              {trusted && (
+              {trusted && !locked && (
                 <MemberControls member={member} onRequest={onRequest} />
               )}
             </div>
@@ -220,11 +254,13 @@ export function TrustLink() {
 
 export function ServerServiceList({
   groups,
+  actions,
   seen,
   filtering,
   onRequest,
 }: {
   groups: ServerGroup[];
+  actions: ActionRecord[];
   seen: number;
   filtering: boolean;
   onRequest: (request: ActionRequest) => void;
@@ -246,7 +282,8 @@ export function ServerServiceList({
         const down = group.members.filter(
           (member) => member.entry.state !== "running",
         ).length;
-        const away = nodeState(group.node, seen) === "offline";
+        const operation = serverOperation(group.node, actions, Date.now());
+        const away = !operation && nodeState(group.node, seen) === "offline";
         const count = group.members.length;
         return (
           <section
@@ -275,7 +312,10 @@ export function ServerServiceList({
                       open && "rotate-90",
                     )}
                   />
-                  <StatusDot tone={away ? "idle" : "ok"} />
+                  <StatusDot
+                    tone={operation ? "warn" : away ? "idle" : "ok"}
+                    pulse={operation !== null}
+                  />
                   <span className="min-w-0 truncate font-medium">
                     {group.node.name}
                   </span>
@@ -284,9 +324,15 @@ export function ServerServiceList({
                     {down > 0 && ` · ${down} not running`}
                     {away && " · offline"}
                   </span>
+                  {operation && (
+                    <span className="font-mono text-xs font-normal text-warning">
+                      <OperationText operation={operation} />
+                    </span>
+                  )}
                 </button>
               </h2>
               {!group.trusted && <TrustLink />}
+              <NodeActions node={group.node} compact />
               <Link
                 to={`/nodes/${id}`}
                 aria-label={`Open ${group.node.name}`}
@@ -302,6 +348,11 @@ export function ServerServiceList({
                 seen={seen}
                 trusted={group.trusted}
                 branch
+                locked={
+                  operation?.kind === "restarting"
+                    ? `Waiting for ${group.node.name} to come back`
+                    : undefined
+                }
                 onRequest={onRequest}
               />
             )}

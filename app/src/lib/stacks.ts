@@ -35,7 +35,7 @@ export function groupStacks(
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const latest = new Map<string, ActionRecord>();
   for (const action of data.actions) {
-    if (action.kind === "compose") {
+    if (action.kind === "compose" && action.action !== "logs") {
       latest.set(`${action.nodeId}|${action.name}`, action);
     }
   }

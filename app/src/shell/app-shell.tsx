@@ -16,15 +16,16 @@ import {
 import { useDeploySession } from "@/features/deploy/use-deploy-session";
 import { PassphrasePrompt } from "@/features/devices/passphrase-dialogs";
 import { useSignedAction } from "@/features/deploy/use-signed-action";
-import { useActionToasts } from "@/features/services/use-action-toasts";
 import { useDevices, useOverview, useProposals, useServices } from "@/lib/api";
 import { timeAgo } from "@/lib/format";
 import { accountLinks } from "@/lib/account";
+import { useLiveUpdates } from "@/lib/live";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 import { isPending } from "@/lib/services";
 import type { Identity, Overview, ServicesResponse, SessionVia } from "@/types";
 
+import { ActivityMenu } from "./activity-menu";
 import { CommandPalette } from "./command-palette";
 import { SECTIONS } from "./nav";
 import { FaultScreen, Mark } from "./screens";
@@ -52,10 +53,10 @@ export function AppShell({
   identity: Identity;
   via: SessionVia;
 }) {
+  useLiveUpdates();
   const overview = useOverview();
   const services = useServices();
   const runAction = useSignedAction();
-  useActionToasts(services.data?.actions, overview.data?.nodes ?? []);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
   useEffect(() => {
@@ -112,6 +113,7 @@ export function AppShell({
           ))}
         </nav>
         <span className="flex-1 md:hidden" />
+        <ActivityMenu />
         <Button
           variant="outline"
           size="sm"

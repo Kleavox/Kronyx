@@ -291,3 +291,46 @@ describe("migration 0019", () => {
     expect(columns).toContain("transport");
   });
 });
+
+describe("migrations 0020 and 0021", () => {
+  function current() {
+    const sqlite = new DatabaseSync(":memory:");
+    sqlite.exec("PRAGMA foreign_keys = ON");
+    apply(sqlite, (name) => name < "0020");
+    sqlite.exec(
+      "INSERT INTO nodes (id, owner_user_id, name, agent_token_hash) VALUES ('n1', 'standalone', 'pivox', 'h1')",
+    );
+    sqlite.exec(action("a1", "docker", "adguard", "restart", "done"));
+    apply(sqlite, (name) => name >= "0020");
+    return sqlite;
+  }
+
+  it("drops the transport column and keeps every action", () => {
+    const sqlite = current();
+    const columns = sqlite
+      .prepare("SELECT name FROM pragma_table_info('nodes')")
+      .all()
+      .map((row) => (row as { name: string }).name);
+    expect(columns).not.toContain("transport");
+    expect(sqlite.prepare("SELECT id, status FROM actions").all()).toEqual([
+      { id: "a1", status: "done" },
+    ]);
+  });
+
+  it("allows logs requests beside a pending action, but one pending action per target", () => {
+    const sqlite = current();
+    sqlite.exec(action("r1", "docker", "adguard", "restart", "queued"));
+    sqlite.exec(action("l1", "docker", "adguard", "logs", "queued"));
+    sqlite.exec(action("l2", "docker", "adguard", "logs", "sent"));
+    expect(() =>
+      sqlite.exec(action("r2", "docker", "adguard", "stop", "queued")),
+    ).toThrow(/UNIQUE/u);
+    expect(
+      (
+        sqlite.prepare("SELECT COUNT(*) AS n FROM actions").get() as {
+          n: number;
+        }
+      ).n,
+    ).toBe(4);
+  });
+});

@@ -3,8 +3,9 @@
 Krynodes is a small, self-hosted monitoring console on Cloudflare Workers. A Go
 agent on each server reports metrics and runs HTTP, TCP and systemd checks; the
 Worker stores history in D1, opens and resolves incidents, and mails the
-operator. The dashboard is for one operator and sits behind Cloudflare Zero
-Trust.
+operator. The dashboard sits behind Cloudflare Zero Trust; one login can be
+shared by a small team, and every open tab sees what the others do as it
+happens.
 
 ```text
 Browser ── Cloudflare Access ── kry Worker ── D1
@@ -100,6 +101,20 @@ target or server) or pausing starts the status fresh and closes an open
 incident; the history stays. A server with a live connection (below) runs the
 changed check within seconds; others at their next report.
 
+Removing a check, pausing it or changing its kind, target or server asks for
+a core device's fingerprint (see Deploy), like deleting a server or creating
+an install command. One fingerprint covers 15 minutes of such work. An owner
+with no trusted device yet is not asked.
+
+Incident mail is grouped: the Worker waits 90 seconds and sends one mail per
+server ("pivox: 2 checks down — Health, API", "pivox: check back up — API"); a
+check that goes down and comes back inside the wait is left out. At most 6
+incident mails go out an hour; what comes after waits for one summary mail.
+While an action runs on a server and for 2 minutes after it (10 minutes after
+a restart, until the agent is back), failing checks there open no incident and
+their bars read "maintenance"; a check still failing afterwards opens one at
+its next failure. Actions and deploys never mail.
+
 ### Live connection
 
 Each server keeps one WebSocket open to the Worker (`/api/agent/stream`), held
@@ -124,6 +139,12 @@ up to a minute.
   node page shows the command to update such a server by hand.
 - At a 60-second interval a server costs about 870 D1 writes a day on a live
   connection and about 2,000 on HTTP (was about 4,900).
+
+Dashboards use the same hub: each tab opens `GET /api/live`, a WebSocket that
+only says what changed (servers, checks, actions, services). The tab then
+refetches those lists, so when one person restarts a service everybody's
+screen shows it within a second or two. Tabs keep their usual polling as the
+fallback and reconnect on their own.
 
 ### Usage and quota shares
 
@@ -178,6 +199,18 @@ like a deploy (see below): a server that trusts no device refuses them.
 From agent 0.2.2 the node page's **Actions** menu (and Ctrl K) also has
 **Restart server**: after a confirmation and the same fingerprint, `kry exec`
 reports "restarting the server" and then runs `systemctl reboot --no-block`.
+Each server on the Services page carries the same menu.
+
+Everything in flight is visible to everyone: the server reads
+"Restarting · owner · 1:12" on every page until its agent reports again, its
+services wait with their buttons hidden, a service being restarted shows who
+asked and for how long, and the **Activity** button in the top bar lists what
+runs now and what finished in the last hour. There are no pop-up toasts for
+other people's work.
+
+From agent 0.3.3 a service's or stack's menu has **Logs**: the last 300 lines
+(`journalctl -u`, `docker logs`, `docker compose logs`), at most 64 KiB, signed
+like any action and allowed for protected units because it only reads.
 
 The agent never runs anything itself:
 
@@ -185,10 +218,10 @@ The agent never runs anything itself:
 - The root oneshot `kry exec` does the work. The units `krynodes-exec.path` and
   `krynodes-exec.timer` start it, the timer every 5 minutes to refresh the list of
   services.
-- `kry exec` refuses anything but a signed start, stop or restart of a service
-  that is present on the server.
-- It never touches ssh, the network, Docker itself, systemd internals, cloudflared
-  or Krynodes.
+- `kry exec` refuses anything but a signed start, stop, restart or log read of
+  a service that is present on the server.
+- It never starts, stops or restarts ssh, the network, Docker itself, systemd
+  internals, cloudflared or Krynodes; it only reads their logs.
 - It keeps its state in `/var/lib/kry-exec`.
 
 `kry uninstall-service` removes these units and that directory.

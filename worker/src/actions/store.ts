@@ -6,7 +6,14 @@ const COMPOSE_ABANDON_MS = 30 * 60_000;
 
 export type ActionKind = "systemd" | "docker" | "compose" | "trust" | "host";
 export type ActionVerb =
-  "start" | "stop" | "restart" | "deploy" | "rollback" | "trust" | "reboot";
+  | "start"
+  | "stop"
+  | "restart"
+  | "deploy"
+  | "rollback"
+  | "trust"
+  | "reboot"
+  | "logs";
 export type BatchMode = "rolling" | "parallel";
 type ActionStatus =
   "queued" | "sent" | "done" | "failed" | "expired" | "cancelled" | "skipped";
@@ -85,6 +92,30 @@ export function sweepStatements(
     db.prepare(SKIP_SQL).bind(at),
     db.prepare(PROMOTE_SQL).bind(at),
   ];
+}
+
+const SETTLE_MS = 2 * 60_000;
+const REBOOT_MS = 10 * 60_000;
+
+export async function inMaintenance(
+  db: D1Database,
+  nodeId: string,
+  now: number,
+  connectedAt: number,
+): Promise<boolean> {
+  const rebootSince = now - connectedAt < SETTLE_MS ? REBOOT_MS : SETTLE_MS;
+  const row = await db
+    .prepare(
+      `SELECT 1 AS planned FROM actions
+       WHERE node_id = ?1 AND action <> 'logs' AND (
+         status IN ('queued', 'sent')
+         OR (status IN ('done', 'failed') AND finished_at >=
+           CASE WHEN action = 'reboot' THEN ?3 ELSE ?2 END))
+       LIMIT 1`,
+    )
+    .bind(nodeId, iso(now - SETTLE_MS), iso(now - rebootSince))
+    .first<{ planned: number }>();
+  return row !== null;
 }
 
 export function createBatch(

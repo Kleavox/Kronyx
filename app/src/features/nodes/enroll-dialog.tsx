@@ -4,6 +4,7 @@ import { CircleCheck } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { StatusDot } from "@/components/status";
+import { GuardIcon } from "@/components/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -81,6 +82,7 @@ export function EnrollDialog({
                 disabled={create.isPending}
                 autoFocus
               >
+                {!create.isPending && <GuardIcon />}
                 {create.isPending ? "Creating…" : "Create install command"}
               </Button>
             </DialogFooter>

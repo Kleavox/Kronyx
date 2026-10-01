@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { Env } from "../env";
-import { sendIncidentEmail } from "./mail";
+import { sendDigestEmail, sendServerEmail } from "./mail";
 
 function mailEnv(extra: Partial<Env> = {}) {
   const send = vi.fn(async () => ({ messageId: "m-1" }));
@@ -17,15 +17,23 @@ function mailEnv(extra: Partial<Env> = {}) {
   return { env, send, sent };
 }
 
+const at = "2026-09-28T08:05:09.123Z";
+const down = (checkName: string, summary = `${checkName} is down`) => ({
+  checkName,
+  summary,
+  occurredAt: at,
+});
+
 describe("incident email", () => {
-  it("goes to the operator through the Cloudflare binding, with a text part", async () => {
+  it("goes to the operator through the Cloudflare binding, one mail per server", async () => {
     const { env, sent } = mailEnv();
-    await sendIncidentEmail(env, {
-      kind: "opened",
-      checkName: "API <health>",
+    await sendServerEmail(env, {
       nodeName: "pivox",
-      summary: "API <health> is down: timeout",
-      occurredAt: "2026-09-28T08:05:09.123Z",
+      down: [
+        down("API <health>", "API <health> is down: timeout"),
+        down("Web"),
+      ],
+      up: [],
     });
     const message = sent();
     expect(message.to).toBe("operator@example.test");
@@ -33,39 +41,53 @@ describe("incident email", () => {
       name: "Krynodes",
       email: "kry@example.test",
     });
-    expect(message.subject).toBe("[Krynodes] API <health> is down");
-    expect(message.html).toContain("API &lt;health&gt; is down");
+    expect(message.subject).toBe(
+      "[Krynodes] pivox: 2 checks down — API <health>, Web",
+    );
+    expect(message.html).toContain("API &lt;health&gt;");
     expect(message.html).not.toContain("<health>");
     expect(message.html).toContain("2026-09-28 08:05 UTC");
     expect(message.html).toContain('href="https://kry.example.test/incidents"');
     expect(message.html).not.toMatch(/Pulse|Kleavox/u);
-    expect(message.text).toContain("API <health> is down: timeout");
-    expect(message.text).toContain("Node: pivox");
+    expect(message.text).toContain("timeout");
     expect(message.text).toContain("https://kry.example.test/incidents");
   });
 
-  it("marks a recovery as resolved", async () => {
-    const { env, sent } = mailEnv();
-    await sendIncidentEmail(env, {
-      kind: "resolved",
-      checkName: "API",
+  it("says when checks are back up, alone or next to new failures", async () => {
+    const { env, send } = mailEnv();
+    await sendServerEmail(env, {
       nodeName: "pivox",
-      summary: "API is responding again.",
-      occurredAt: "2026-09-28T09:00:00.000Z",
+      down: [],
+      up: [down("API")],
     });
-    expect(sent().subject).toBe("[Krynodes] API recovered");
-    expect(sent().html).toContain("Resolved");
+    await sendServerEmail(env, {
+      nodeName: "pivox",
+      down: [down("Web")],
+      up: [down("API"), down("Health")],
+    });
+    const subjects = (
+      send.mock.calls as unknown as [Record<string, string>][]
+    ).map(([message]) => message.subject);
+    expect(subjects).toEqual([
+      "[Krynodes] pivox: check back up — API",
+      "[Krynodes] pivox: 1 check down — Web · back up — API, Health",
+    ]);
+  });
+
+  it("sums up what was held back", async () => {
+    const { env, sent } = mailEnv();
+    await sendDigestEmail(env, { count: 4, since: Date.parse(at) });
+    expect(sent().subject).toBe("[Krynodes] 4 more check changes");
+    expect(sent().text).toContain("2026-09-28 08:05 UTC");
   });
 
   it("sends nothing when no operator address or binding is configured", async () => {
     for (const extra of [{ ALERT_EMAIL: undefined }, { EMAIL: undefined }]) {
       const { env, send } = mailEnv(extra);
-      await sendIncidentEmail(env, {
-        kind: "opened",
-        checkName: "API",
+      await sendServerEmail(env, {
         nodeName: "pivox",
-        summary: "API is down",
-        occurredAt: "2026-09-28T09:00:00.000Z",
+        down: [down("API")],
+        up: [],
       });
       expect(send).not.toHaveBeenCalled();
     }

@@ -6,9 +6,11 @@ import {
   heartbeatSummary,
   incidentDuring,
   layoutReportSlots,
+  overlaps,
   slotTip,
   type BarTone,
   type SlotState,
+  type Span,
 } from "@/lib/series";
 import { cn } from "@/lib/utils";
 import type { CheckResult, Incident } from "@/types";
@@ -18,6 +20,7 @@ const SLOT_CLASS: Record<SlotState, string> = {
   missed: "bg-destructive",
   pending: "bg-border",
   none: "bg-border/50",
+  maintenance: "bg-primary/40",
 };
 
 const BAR_CLASS: Record<BarTone, string> = {
@@ -25,6 +28,7 @@ const BAR_CLASS: Record<BarTone, string> = {
   down: "bg-destructive",
   brief: "bg-warning",
   missed: "bg-destructive",
+  maintenance: "bg-primary/40",
   empty: "bg-border",
 };
 
@@ -33,6 +37,7 @@ const SLOT_LABEL: Record<SlotState, string> = {
   missed: "no report",
   pending: "waiting",
   none: "not enrolled",
+  maintenance: "maintenance",
 };
 
 export function ReportStrip({
@@ -90,6 +95,7 @@ export function HeartbeatStrip({
   now,
   asOf,
   count = 48,
+  maintenance = [],
   className,
 }: {
   results: CheckResult[] | undefined;
@@ -101,6 +107,7 @@ export function HeartbeatStrip({
   now: number;
   asOf: number | undefined;
   count?: number;
+  maintenance?: Span[];
   className?: string;
 }) {
   const laid = layoutReportSlots({
@@ -112,6 +119,7 @@ export function HeartbeatStrip({
     now,
     asOf,
     count,
+    maintenance,
   });
   const summary = heartbeatSummary(
     laid.map((slot) => slot.sample?.status ?? null),
@@ -128,16 +136,25 @@ export function HeartbeatStrip({
         const incident = down
           ? incidentDuring(slot.start, windowSeconds * 1000, incidents)
           : undefined;
+        const planned =
+          slot.state === "maintenance" ||
+          overlaps(maintenance, slot.start, windowSeconds * 1000);
         const tip = slotTip(
           slot.start,
           slot.sample,
           down && !incident,
           clockTime,
+          planned && !incident,
         );
         const tone = cn(
           "bar-tip flex-1 rounded-[2px]",
           BAR_CLASS[
-            barTone(slot.state, slot.sample?.status ?? null, Boolean(incident))
+            barTone(
+              slot.state,
+              slot.sample?.status ?? null,
+              Boolean(incident),
+              planned,
+            )
           ],
         );
         return incident ? (

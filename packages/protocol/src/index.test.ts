@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import fixture from "./fixtures/agent-config.json";
 import targets from "./fixtures/targets.json";
 import {
+  actionResultSchema,
   agentActionSchema,
   agentActionsRequestSchema,
   agentActionsResponseSchema,
@@ -212,6 +213,46 @@ describe("service action messages", () => {
     ).toBe(false);
   });
 
+  it("carries a signed logs request for services and stacks, never for a server", () => {
+    const logs = { ...action, action: "logs" };
+    expect(agentActionSchema.safeParse(logs).success).toBe(true);
+    expect(
+      agentActionSchema.safeParse({
+        ...logs,
+        kind: "systemd",
+        name: "nginx.service",
+      }).success,
+    ).toBe(true);
+    expect(
+      agentActionSchema.safeParse({
+        ...logs,
+        kind: "compose",
+        name: "listmonk",
+      }).success,
+    ).toBe(true);
+    expect(
+      agentActionSchema.safeParse({ ...logs, kind: "host", name: "server" })
+        .success,
+    ).toBe(false);
+    const { signed: _, ...unsigned } = logs;
+    expect(agentActionSchema.safeParse(unsigned).success).toBe(false);
+  });
+
+  it("carries a result of up to 64 KiB, enough for the last log lines", () => {
+    const result = {
+      id,
+      ok: true,
+      exitCode: 0,
+      output: "x".repeat(65536),
+      finishedAt: "2026-09-29T10:10:00.000Z",
+    };
+    expect(actionResultSchema.safeParse(result).success).toBe(true);
+    expect(
+      actionResultSchema.safeParse({ ...result, output: "x".repeat(65537) })
+        .success,
+    ).toBe(false);
+  });
+
   it("carries actions and a refresh in the heartbeat response", () => {
     const parsed = heartbeatResponseSchema.parse({
       ok: true,
@@ -278,7 +319,7 @@ describe("service action messages", () => {
     expect(
       agentActionsRequestSchema.safeParse({
         nodeId,
-        results: [{ ...result, output: "x".repeat(2049) }],
+        results: [{ ...result, output: "x".repeat(65537) }],
       }).success,
     ).toBe(false);
     expect(

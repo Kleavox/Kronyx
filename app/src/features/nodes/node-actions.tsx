@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Ellipsis } from "lucide-react";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Button } from "@/components/ui/button";
@@ -12,8 +12,16 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { CheckDialog } from "@/features/checks/check-dialog";
 import { useSignedAction } from "@/features/deploy/use-signed-action";
-import { useDeleteNode, useServices } from "@/lib/api";
+import {
+  useDeleteNode,
+  useOverview,
+  useRefreshServices,
+  useRequestAgentUpdate,
+  useServices,
+} from "@/lib/api";
+import { agentState } from "@/lib/agent";
 import { canRestartServer } from "@/lib/devices";
+import { serverOperation } from "@/lib/operations";
 import type { NodeRecord } from "@/types";
 
 import { EditNodeDialog } from "./edit-node-dialog";
@@ -25,30 +33,61 @@ export function NodeActions({
   onDeleted,
   restart = false,
   onRestartClosed,
+  compact = false,
 }: {
   node: NodeRecord;
   onDeleted?: () => void;
   restart?: boolean;
   onRestartClosed?: () => void;
+  compact?: boolean;
 }) {
   const [dialog, setDialog] = useState<OpenDialog>(restart ? "restart" : null);
   const remove = useDeleteNode();
   const reboot = useSignedAction(false);
+  const refresh = useRefreshServices();
+  const update = useRequestAgentUpdate();
   const services = useServices();
+  const release = useOverview().data?.agentRelease;
   const trust =
     services.data?.nodes.find((entry) => entry.id === node.id)?.trust ?? null;
-  const restartable = canRestartServer(node, trust);
+  const now = Date.now();
+  const busy =
+    serverOperation(node, services.data?.actions ?? [], now) !== null;
+  const restartable = canRestartServer(node, trust) && !busy;
+  const updatable =
+    !busy &&
+    release?.version &&
+    ["available", "failed"].includes(agentState(node, release.version, now));
 
   return (
     <>
       <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="sm">
-            Actions
-            <ChevronDown aria-hidden="true" />
-          </Button>
+          {compact ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-9 text-muted-foreground md:size-8"
+              aria-label={`Actions for ${node.name}`}
+            >
+              <Ellipsis aria-hidden="true" />
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm">
+              Actions
+              <ChevronDown aria-hidden="true" />
+            </Button>
+          )}
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
+          <DropdownMenuItem onSelect={() => refresh.mutate([node.id])}>
+            Refresh services
+          </DropdownMenuItem>
+          {updatable && (
+            <DropdownMenuItem onSelect={() => update.mutate(node.id)}>
+              Update agent to {release.version}
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem onSelect={() => setDialog("add-check")}>
             Add check
           </DropdownMenuItem>
@@ -87,13 +126,13 @@ export function NodeActions({
       />
 
       <ConfirmDialog
-        open={dialog === "restart" && restartable}
+        open={dialog === "restart" && canRestartServer(node, trust)}
         onOpenChange={(open) => {
           setDialog(open ? "restart" : null);
           if (!open) onRestartClosed?.();
         }}
         title={`Restart ${node.name}?`}
-        description="The server goes offline for a minute or two. Services that don't start on boot stay stopped."
+        description="The server goes offline for a minute or two. Everyone sees it as restarting until it reports again, and its checks open no incidents meanwhile. Services that don't start on boot stay stopped."
         confirmLabel="Restart server"
         mutation={reboot}
         variables={{
@@ -108,6 +147,7 @@ export function NodeActions({
         title={`Delete ${node.name}?`}
         description="Its metrics, checks, check results and incidents are deleted with it, and the agent on the server stops being accepted."
         confirmLabel="Delete node"
+        guarded
         mutation={remove}
         variables={node.id}
         onDone={onDeleted}

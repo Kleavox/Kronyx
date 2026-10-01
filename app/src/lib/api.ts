@@ -28,10 +28,11 @@ import type {
 } from "../types";
 import { pollEnrollment } from "./enrollment";
 import { apiFetch, errorMessage } from "./http";
+import { guardedFetch } from "./proof";
 import { keepWhileSameNode, queryKeys } from "./query-client";
 import { untilWindowSettles } from "./series";
 import type { Approval, DeviceInput, SignedTarget } from "./passkeys";
-import { pollServices } from "./services";
+import { isPending, pollServices } from "./services";
 
 const MINUTE = 60_000;
 
@@ -135,7 +136,7 @@ interface NewCheck {
 
 export const useCreateEnrollment = () =>
   useApiMutation(
-    () => apiFetch<Enrollment>("/api/enrollments", send("POST", {})),
+    () => guardedFetch<Enrollment>("/api/enrollments", send("POST", {})),
     [],
   );
 
@@ -180,7 +181,7 @@ export const useCheckAgentRelease = () =>
 
 export const useDeleteNode = () =>
   useApiMutation(
-    (nodeId: string) => apiFetch(`/api/nodes/${nodeId}`, send("DELETE")),
+    (nodeId: string) => guardedFetch(`/api/nodes/${nodeId}`, send("DELETE")),
     [queryKeys.overview, queryKeys.recentMetrics, queryKeys.checkResults],
   );
 
@@ -205,13 +206,13 @@ export const useUpdateCheck = () =>
       enabled?: boolean;
       public?: boolean;
       publicNote?: string;
-    }) => apiFetch(`/api/checks/${id}`, send("PATCH", change)),
+    }) => guardedFetch(`/api/checks/${id}`, send("PATCH", change)),
     [queryKeys.overview, queryKeys.checkResults],
   );
 
 export const useDeleteCheck = () =>
   useApiMutation(
-    (checkId: string) => apiFetch(`/api/checks/${checkId}`, send("DELETE")),
+    (checkId: string) => guardedFetch(`/api/checks/${checkId}`, send("DELETE")),
     [queryKeys.overview, queryKeys.checkResults],
     true,
   );
@@ -250,7 +251,24 @@ export const postActions = (body: {
   action: Exclude<ActionVerb, "trust">;
   mode: BatchMode;
   targets: SignedTarget[];
-}) => apiFetch<{ batchId: string }>("/api/actions", send("POST", body));
+}) =>
+  apiFetch<{ batchId: string; actions: { id: string }[] }>(
+    "/api/actions",
+    send("POST", body),
+  );
+
+export function useAction(id: string | null) {
+  return useQuery({
+    queryKey: queryKeys.action(id),
+    queryFn: () =>
+      apiFetch<{ action: ActionRecord }>(
+        `/api/actions/${encodeURIComponent(id!)}`,
+      ),
+    enabled: id !== null,
+    refetchInterval: (query) =>
+      isPending(query.state.data?.action) ? 5_000 : false,
+  });
+}
 
 export const useCancelActions = () =>
   useApiMutation(

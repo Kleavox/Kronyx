@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 
 import { fingerprint, formatPrint } from "@/lib/devices";
 import { clockTime, shortDate } from "@/lib/format";
-import { errorMessage } from "@/lib/http";
 import { cn } from "@/lib/utils";
 
 export const when = (value: string | number) =>
@@ -10,16 +9,6 @@ export const when = (value: string | number) =>
 
 export const plural = (count: number, word: string) =>
   `${count} ${word}${count === 1 ? "" : "s"}`;
-
-const NO_FINGERPRINT_HERE =
-  "No fingerprint was confirmed. If this device has none, choose Use a phone in the passkey window.";
-
-export function failure(error: unknown, ruled = false): string {
-  if (!(error instanceof DOMException && error.name === "NotAllowedError")) {
-    return errorMessage(error);
-  }
-  return ruled ? NO_FINGERPRINT_HERE : "The fingerprint was cancelled.";
-}
 
 function useLocalPrint(publicKey: string | undefined): string | null {
   const [print, setPrint] = useState<{ key: string; value: string } | null>(

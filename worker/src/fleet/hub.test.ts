@@ -2,7 +2,7 @@ import type { AgentHeartbeat, CheckResult } from "@krynodes/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Env } from "../env";
-import { FakeSocket } from "../test/hub";
+import { FakeSocket, FakeStorage } from "../test/hub";
 import { seedCheck, seedNode } from "../test/seed";
 import { createTestDb } from "../test/sqlite-d1";
 import { FleetHub } from "./hub";
@@ -59,10 +59,22 @@ function setup() {
         .map((entry) => entry.ws);
     },
     setWebSocketAutoResponse() {},
+    storage: new FakeStorage(),
   };
+  const mail: { subject: string; text: string }[] = [];
   const hub = new FleetHub(
     ctx as unknown as DurableObjectState,
-    { DB: db } as unknown as Env,
+    {
+      DB: db,
+      ALERT_EMAIL: "owner@example.test",
+      FROM_EMAIL: "kry@example.test",
+      PUBLIC_ORIGIN: "https://kry.example.test",
+      EMAIL: {
+        send: async (message: { subject: string; text: string }) => {
+          mail.push(message);
+        },
+      },
+    } as unknown as Env,
   );
   const connect = async () => {
     const ws = new FakeSocket();
@@ -98,7 +110,18 @@ function setup() {
     }[];
   const changes = () =>
     (sqlite.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
-  return { sqlite, hub, accepted, connect, send, node, windows, changes };
+  return {
+    sqlite,
+    hub,
+    accepted,
+    connect,
+    send,
+    node,
+    windows,
+    changes,
+    mail,
+    storage: ctx.storage,
+  };
 }
 
 class AutoResponse {
@@ -228,6 +251,64 @@ describe("FleetHub", () => {
     expect(t.sqlite.prepare("SELECT status FROM incidents").all()).toEqual([
       { status: "OPEN" },
     ]);
+  });
+
+  it("mails once per server 90 seconds after an incident opens, and nothing for a flap", async () => {
+    const t = setup();
+    const ws = await t.connect();
+    await t.send(ws, BASE + 5_000, heartbeat(10, [result("DOWN")]));
+    await t.send(ws, BASE + 65_000, heartbeat(10, [result("DOWN")]));
+    expect(t.mail).toEqual([]);
+    expect(t.storage.alarm).toBe(BASE + 155_000);
+
+    vi.setSystemTime(BASE + 155_000);
+    await t.hub.alarm();
+    expect(t.mail.map((message) => message.subject)).toEqual([
+      `[Krynodes] ${NODE}: 1 check down — ${CHECK}`,
+    ]);
+    expect(t.storage.alarm).toBeNull();
+
+    await t.send(ws, BASE + 185_000, heartbeat(10, [result("UP")]));
+    await t.send(ws, BASE + 245_000, heartbeat(10, [result("DOWN")]));
+    await t.send(ws, BASE + 250_000, heartbeat(10, [result("DOWN")]));
+    vi.setSystemTime(BASE + 275_000);
+    await t.hub.alarm();
+    expect(t.mail).toHaveLength(1);
+  });
+
+  it("opens no incident during planned work on the server, then one at the next failure", async () => {
+    const t = setup();
+    const planned = (status: string, finishedAt: string | null) =>
+      t.sqlite
+        .prepare(
+          `INSERT OR REPLACE INTO actions (id, batch_id, position, mode, node_id, kind, name, action,
+             status, requested_by, requested_at, deliverable_at, sent_at, finished_at)
+           VALUES ('m1', 'b1', 0, 'rolling', ?, 'docker', 'nginx', 'restart', ?, 'budi@example.test', ?, ?, ?, ?)`,
+        )
+        .run(
+          NODE,
+          status,
+          new Date(BASE).toISOString(),
+          new Date(BASE).toISOString(),
+          new Date(BASE).toISOString(),
+          finishedAt,
+        );
+    const incidents = () =>
+      (
+        t.sqlite.prepare("SELECT COUNT(*) AS n FROM incidents").get() as {
+          n: number;
+        }
+      ).n;
+    planned("sent", null);
+    const ws = await t.connect();
+    await t.send(ws, BASE + 5_000, heartbeat(10, [result("DOWN")]));
+    await t.send(ws, BASE + 65_000, heartbeat(10, [result("DOWN")]));
+    expect(incidents()).toBe(0);
+    planned("done", new Date(BASE + 70_000).toISOString());
+    await t.send(ws, BASE + 125_000, heartbeat(10, [result("DOWN")]));
+    expect(incidents()).toBe(0);
+    await t.send(ws, BASE + 245_000, heartbeat(10, [result("DOWN")]));
+    expect(incidents()).toBe(1);
   });
 
   it("serves the live view and pokes connected servers", async () => {
@@ -366,5 +447,63 @@ describe("FleetHub", () => {
       await t.hub.fetch(new Request("https://fleet/live"))
     ).json()) as Record<string, { connectedAt: number }>;
     expect(live[NODE]?.connectedAt).toBe(BASE + 1_000);
+  });
+
+  describe("dashboards watching", () => {
+    const changes = (ws: FakeSocket) =>
+      ws
+        .replies()
+        .filter((reply) => reply.type === "changed")
+        .map((reply) => reply.topics);
+
+    it("hears when a server connects, reports a check change and leaves", async () => {
+      const t = setup();
+      const viewer = new FakeSocket();
+      await t.hub.watch(viewer as unknown as WebSocket);
+      const ws = await t.connect();
+      await t.send(ws, BASE + 5_000, heartbeat(10, [result("UP")]));
+      expect(changes(viewer)).toEqual([["nodes", "checks"]]);
+      await t.send(ws, BASE + 65_000, heartbeat(20, [result("UP")]));
+      expect(changes(viewer)).toHaveLength(1);
+      await t.hub.webSocketClose(ws as unknown as WebSocket);
+      expect(changes(viewer).at(-1)).toEqual(["nodes"]);
+    });
+
+    it("hears action results and inventories, and what the Worker announces", async () => {
+      const t = setup();
+      const viewer = new FakeSocket();
+      await t.hub.watch(viewer as unknown as WebSocket);
+      const ws = await t.connect();
+      await t.hub.webSocketMessage(
+        ws as unknown as WebSocket,
+        JSON.stringify({
+          id: 1,
+          type: "actions",
+          report: { nodeId: NODE, inventory: { hash: "a".repeat(64) } },
+        }),
+      );
+      expect(changes(viewer)).toEqual([["actions", "services"]]);
+      await t.hub.fetch(
+        new Request("https://fleet/announce", {
+          method: "POST",
+          body: JSON.stringify({ topics: ["all"] }),
+        }),
+      );
+      expect(changes(viewer).at(-1)).toEqual(["all"]);
+    });
+
+    it("keeps watchers out of the live view, the agents' sockets and window flushing", async () => {
+      const t = setup();
+      const viewer = new FakeSocket();
+      await t.hub.watch(viewer as unknown as WebSocket);
+      await t.hub.webSocketMessage(viewer as unknown as WebSocket, "hello");
+      expect(viewer.replies()).toEqual([]);
+      const live = await (
+        await t.hub.fetch(new Request("https://fleet/live"))
+      ).json();
+      expect(live).toEqual({});
+      await t.hub.webSocketClose(viewer as unknown as WebSocket);
+      expect(t.windows()).toEqual([]);
+    });
   });
 });

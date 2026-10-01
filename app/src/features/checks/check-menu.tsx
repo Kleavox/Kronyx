@@ -73,6 +73,7 @@ export function CheckMenu({
         title={`Remove ${check.name}?`}
         description="Its results and incidents are deleted with it. To stop it for a while instead, pause it."
         confirmLabel="Remove check"
+        guarded
         mutation={remove}
         variables={check.id}
       />

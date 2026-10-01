@@ -22,6 +22,23 @@ export class FakeSocket {
   }
 }
 
+export class FakeStorage {
+  values = new Map<string, unknown>();
+  alarm: number | null = null;
+  async get(key: string) {
+    return structuredClone(this.values.get(key));
+  }
+  async put(key: string, value: unknown) {
+    this.values.set(key, structuredClone(value));
+  }
+  async setAlarm(at: number) {
+    this.alarm = at;
+  }
+  async deleteAlarm() {
+    this.alarm = null;
+  }
+}
+
 class AutoResponse {
   request: string;
   response: string;
@@ -48,6 +65,7 @@ export function hubHarness(env: Partial<Env>) {
         .map((entry) => entry.ws);
     },
     setWebSocketAutoResponse() {},
+    storage: new FakeStorage(),
   };
   const hub = new FleetHub(
     ctx as unknown as DurableObjectState,

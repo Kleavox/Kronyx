@@ -41,6 +41,35 @@ export async function pokeNodes(
   }
 }
 
+async function announce(
+  env: Env,
+  ownerId: string,
+  topics: string[],
+): Promise<void> {
+  if (!streamsOn(env)) return;
+  try {
+    await hubFor(env, ownerId).fetch("https://fleet/announce", {
+      method: "POST",
+      body: JSON.stringify({ topics }),
+    });
+  } catch (error) {
+    console.error("[kry fleet]", error);
+  }
+}
+
+export function announceSoon(
+  context: KrynodesContext,
+  ownerId: string,
+  topics: string[],
+): void {
+  const work = announce(context.env, ownerId, topics);
+  try {
+    context.executionCtx.waitUntil(work);
+  } catch {
+    work.catch(() => undefined);
+  }
+}
+
 export function pokeSoon(
   context: KrynodesContext,
   ownerId: string,

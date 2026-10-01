@@ -3,12 +3,13 @@ import { describe, expect, it } from "vitest";
 import type { ActionRecord, NodeRecord, ServicesResponse } from "../types";
 import {
   actionText,
+  canReadLogs,
   displayName,
   durationText,
   groupByServer,
   isPending,
-  newlyFinished,
   outcomeText,
+  runningText,
   pollServices,
   primaryAction,
   refreshPending,
@@ -29,6 +30,7 @@ const action = (overrides: Partial<ActionRecord>): ActionRecord => ({
   name: "adguard",
   action: "restart",
   status: "queued",
+  requestedBy: "owner@example.test",
   requestedAt: "2026-09-29T10:00:00.000Z",
   deliverableAt: "2026-09-29T10:00:00.000Z",
   sentAt: null,
@@ -247,6 +249,11 @@ describe("polling, checks and outcomes", () => {
     expect(pollServices(data, now)).toBe(5_000);
     const quiet = { ...data, actions: [action({ status: "done" })] };
     expect(pollServices(quiet, now)).toBeGreaterThan(5_000);
+    const reading = {
+      ...data,
+      actions: [action({ action: "logs", status: "sent" })],
+    };
+    expect(pollServices(reading, now)).toBeGreaterThan(5_000);
     const refreshing = (at: string) => ({
       ...quiet,
       nodes: [{ ...data.nodes[0]!, refreshRequestedAt: at }],
@@ -293,20 +300,17 @@ describe("polling, checks and outcomes", () => {
     ).toBeNull();
   });
 
-  it("reports what finished since the last look, and nothing twice", () => {
-    const before = [
-      action({ id: "x", status: "sent" }),
-      action({ id: "y", status: "queued" }),
-    ];
-    const after = [
-      action({ id: "x", status: "done" }),
-      action({ id: "y", status: "cancelled" }),
-    ];
-    expect(newlyFinished(before, after).map((entry) => entry.id)).toEqual([
-      "x",
-      "y",
-    ]);
-    expect(newlyFinished(after, after)).toEqual([]);
+  it("says what runs and how it ended, in words people read", () => {
+    expect(runningText(action({ status: "sent" }), "PIVOX")).toBe(
+      "Restarting adguard on PIVOX",
+    );
+    expect(runningText(action({ status: "sent" }))).toBe("Restarting adguard");
+    expect(
+      runningText(
+        action({ kind: "host", name: "server", action: "reboot" }),
+        "PIVOX",
+      ),
+    ).toBe("Restarting PIVOX");
     expect(isPending(action({ status: "sent" }))).toBe(true);
     expect(outcomeText(action({ status: "done" }), "PIVOX")).toEqual({
       ok: true,
@@ -343,5 +347,16 @@ describe("announcements and bulk order", () => {
       ok: true,
       text: "PIVOX restarted",
     });
+  });
+});
+
+describe("logs", () => {
+  it("are readable from agents 0.3.3 and newer", () => {
+    expect(canReadLogs(node("n1", "pivox", "0.3.3"))).toBe(true);
+    expect(canReadLogs(node("n1", "pivox", "0.4.0"))).toBe(true);
+    expect(canReadLogs(node("n1", "pivox", "0.3.2"))).toBe(false);
+    expect(canReadLogs({ ...node("n1", "pivox"), agent_version: null })).toBe(
+      false,
+    );
   });
 });

@@ -1,9 +1,7 @@
 import type { Env } from "../env";
 
-export interface IncidentEmail {
-  kind: "opened" | "resolved";
+interface CheckChange {
   checkName: string;
-  nodeName: string;
   summary: string;
   occurredAt: string;
 }
@@ -128,58 +126,90 @@ async function deliver(env: Env, layout: Layout): Promise<void> {
   });
 }
 
-export async function sendIncidentEmail(
-  env: Env,
-  message: IncidentEmail,
-): Promise<void> {
-  const opened = message.kind === "opened";
-  const heading = opened
-    ? `${message.checkName} is down`
-    : `${message.checkName} recovered`;
+const incidentsLink = (env: Env) => ({
+  label: "Open incidents",
+  href: new URL("/incidents", env.PUBLIC_ORIGIN).toString(),
+});
 
+const names = (changes: CheckChange[]) =>
+  changes.map((change) => change.checkName).join(", ");
+
+export async function sendServerEmail(
+  env: Env,
+  message: { nodeName: string; down: CheckChange[]; up: CheckChange[] },
+): Promise<void> {
+  const { nodeName, down, up } = message;
+  const parts = [
+    ...(down.length > 0
+      ? [
+          `${down.length} ${down.length === 1 ? "check" : "checks"} down — ${names(down)}`,
+        ]
+      : []),
+    ...(up.length > 0
+      ? [
+          `${down.length > 0 ? "" : up.length === 1 ? "check " : "checks "}back up — ${names(up)}`,
+        ]
+      : []),
+  ];
+  const heading = `${nodeName}: ${parts.join(" · ")}`;
+  const intro =
+    down.length > 0
+      ? `Checks on ${nodeName} kept failing for 90 seconds and opened incidents.`
+      : `Checks on ${nodeName} respond again.`;
   await deliver(env, {
     title: `[Krynodes] ${heading}`,
-    preheader: message.summary,
-    badge: opened
-      ? { label: "Down", color: COLOR.destructive }
-      : { label: "Resolved", color: COLOR.success },
+    preheader: intro,
+    badge:
+      down.length > 0
+        ? { label: "Down", color: COLOR.destructive }
+        : { label: "Resolved", color: COLOR.success },
     heading,
-    intro: message.summary,
+    intro,
     rows: [
-      ["Node", message.nodeName],
-      ["Check", message.checkName],
-      [opened ? "Started" : "Resolved", utcTime(message.occurredAt)],
+      ["Server", nodeName],
+      ...down.map((change): [string, string] => [
+        change.checkName,
+        `${change.summary} · since ${utcTime(change.occurredAt)}`,
+      ]),
+      ...up.map((change): [string, string] => [
+        change.checkName,
+        `Back up · ${utcTime(change.occurredAt)}`,
+      ]),
     ],
-    action: {
-      label: "Open incidents",
-      href: new URL("/incidents", env.PUBLIC_ORIGIN).toString(),
-    },
+    action: incidentsLink(env),
+  });
+}
+
+export async function sendDigestEmail(
+  env: Env,
+  message: { count: number; since: number },
+): Promise<void> {
+  const heading = `${message.count} more check ${message.count === 1 ? "change" : "changes"}`;
+  const intro =
+    "Krynodes sends at most 6 incident mails an hour. These came after that; the dashboard shows where things stand now.";
+  await deliver(env, {
+    title: `[Krynodes] ${heading}`,
+    preheader: intro,
+    badge: { label: "Held back", color: COLOR.primary },
+    heading,
+    intro,
+    rows: [["Since", utcTime(new Date(message.since).toISOString())]],
+    action: incidentsLink(env),
   });
 }
 
 export async function sendProposalEmail(
   env: Env,
-  message: {
-    state: "opened" | "applied" | "expired";
-    title: string;
-    openedBy: string;
-    detail: string;
-  },
+  message: { title: string; openedBy: string },
 ): Promise<void> {
-  const label = {
-    opened: "Waiting for approval",
-    applied: "Applied",
-    expired: "Expired",
-  }[message.state];
+  const detail =
+    "A core device opened this change. It needs more approvals before it reaches your servers.";
   await deliver(env, {
-    title: `[Krynodes] ${label}: ${message.title}`,
-    preheader: message.detail,
-    badge: {
-      label,
-      color: message.state === "applied" ? COLOR.success : COLOR.primary,
-    },
+    title: `[Krynodes] Waiting for approval: ${message.title}`,
+    preheader: detail,
+    badge: { label: "Waiting for approval", color: COLOR.primary },
     heading: message.title,
-    intro: message.detail,
+    intro: detail,
     rows: [
       ["Change", message.title],
       ["Opened by", message.openedBy],

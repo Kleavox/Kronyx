@@ -8,7 +8,8 @@ import { Button } from "@/components/ui/button";
 import { ActionOutcome, PendingText } from "@/features/services/service-list";
 import { useCancelActions } from "@/lib/api";
 import { nodeState, timeAgo } from "@/lib/format";
-import { isPending } from "@/lib/services";
+import { LogsDialog } from "@/features/services/logs-dialog";
+import { canReadLogs, isPending } from "@/lib/services";
 import {
   containersOf,
   deployBlocker,
@@ -62,6 +63,7 @@ function MemberControls({
   onToggleContainers: () => void;
   onRequest: (request: DeployRequest) => void;
 }) {
+  const [reading, setReading] = useState(false);
   const cancel = useCancelActions();
   const blocker = deployBlocker(member);
   const action = member.action;
@@ -95,40 +97,52 @@ function MemberControls({
       </p>
     );
   }
+  const deploy = () =>
+    onRequest({ action: "deploy", project, members: [member] });
+  const rollback = () =>
+    onRequest({ action: "rollback", project, members: [member] });
+  const failed =
+    action?.action === "deploy" &&
+    action.status === "failed" &&
+    member.stack.rollback;
+  const down = member.stack.running === 0;
   return (
     <div className="flex items-center justify-end gap-1">
       <Button
-        variant="outline"
+        variant={failed || down ? "default" : "outline"}
         size="sm"
         className="h-9 md:h-8"
-        aria-label={`Deploy ${project} on ${member.node.name}`}
-        onClick={() =>
-          onRequest({ action: "deploy", project, members: [member] })
-        }
+        aria-label={`${failed ? "Roll back" : "Deploy"} ${project} on ${member.node.name}`}
+        onClick={failed ? rollback : deploy}
       >
-        Deploy
+        {failed ? "Roll back" : "Deploy"}
       </Button>
       <RowMenu
         label={`${project} on ${member.node.name} actions`}
         items={[
-          ...(member.stack.rollback
-            ? [
-                {
-                  label: "Roll back",
-                  onSelect: () =>
-                    onRequest({
-                      action: "rollback",
-                      project,
-                      members: [member],
-                    }),
-                },
-              ]
+          ...(failed
+            ? [{ label: "Deploy", onSelect: deploy }]
+            : member.stack.rollback
+              ? [{ label: "Roll back", onSelect: rollback }]
+              : []),
+          ...(canReadLogs(member.node)
+            ? [{ label: "Logs", onSelect: () => setReading(true) }]
             : []),
           {
             label: containersOpen ? "Hide containers" : "Show containers",
             onSelect: onToggleContainers,
           },
         ]}
+      />
+      <LogsDialog
+        target={{
+          nodeId: member.node.id,
+          nodeName: member.node.name,
+          kind: "compose",
+          name: project,
+        }}
+        open={reading}
+        onOpenChange={setReading}
       />
     </div>
   );
@@ -201,7 +215,10 @@ export function StackList({
             >
               <div className="flex min-w-0 items-center gap-2">
                 {single ? (
-                  <StatusDot tone={tone(single)} />
+                  <StatusDot
+                    tone={tone(single)}
+                    pulse={isPending(single.action)}
+                  />
                 ) : (
                   <Button
                     variant="ghost"
@@ -286,7 +303,10 @@ export function StackList({
                       )}
                     >
                       <span className="flex min-w-0 items-center gap-2 pl-3 md:pl-10">
-                        <StatusDot tone={tone(member)} />
+                        <StatusDot
+                          tone={tone(member)}
+                          pulse={isPending(member.action)}
+                        />
                         <span className="truncate">{member.node.name}</span>
                       </span>
                       <span className="col-span-2 pl-3 font-mono text-xs text-muted-foreground md:col-span-1 md:pl-0">

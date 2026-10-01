@@ -135,6 +135,7 @@ describe("GET /api/services", () => {
         status: "queued",
         mode: "rolling",
         position: 0,
+        requestedBy: "standalone@localhost",
       }),
     ]);
   });
@@ -333,6 +334,84 @@ describe("POST /api/actions", () => {
       .map((row) => String((row as { detail: unknown }).detail))
       .join(" | ");
     expect(plan).toMatch(/USING INDEX idx_actions_status_node/u);
+  });
+});
+
+describe("logs", () => {
+  const logs = (
+    call: ReturnType<typeof setup>["call"],
+    nodeId: string,
+    kind: string,
+    name: string,
+  ) => {
+    const full = { id: crypto.randomUUID(), nodeId, kind, name };
+    return call("POST", "/api/actions", {
+      action: "logs",
+      targets: [{ ...full, signed: signedFor({ ...full, action: "logs" }) }],
+    });
+  };
+
+  it("reads logs from agents 0.3.3 and newer, for protected units too, without blocking a restart", async () => {
+    const { call, sqlite, restart } = setup();
+    sqlite
+      .prepare("UPDATE nodes SET agent_version = '0.3.3' WHERE id = ?")
+      .run(A);
+    sqlite
+      .prepare(
+        "INSERT INTO services (node_id, kind, name, state, system) VALUES (?, 'systemd', 'ssh.service', 'running', 1)",
+      )
+      .run(A);
+    sqlite
+      .prepare(
+        "INSERT INTO stacks (node_id, project, directory, running, total, compose, rollback, updated_at) VALUES (?, 'listmonk', '/opt/listmonk', 1, 1, 1, 0, datetime('now'))",
+      )
+      .run(A);
+    expect((await logs(call, A, "docker", "adguard")).status).toBe(201);
+    expect((await logs(call, A, "docker", "adguard")).status).toBe(201);
+    expect((await logs(call, A, "systemd", "ssh.service")).status).toBe(201);
+    expect((await logs(call, A, "compose", "listmonk")).status).toBe(201);
+    expect((await restart([{ nodeId: A }])).status).toBe(201);
+    expect((await logs(call, A, "docker", "adguard")).status).toBe(201);
+  });
+
+  it("keeps log text out of lists and serves it by id", async () => {
+    const { call, sqlite, restart } = setup();
+    sqlite
+      .prepare("UPDATE nodes SET agent_version = '0.3.3' WHERE id = ?")
+      .run(A);
+    await restart([{ nodeId: A }]);
+    const created = await reply(logs(call, A, "docker", "adguard"));
+    const id = created.actions![0]!.id as string;
+    sqlite
+      .prepare(
+        "UPDATE actions SET status = 'done', output = 'line one', finished_at = datetime('now') WHERE id = ?",
+      )
+      .run(id);
+    const listed = await reply(call("GET", "/api/services"));
+    const entry = listed.actions!.find((action) => action.id === id);
+    expect(entry).toMatchObject({ action: "logs", output: null });
+    const history = await reply(call("GET", `/api/nodes/${A}/actions`));
+    expect(history.actions!.map((action) => action.action)).toEqual([
+      "restart",
+    ]);
+    const single = (await (await call("GET", `/api/actions/${id}`)).json()) as {
+      action: Record<string, unknown>;
+    };
+    expect(single.action).toMatchObject({ id, output: "line one" });
+    expect(
+      (await call("GET", `/api/actions/${crypto.randomUUID()}`)).status,
+    ).toBe(404);
+  });
+
+  it("refuses logs from older agents and for the server itself", async () => {
+    const { call, sqlite } = setup();
+    const old = await logs(call, B, "docker", "adguard");
+    expect(old.status).toBe(422);
+    expect((await reply(old)).code).toBe("AGENT_TOO_OLD");
+    sqlite
+      .prepare("UPDATE nodes SET agent_version = '0.3.3' WHERE id = ?")
+      .run(A);
+    expect((await logs(call, A, "host", "server")).status).toBe(400);
   });
 });
 
