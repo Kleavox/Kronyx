@@ -49,7 +49,7 @@ const sha256 = async (bytes: Uint8Array<ArrayBuffer>) =>
 const encode = (value: unknown) =>
   toB64url(new TextEncoder().encode(JSON.stringify(value)));
 
-function setup(agent = "0.3.0") {
+function setup(agent = "0.3.1") {
   const { db, sqlite } = createTestDb();
   for (const id of [A, B, C]) {
     seedNode(sqlite, { id });

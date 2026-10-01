@@ -14,41 +14,44 @@ async function setup() {
   sqlite
     .prepare("UPDATE nodes SET agent_token_hash = ? WHERE id = ?")
     .run(await sha256("agent-token"), NODE);
-  const env = { DB: db } as unknown as Env;
-  const call = (method: string, path: string, body?: unknown, token = true) =>
+  const hub: Request[] = [];
+  const env = {
+    DB: db,
+    FLEET: {
+      idFromName: (name: string) => ({ name }),
+      get: () => ({
+        fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+          hub.push(new Request(input, init));
+          return new Response("from hub");
+        },
+      }),
+    },
+  } as unknown as Env;
+  const call = (
+    method: string,
+    path: string,
+    headers: Record<string, string> = {},
+    body?: unknown,
+  ) =>
     app.request(
       `https://kry.example.test${path}`,
       {
         method,
         headers: {
           "content-type": "application/json",
-          ...(token ? { authorization: "Bearer agent-token" } : {}),
+          authorization: "Bearer agent-token",
+          ...headers,
         },
         body: body === undefined ? undefined : JSON.stringify(body),
       },
       env,
     );
-  return { call };
+  return { call, hub };
 }
 
-describe("old agent HTTP path", () => {
-  it("is on until the owner turns it off, and can be turned back on", async () => {
+describe("agents before 0.3.1", () => {
+  it("get 410 on the HTTP report routes, which no longer exist", async () => {
     const t = await setup();
-    const overview = async () =>
-      (
-        (await (await t.call("GET", "/api/overview")).json()) as {
-          agentHttp: boolean;
-        }
-      ).agentHttp;
-    expect(await overview()).toBe(true);
-    expect((await t.call("GET", "/api/agent/config")).status).toBe(200);
-    expect(
-      (await t.call("PUT", "/api/agent-http", { enabled: "no" })).status,
-    ).toBe(400);
-    expect(
-      (await t.call("PUT", "/api/agent-http", { enabled: false })).status,
-    ).toBe(200);
-    expect(await overview()).toBe(false);
     for (const [method, path] of [
       ["POST", "/api/agent/heartbeat"],
       ["GET", "/api/agent/config"],
@@ -57,19 +60,39 @@ describe("old agent HTTP path", () => {
       const response = await t.call(
         method,
         path,
+        {},
         method === "POST" ? {} : undefined,
       );
-      expect(response.status, path).toBe(410);
+      expect(response.status).toBe(410);
       expect(await response.json()).toMatchObject({
         code: "AGENT_UPDATE_REQUIRED",
       });
     }
+  });
+
+  it("are refused at the live connection by the version they announce", async () => {
+    const t = await setup();
+    const open = (agent: string) =>
+      t.call("GET", "/api/agent/stream", {
+        upgrade: "websocket",
+        "user-agent": agent,
+      });
+    const old = await open("kry-agent/0.3.0");
+    expect(old.status).toBe(426);
+    expect(await old.json()).toMatchObject({ code: "AGENT_UPDATE_REQUIRED" });
+    expect(t.hub).toHaveLength(0);
+    expect(await (await open("kry-agent/0.3.1")).text()).toBe("from hub");
+    expect(await (await open("kry-agent/dev")).text()).toBe("from hub");
+  });
+
+  it("leave no switch behind on the dashboard", async () => {
+    const t = await setup();
+    const overview = (await (
+      await t.call("GET", "/api/overview")
+    ).json()) as Record<string, unknown>;
+    expect(overview).not.toHaveProperty("agentHttp");
     expect(
-      (await t.call("POST", "/api/agent/enroll", {}, false)).status,
-    ).not.toBe(410);
-    expect(
-      (await t.call("PUT", "/api/agent-http", { enabled: true })).status,
-    ).toBe(200);
-    expect((await t.call("GET", "/api/agent/config")).status).toBe(200);
+      (await t.call("PUT", "/api/agent-http", {}, { enabled: true })).status,
+    ).toBe(404);
   });
 });

@@ -232,20 +232,14 @@ describe("refresh and eligibility", () => {
     ]);
   });
 
-  it("still asks a streaming server whose row is a few minutes old", async () => {
+  it("still asks a server whose row is a few minutes old", async () => {
     const { db, sqlite } = setup();
     sqlite
-      .prepare(
-        "UPDATE nodes SET transport = 'stream', last_seen_at = ? WHERE id = ?",
-      )
+      .prepare("UPDATE nodes SET last_seen_at = ? WHERE id = ?")
       .run("2026-09-29 09:56:00", NODE);
     expect(await requestRefresh(db, "standalone", undefined, NOW)).toEqual([
       NODE,
     ]);
-    sqlite
-      .prepare("UPDATE nodes SET transport = 'http' WHERE id = ?")
-      .run(NODE);
-    expect(await requestRefresh(db, "standalone", undefined, NOW)).toEqual([]);
   });
 
   it("does not ask a server that has stopped reporting", async () => {
@@ -325,7 +319,7 @@ describe("stacks and trust", () => {
     ]);
   });
 
-  it("stores the trust report, reading an old agent's keys as core with access", async () => {
+  it("stores the trust report as the agent sends it", async () => {
     const { db, sqlite, node } = setup();
     const stored = () =>
       JSON.parse(
@@ -335,22 +329,6 @@ describe("stacks and trust", () => {
             .get(NODE) as { trust_report: string }
         ).trust_report,
       ) as unknown;
-    await applyInventory(
-      db,
-      node(),
-      {
-        hash: HASH_A,
-        services: [],
-        trust: { version: 2, keys: ["0123456789abcdef", "fedcba9876543210"] },
-      },
-      NOW,
-    );
-    expect(stored()).toEqual({
-      version: 2,
-      core: ["0123456789abcdef", "fedcba9876543210"],
-      access: ["0123456789abcdef", "fedcba9876543210"],
-      passphrase: false,
-    });
     await applyInventory(
       db,
       node(),
@@ -383,7 +361,12 @@ describe("stacks and trust", () => {
         hash: HASH_A,
         services: [],
         stacks: [stack("listmonk")],
-        trust: { version: 1, keys: ["0123456789abcdef"] },
+        trust: {
+          version: 1,
+          core: ["0123456789abcdef"],
+          access: ["0123456789abcdef"],
+          passphrase: false,
+        },
       },
       NOW,
     );

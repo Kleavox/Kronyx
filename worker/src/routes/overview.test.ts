@@ -29,7 +29,6 @@ const NODE_KEYS = [
   "update_attempts",
   "update_error",
   "auto_update",
-  "transport",
 ];
 const CHECK_KEYS = [
   "id",
@@ -86,7 +85,6 @@ describe("GET /api/overview contract", () => {
     >;
 
     expect(Object.keys(body).sort()).toEqual([
-      "agentHttp",
       "agentRelease",
       "checks",
       "incidents",

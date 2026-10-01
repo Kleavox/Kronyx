@@ -119,9 +119,12 @@ export class FleetHub {
       heartbeat?: unknown;
       report?: unknown;
     };
-    const id = typeof envelope.id === "number" ? envelope.id : undefined;
-    const reply: Reply = (answer) =>
-      ws.send(JSON.stringify(id === undefined ? answer : { id, ...answer }));
+    if (typeof envelope.id !== "number") {
+      ws.send(JSON.stringify({ type: "error", code: "INVALID_MESSAGE" }));
+      return;
+    }
+    const id = envelope.id;
+    const reply: Reply = (answer) => ws.send(JSON.stringify({ id, ...answer }));
     const invalid = () => reply({ type: "error", code: "INVALID_MESSAGE" });
     const state = ws.deserializeAttachment() as StreamState;
     try {
@@ -217,7 +220,7 @@ export class FleetHub {
     if (folded.flushed)
       leading.push(this.flushStatement(node.id, folded.flushed));
     if (folded.writeNode) {
-      leading.push(...heartbeatStatements(db, node, beat, now, "stream"));
+      leading.push(...heartbeatStatements(db, node, beat, now));
     }
     leading.push(...retried.statements);
     await commit(
@@ -266,7 +269,6 @@ export class FleetHub {
           { id: state.nodeId, interval_seconds: state.interval },
           state.beat,
           state.lastSeen,
-          "stream",
         ),
       );
     }

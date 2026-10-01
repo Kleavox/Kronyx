@@ -89,6 +89,11 @@ describe("production", () => {
   });
 });
 
+const hub = {
+  idFromName: (name: string) => ({ name }),
+  get: () => ({ fetch: async () => new Response("from hub") }),
+};
+
 describe("agents behind Access", () => {
   it("report with their bearer token alone, since an agent cannot pass Access", async () => {
     const { db, sqlite } = createTestDb();
@@ -97,16 +102,19 @@ describe("agents behind Access", () => {
       .prepare("UPDATE nodes SET agent_token_hash = ? WHERE id = ?")
       .run(await sha256("agent-token"), NODE);
     const response = await app.request(
-      "https://kry.example.test/api/agent/config",
-      { headers: { authorization: "Bearer agent-token" } },
+      "https://kry.example.test/api/agent/stream",
+      {
+        headers: { authorization: "Bearer agent-token", upgrade: "websocket" },
+      },
       {
         DB: db,
         ENVIRONMENT: "production",
         ACCESS_TEAM_DOMAIN: ACCESS_TEAM,
         ACCESS_AUD,
+        FLEET: hub,
       } as unknown as Env,
     );
-    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("from hub");
   });
 });
 
@@ -133,11 +141,17 @@ describe("agent rate limit", () => {
       DB: db,
       ENVIRONMENT: "development",
       AGENT_RATE_LIMIT: { limit },
+      FLEET: hub,
     } as unknown as Env;
     const call = () =>
       app.request(
-        "https://kry.example.test/api/agent/config",
-        { headers: { "cf-connecting-ip": "203.0.113.7" } },
+        "https://kry.example.test/api/agent/stream",
+        {
+          headers: {
+            "cf-connecting-ip": "203.0.113.7",
+            upgrade: "websocket",
+          },
+        },
         env,
       );
     return { limit, call };

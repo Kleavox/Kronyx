@@ -28,14 +28,8 @@ function windowStartMs(now: number, intervalSeconds: number): number {
 export const windowStart = (now: number, intervalSeconds: number) =>
   new Date(windowStartMs(now, intervalSeconds)).toISOString();
 
-export const staleAfterMs = (
-  transport: string,
-  intervalSeconds: number,
-  httpMs: number,
-) =>
-  transport === "stream"
-    ? windowSize(intervalSeconds) + 2 * intervalSeconds * 1000
-    : httpMs;
+export const staleAfterMs = (intervalSeconds: number) =>
+  windowSize(intervalSeconds) + 2 * intervalSeconds * 1000;
 
 const toResult = (result: CheckResult): WindowResult =>
   result.status === "DOWN"

@@ -5,6 +5,7 @@ import { app } from "../app";
 import type { Env } from "../env";
 import worker from "../index";
 import { sha256 } from "../lib/crypto";
+import { hubHarness, type FakeSocket } from "../test/hub";
 import { seedNode } from "../test/seed";
 import { createTestDb } from "../test/sqlite-d1";
 
@@ -72,7 +73,19 @@ async function setup(agentVersion = "0.1.0") {
       uptimeSeconds: 60,
     },
   });
-  return { db, sqlite, env, call, release, row, heartbeat };
+  const hub = hubHarness({ DB: db });
+  let socket: FakeSocket | null = null;
+  const report = async (
+    body: AgentHeartbeat & { update?: { version: string; message: string } },
+    reconnect = false,
+  ) => {
+    if (!socket || reconnect) socket = await hub.connect(NODE);
+    const reply = await hub.request(socket, "heartbeat", { heartbeat: body });
+    return (reply?.response ?? {}) as {
+      update?: { version: string; requestedAt: string };
+    };
+  };
+  return { db, sqlite, env, call, release, row, heartbeat, report };
 }
 
 describe("POST /api/nodes/:id/update", () => {
@@ -98,7 +111,7 @@ describe("POST /api/nodes/:id/update", () => {
   });
 
   it("asks the agent to update through its next heartbeat, then forgets", async () => {
-    const { call, release, row, heartbeat } = await setup();
+    const { call, release, row, heartbeat, report } = await setup();
     release("0.5.2");
 
     const requested = await call("POST", `/api/nodes/${NODE}/update`);
@@ -107,23 +120,11 @@ describe("POST /api/nodes/:id/update", () => {
     const { update_requested_at } = row();
     expect(row().update_requested_version).toBe("0.5.2");
 
-    const pending = await call(
-      "POST",
-      "/api/agent/heartbeat",
-      heartbeat("0.5.1"),
-      "agent-token",
-    );
-    expect(await pending.json()).toMatchObject({
+    expect(await report(heartbeat("0.5.1"))).toMatchObject({
       update: { version: "0.5.2", requestedAt: update_requested_at },
     });
 
-    const done = await call(
-      "POST",
-      "/api/agent/heartbeat",
-      heartbeat("0.5.2"),
-      "agent-token",
-    );
-    expect(await done.json()).not.toHaveProperty("update");
+    expect(await report(heartbeat("0.5.2"), true)).not.toHaveProperty("update");
     expect(row()).toMatchObject({
       update_requested_version: null,
       update_requested_at: null,
@@ -131,7 +132,7 @@ describe("POST /api/nodes/:id/update", () => {
   });
 
   it("asks again after 15 minutes, three attempts at most, and keeps the agent's reason", async () => {
-    const { call, release, sqlite, heartbeat } = await setup();
+    const { call, release, sqlite, heartbeat, report } = await setup();
     release("0.5.2");
     await call("POST", `/api/nodes/${NODE}/update`);
     const state = () =>
@@ -148,18 +149,15 @@ describe("POST /api/nodes/:id/update", () => {
       sqlite
         .prepare("UPDATE nodes SET update_requested_at = ? WHERE id = ?")
         .run(new Date(Date.now() - 16 * 60_000).toISOString(), NODE);
-    const beat = async (
+    const beat = (
       version: string,
       update?: { version: string; message: string },
+      reconnect = false,
     ) =>
-      (await (
-        await call(
-          "POST",
-          "/api/agent/heartbeat",
-          { ...heartbeat(version), ...(update ? { update } : {}) },
-          "agent-token",
-        )
-      ).json()) as { update?: { requestedAt: string } };
+      report(
+        { ...heartbeat(version), ...(update ? { update } : {}) },
+        reconnect,
+      );
 
     expect(state()).toMatchObject({ update_attempts: 1, update_error: null });
     const first = state().update_requested_at;
@@ -189,7 +187,7 @@ describe("POST /api/nodes/:id/update", () => {
       update_error: "download stalled",
     });
 
-    await beat("0.5.2");
+    await beat("0.5.2", undefined, true);
     expect(state()).toMatchObject({
       update_requested_at: null,
       update_attempts: 0,
@@ -198,16 +196,10 @@ describe("POST /api/nodes/:id/update", () => {
   });
 
   it("forgets a request once the agent reports a newer version, as after an update by hand", async () => {
-    const { call, release, row, heartbeat } = await setup();
+    const { call, release, row, heartbeat, report } = await setup();
     release("0.5.2");
     await call("POST", `/api/nodes/${NODE}/update`);
-    const done = await call(
-      "POST",
-      "/api/agent/heartbeat",
-      heartbeat("0.5.3"),
-      "agent-token",
-    );
-    expect(await done.json()).not.toHaveProperty("update");
+    expect(await report(heartbeat("0.5.3"))).not.toHaveProperty("update");
     expect(row()).toMatchObject({
       update_requested_version: null,
       update_requested_at: null,

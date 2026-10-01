@@ -89,9 +89,8 @@ describe("windows", () => {
     expect(expanded.has("gone")).toBe(false);
   });
 
-  it("waits a window and two reports before calling a streaming server silent", () => {
-    expect(staleAfterMs("http", 60, 180_000)).toBe(180_000);
-    expect(staleAfterMs("stream", 60, 180_000)).toBe(420_000);
-    expect(staleAfterMs("stream", 900, 180_000)).toBe(2_700_000);
+  it("waits a window and two reports before calling a server silent", () => {
+    expect(staleAfterMs(60)).toBe(420_000);
+    expect(staleAfterMs(900)).toBe(2_700_000);
   });
 });

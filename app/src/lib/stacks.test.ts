@@ -4,7 +4,7 @@ import type { NodeRecord, ServicesResponse, StackEntry } from "../types";
 import { actionText, outcomeText } from "./services";
 import { containersOf, deployBlocker, groupStacks } from "./stacks";
 
-const node = (id: string, name: string, agent = "0.2.0") =>
+const node = (id: string, name: string, agent = "0.3.1") =>
   ({
     id,
     name,
@@ -112,9 +112,9 @@ describe("stacks", () => {
     expect(
       deployBlocker({
         ...listmonk!.members[0]!,
-        node: node("n1", "Callisto", "0.1.1"),
+        node: node("n1", "Callisto", "0.3.0"),
       }),
-    ).toBe("Needs agent 0.2.0");
+    ).toBe("Needs agent 0.3.1");
     expect(
       deployBlocker({
         ...listmonk!.members[0]!,

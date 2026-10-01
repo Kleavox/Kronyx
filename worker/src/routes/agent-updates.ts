@@ -1,10 +1,11 @@
 import { pokeSoon } from "../fleet/client";
 import type { MiddlewareHandler } from "hono";
 
+import { compareVersions } from "@krynodes/protocol";
+
 import {
   canUpdateRemotely,
   checkAgentRelease,
-  compareVersions,
   readAgentRelease,
   requestAutoUpdates,
 } from "../agent/releases";

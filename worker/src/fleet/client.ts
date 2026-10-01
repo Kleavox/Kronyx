@@ -59,7 +59,6 @@ const sqliteTime = (epochMs: number) =>
 
 interface NodeRow {
   id: string;
-  transport: string;
   interval_seconds: number;
 }
 
@@ -68,7 +67,6 @@ export function mergeLive<T extends NodeRow>(
   live: Record<string, LiveNode> | null,
 ): (T & { grace_seconds?: number })[] {
   return rows.map((row) => {
-    if (row.transport !== "stream") return row;
     if (live === null) {
       return {
         ...row,

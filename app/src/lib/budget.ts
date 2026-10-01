@@ -17,20 +17,14 @@ const DASHBOARD_REQUESTS = 3_000;
 const STREAM_REQUESTS = 24;
 
 export function estimateDailyUse(
-  nodes: Pick<
-    NodeRecord,
-    "interval_seconds" | "disabled_at" | "enrolled_at" | "transport"
-  >[],
+  nodes: Pick<NodeRecord, "interval_seconds" | "disabled_at" | "enrolled_at">[],
 ): DailyUse {
   let writes = 0;
   let requests = DASHBOARD_REQUESTS;
   for (const node of nodes) {
     if (node.disabled_at || !node.enrolled_at) continue;
-    const cycles = DAY_SECONDS / node.interval_seconds;
-    const windows = DAY_SECONDS / Math.max(300, node.interval_seconds);
-    const live = node.transport === "stream";
-    writes += (live ? windows : cycles) + 2 * windows;
-    requests += live ? STREAM_REQUESTS : cycles;
+    writes += (3 * DAY_SECONDS) / Math.max(300, node.interval_seconds);
+    requests += STREAM_REQUESTS;
   }
   return { writes: Math.round(writes), requests: Math.round(requests) };
 }

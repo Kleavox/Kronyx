@@ -1,4 +1,5 @@
 import {
+  MIN_AGENT_VERSION,
   evaluateQuorum,
   summarizeChange,
   trustChangeSchema,
@@ -13,7 +14,7 @@ import type { Env } from "../env";
 import { fromB64url } from "../lib/b64url";
 import { sendProposalEmail } from "../lib/mail";
 import { assertionUv, verifyAssertion, verifyProof } from "../lib/webauthn";
-import { loadFleet, speaksQuorum, speaksUv, type Fleet } from "../trust/fleet";
+import { agentCurrent, loadFleet, type Fleet } from "../trust/fleet";
 import {
   invalidRequest,
   readJson,
@@ -171,18 +172,11 @@ function checkChange(env: Env, fleet: Fleet, change: TrustChange, now: number) {
   for (const nodeId of targets) {
     const node = fleet.nodes.find((entry) => entry.id === nodeId);
     if (!node) throw new Refusal(404, "NOT_FOUND", "A server was not found.");
-    if (!speaksQuorum(node)) {
+    if (!agentCurrent(node)) {
       throw new Refusal(
         422,
         "NEEDS_AGENT",
-        `${node.name} needs agent 0.3.0 or later.`,
-      );
-    }
-    if (change.requireUv && !speaksUv(node)) {
-      throw new Refusal(
-        422,
-        "NEEDS_AGENT",
-        `${node.name} needs agent 0.3.1 or later.`,
+        `${node.name} needs agent ${MIN_AGENT_VERSION} or later.`,
       );
     }
     if ((node.report?.core.length ?? 0) === 0) {

@@ -13,7 +13,7 @@ export interface FleetRow {
   agent: AgentState;
 }
 
-const BEHIND: AgentState[] = ["available", "failed"];
+const BEHIND: AgentState[] = ["available", "failed", "unsupported"];
 
 export function matchesFleet(
   row: FleetRow,

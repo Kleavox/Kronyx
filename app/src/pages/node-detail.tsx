@@ -186,11 +186,9 @@ export function NodeDetailPage() {
               <Fact
                 label="Reports"
                 value={
-                  node.transport === "stream"
-                    ? node.connected_at
-                      ? `Live since ${liveSince(node.connected_at, now)}`
-                      : "Live connection"
-                    : `Every ${formatDuration(node.interval_seconds * 1000)} (HTTP)`
+                  node.connected_at
+                    ? `Live since ${liveSince(node.connected_at, now)}`
+                    : "Not connected"
                 }
               />
               <AccessFact nodeId={node.id} />
@@ -268,11 +266,7 @@ export function NodeDetailPage() {
                         )}
                         windowSeconds={Math.max(300, node.interval_seconds)}
                         graceSeconds={graceSeconds(node.interval_seconds)}
-                        settleSeconds={
-                          node.transport === "stream"
-                            ? Math.max(300, node.interval_seconds)
-                            : 0
-                        }
+                        settleSeconds={Math.max(300, node.interval_seconds)}
                         now={now}
                         asOf={results.data ? results.dataUpdatedAt : undefined}
                         count={24}

@@ -272,3 +272,22 @@ describe("migration 0017", () => {
     ).toEqual({ n: 0 });
   });
 });
+
+describe("migration 0019", () => {
+  it("drops the old agent path switch and leaves transport for the next deploy", () => {
+    const sqlite = new DatabaseSync(":memory:");
+    apply(sqlite, (name) => name < "0019");
+    sqlite.exec(
+      "INSERT INTO settings (key, value, updated_at) VALUES ('agent_http', 'off', '2026-10-01T00:00:00.000Z'), ('agent_release', '0.3.1', '2026-10-01T00:00:00.000Z')",
+    );
+    apply(sqlite, (name) => name.startsWith("0019"));
+    expect(
+      sqlite.prepare("SELECT key FROM settings ORDER BY key").all(),
+    ).toEqual([{ key: "agent_release" }]);
+    const columns = sqlite
+      .prepare("SELECT name FROM pragma_table_info('nodes')")
+      .all()
+      .map((row) => (row as { name: string }).name);
+    expect(columns).toContain("transport");
+  });
+});

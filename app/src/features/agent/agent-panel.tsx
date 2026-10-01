@@ -122,6 +122,18 @@ export function AgentPanel({
             </Button>
           </div>
         )}
+        {state === "unsupported" && (
+          <div className="space-y-2">
+            <p className="flex items-start gap-2 text-destructive">
+              <CircleX aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+              <span>
+                Agent <span className="font-mono">{node.agent_version}</span>{" "}
+                can no longer connect. Run this on the server to update it:
+              </span>
+            </p>
+            <CopyCommand command={release.updateCommand} />
+          </div>
+        )}
         {state === "unknown" && (
           <div className="flex flex-wrap items-center gap-3">
             <p className="text-muted-foreground">

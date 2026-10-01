@@ -348,9 +348,6 @@ func installService(args []string) error {
 			return err
 		}
 	}
-	if err := removeLegacyUnits(); err != nil {
-		return err
-	}
 	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
 		return err
 	}
@@ -611,26 +608,6 @@ func uninstallService() error {
 		return err
 	}
 	return exec.Command("systemctl", "daemon-reload").Run()
-}
-
-// Nodes enrolled before the rename to Krynodes still run the old krynode
-// units. The update that installs this binary runs inside the legacy
-// updater, so it is left running and only its unit file is removed.
-func removeLegacyUnits() error {
-	_ = exec.Command("systemctl", legacyDisableCommand()...).Run()
-	for _, name := range legacyUnits {
-		path := "/etc/systemd/system/" + name
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	}
-	return nil
-}
-
-var legacyUnits = []string{"krynode.service", "krynode-update.service", "krynode-update.path", "krynode-exec.service", "krynode-exec.path", "krynode-exec.timer"}
-
-func legacyDisableCommand() []string {
-	return []string{"disable", "--now", "krynode-exec.timer", "krynode-exec.path", "krynode-update.path", "krynode.service"}
 }
 
 func uninstallCommands() [][]string {

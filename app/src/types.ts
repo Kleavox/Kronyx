@@ -36,7 +36,6 @@ export interface NodeRecord {
   update_attempts?: number;
   update_error?: string | null;
   auto_update: number;
-  transport: "http" | "stream";
   connected_at?: string;
   grace_seconds?: number;
 }
@@ -90,7 +89,6 @@ export interface Overview {
   checks: CheckRecord[];
   incidents: Incident[];
   agentRelease: AgentRelease;
-  agentHttp: boolean;
 }
 
 export interface Enrollment {

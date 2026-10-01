@@ -119,9 +119,9 @@ up to a minute.
   a connection that stays silent for 75 seconds and reconnects after 1 second,
   doubling to 1 minute (with jitter). Cloudflare closes every connection on a
   deploy or restart; agents are back within seconds and report at once.
-- Agents before 0.3.1 report over HTTP. Once every server runs 0.3.1 or later,
-  the fleet page offers **Turn off old path**; old agents then get HTTP 410
-  `AGENT_UPDATE_REQUIRED`, and a warning on the same page turns it back on.
+- Agents before 0.3.1 are not supported. The live connection refuses them
+  (426) and the old HTTP report routes answer 410 `AGENT_UPDATE_REQUIRED`; the
+  node page shows the command to update such a server by hand.
 - At a 60-second interval a server costs about 870 D1 writes a day on a live
   connection and about 2,000 on HTTP (was about 4,900).
 

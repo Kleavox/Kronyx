@@ -15,6 +15,10 @@
     "./summary": {
       "types": "./dist/summary.d.ts",
       "default": "./dist/summary.js"
+    },
+    "./versions": {
+      "types": "./dist/versions.d.ts",
+      "default": "./dist/versions.js"
     }
   },
   "files": [

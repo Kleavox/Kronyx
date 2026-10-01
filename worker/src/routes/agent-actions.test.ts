@@ -2,9 +2,7 @@ import type { AgentHeartbeat } from "@krynodes/protocol";
 import { describe, expect, it } from "vitest";
 
 import { createBatch } from "../actions/store";
-import { app } from "../app";
-import type { Env } from "../env";
-import { sha256 } from "../lib/crypto";
+import { hubHarness, type FakeSocket } from "../test/hub";
 import { seedNode } from "../test/seed";
 import { createTestDb } from "../test/sqlite-d1";
 
@@ -16,46 +14,35 @@ interface Reply {
   ok?: boolean;
   inventoryHash?: string | null;
 }
-
-const reply = async (response: Response | Promise<Response>) =>
-  (await (await response).json()) as Reply;
 const B = "22222222-2222-4222-8222-222222222222";
 
 async function setup() {
   const { db, sqlite } = createTestDb();
-  for (const [id, token] of [
-    [A, "token-a"],
-    [B, "token-b"],
-  ] as const) {
+  for (const id of [A, B]) {
     seedNode(sqlite, { id });
     sqlite
-      .prepare(
-        "UPDATE nodes SET agent_token_hash = ?, agent_version = '0.6.0' WHERE id = ?",
-      )
-      .run(await sha256(token), id);
+      .prepare("UPDATE nodes SET agent_version = '0.6.0' WHERE id = ?")
+      .run(id);
     sqlite
       .prepare(
         "INSERT INTO services (node_id, kind, name, state) VALUES (?, 'docker', 'adguard', 'running')",
       )
       .run(id);
   }
-  const env = {
-    DB: db,
-    PUBLIC_ORIGIN: "https://kry.example.test",
-  } as unknown as Env;
-  const post = (path: string, token: string, body: unknown) =>
-    app.request(
-      `https://kry.example.test${path}`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(body),
-      },
-      env,
-    );
+  const hub = hubHarness({ DB: db });
+  const sockets = new Map<string, FakeSocket>();
+  const send = async (
+    nodeId: string,
+    type: string,
+    fields: Record<string, unknown>,
+  ) => {
+    let socket = sockets.get(nodeId);
+    if (!socket) {
+      socket = await hub.connect(nodeId);
+      sockets.set(nodeId, socket);
+    }
+    return (await hub.request(socket, type, fields)) ?? {};
+  };
   const heartbeat = (nodeId: string): AgentHeartbeat => ({
     nodeId,
     hostname: "web-01",
@@ -95,17 +82,19 @@ async function setup() {
         status: string;
       }
     ).status;
-  return { sqlite, post, heartbeat, queue, status };
+  const beat = async (nodeId: string) =>
+    ((await send(nodeId, "heartbeat", { heartbeat: heartbeat(nodeId) }))
+      .response ?? {}) as Reply;
+  const report = (nodeId: string, report: Record<string, unknown>) =>
+    send(nodeId, "actions", { report });
+  return { sqlite, beat, report, queue, status };
 }
 
 describe("agent service actions", () => {
   it("hands queued actions to the heartbeat once", async () => {
-    const { post, heartbeat, queue, status } = await setup();
+    const { beat, queue, status } = await setup();
     const [action] = await queue([A]);
-    const first = await reply(
-      post("/api/agent/heartbeat", "token-a", heartbeat(A)),
-    );
-    expect(first.actions).toEqual([
+    expect((await beat(A)).actions).toEqual([
       expect.objectContaining({
         id: action!.id,
         kind: "docker",
@@ -114,28 +103,22 @@ describe("agent service actions", () => {
       }),
     ]);
     expect(status(action!.id)).toBe("sent");
-    const second = await reply(
-      post("/api/agent/heartbeat", "token-a", heartbeat(A)),
-    );
-    expect(second.actions).toBeUndefined();
+    expect((await beat(A)).actions).toBeUndefined();
   });
 
   it("asks for a fresh inventory while a refresh is pending", async () => {
-    const { sqlite, post, heartbeat } = await setup();
+    const { sqlite, beat } = await setup();
     sqlite
       .prepare("UPDATE nodes SET refresh_requested_at = ? WHERE id = ?")
       .run(new Date().toISOString(), A);
-    const body = await reply(
-      post("/api/agent/heartbeat", "token-a", heartbeat(A)),
-    );
-    expect(body.refresh).toBe(true);
+    expect((await beat(A)).refresh).toBe(true);
   });
 
   it("records a result and gives the next server its turn", async () => {
-    const { post, heartbeat, queue, status } = await setup();
+    const { beat, report, queue, status } = await setup();
     const [first, second] = await queue([A, B]);
-    await post("/api/agent/heartbeat", "token-a", heartbeat(A));
-    const response = await post("/api/agent/actions", "token-a", {
+    await beat(A);
+    const answer = await report(A, {
       nodeId: A,
       results: [
         {
@@ -147,23 +130,19 @@ describe("agent service actions", () => {
         },
       ],
     });
-    expect(response.status).toBe(200);
-    expect(await reply(response)).toEqual({
-      ok: true,
-      inventoryHash: null,
+    expect(answer).toMatchObject({
+      type: "actions",
+      response: { ok: true, inventoryHash: null },
     });
     expect(status(first!.id)).toBe("done");
-    const next = await reply(
-      post("/api/agent/heartbeat", "token-b", heartbeat(B)),
-    );
-    expect(next.actions?.[0]?.id).toBe(second!.id);
+    expect((await beat(B)).actions?.[0]?.id).toBe(second!.id);
   });
 
   it("ignores a result sent by another server", async () => {
-    const { post, heartbeat, queue, status } = await setup();
+    const { beat, report, queue, status } = await setup();
     const [action] = await queue([A]);
-    await post("/api/agent/heartbeat", "token-a", heartbeat(A));
-    await post("/api/agent/actions", "token-b", {
+    await beat(A);
+    await report(B, {
       nodeId: B,
       results: [
         {
@@ -176,17 +155,15 @@ describe("agent service actions", () => {
       ],
     });
     expect(status(action!.id)).toBe("sent");
-    const mismatch = await post("/api/agent/actions", "token-b", {
-      nodeId: A,
-      inventory: { hash: "a".repeat(64) },
-    });
-    expect(mismatch.status).toBe(400);
+    expect(
+      await report(B, { nodeId: A, inventory: { hash: "a".repeat(64) } }),
+    ).toMatchObject({ type: "error", code: "INVALID_MESSAGE" });
   });
 
   it("acknowledges an inventory with its hash", async () => {
-    const { post } = await setup();
-    const body = await reply(
-      post("/api/agent/actions", "token-a", {
+    const { report } = await setup();
+    expect(
+      await report(A, {
         nodeId: A,
         inventory: {
           hash: "c".repeat(64),
@@ -201,16 +178,9 @@ describe("agent service actions", () => {
           ],
         },
       }),
-    );
-    expect(body).toEqual({ ok: true, inventoryHash: "c".repeat(64) });
-  });
-
-  it("refuses a report without a valid agent token", async () => {
-    const { post } = await setup();
-    const response = await post("/api/agent/actions", "wrong", {
-      nodeId: A,
-      inventory: { hash: "a".repeat(64) },
+    ).toMatchObject({
+      type: "actions",
+      response: { ok: true, inventoryHash: "c".repeat(64) },
     });
-    expect(response.status).toBe(401);
   });
 });

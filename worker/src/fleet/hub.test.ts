@@ -2,6 +2,7 @@ import type { AgentHeartbeat, CheckResult } from "@krynodes/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Env } from "../env";
+import { FakeSocket } from "../test/hub";
 import { seedCheck, seedNode } from "../test/seed";
 import { createTestDb } from "../test/sqlite-d1";
 import { FleetHub } from "./hub";
@@ -10,27 +11,6 @@ const NODE = "11111111-1111-4111-8111-111111111111";
 const CHECK = "22222222-2222-4222-8222-222222222222";
 const WINDOW = 300_000;
 const BASE = Math.floor(Date.parse("2026-10-01T08:00:00Z") / WINDOW) * WINDOW;
-
-class FakeSocket {
-  attachment: unknown = null;
-  sent: string[] = [];
-  closed: { code: number; reason: string } | null = null;
-  serializeAttachment(value: unknown) {
-    this.attachment = structuredClone(value);
-  }
-  deserializeAttachment() {
-    return structuredClone(this.attachment);
-  }
-  send(message: string) {
-    this.sent.push(message);
-  }
-  close(code: number, reason: string) {
-    this.closed = { code, reason };
-  }
-  replies() {
-    return this.sent.map((text) => JSON.parse(text) as Record<string, unknown>);
-  }
-}
 
 const heartbeat = (
   cpu: number,
@@ -89,20 +69,19 @@ function setup() {
     await hub.accept(ws as unknown as WebSocket, NODE, "standalone", 60);
     return ws;
   };
+  let requests = 0;
   const send = (ws: FakeSocket, at: number, beat: AgentHeartbeat) => {
     vi.setSystemTime(at);
+    requests += 1;
     return hub.webSocketMessage(
       ws as unknown as WebSocket,
-      JSON.stringify({ type: "heartbeat", heartbeat: beat }),
+      JSON.stringify({ id: requests, type: "heartbeat", heartbeat: beat }),
     );
   };
   const node = () =>
     sqlite
-      .prepare(
-        "SELECT transport, last_seen_at, cpu_percent FROM nodes WHERE id = ?",
-      )
+      .prepare("SELECT last_seen_at, cpu_percent FROM nodes WHERE id = ?")
       .get(NODE) as {
-      transport: string;
       last_seen_at: string;
       cpu_percent: number;
     };
@@ -151,7 +130,7 @@ describe("FleetHub", () => {
       type: "heartbeat",
       response: { ok: true, intervalSeconds: 60 },
     });
-    expect(t.node()).toMatchObject({ transport: "stream", cpu_percent: 10 });
+    expect(t.node()).toMatchObject({ cpu_percent: 10 });
     expect(t.windows()).toEqual([]);
     const before = t.changes();
     await t.send(ws, BASE + 65_000, heartbeat(30, [result("UP")]));
@@ -269,7 +248,7 @@ describe("FleetHub", () => {
     expect(ws.replies().at(-1)).toEqual({ type: "poke" });
   });
 
-  it("answers config and action reports over the socket, echoing the request id", async () => {
+  it("answers every request by its id and refuses one without", async () => {
     const t = setup();
     const ws = await t.connect();
     await t.hub.webSocketMessage(
@@ -319,8 +298,12 @@ describe("FleetHub", () => {
     expect(
       t.sqlite.prepare("SELECT name FROM services WHERE node_id = ?").all(NODE),
     ).toEqual([{ name: "nginx.service" }]);
-    await t.send(ws, BASE + 5_000, heartbeat(10));
-    expect(ws.replies()[2]).not.toHaveProperty("id");
+    vi.setSystemTime(BASE + 5_000);
+    await t.hub.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ type: "heartbeat", heartbeat: heartbeat(10) }),
+    );
+    expect(ws.replies()[2]).toEqual({ type: "error", code: "INVALID_MESSAGE" });
     vi.setSystemTime(BASE + 6_000);
     await t.hub.webSocketMessage(
       ws as unknown as WebSocket,

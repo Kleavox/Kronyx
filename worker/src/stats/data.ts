@@ -79,7 +79,6 @@ interface CheckRow {
   status: string;
   last_seen_at: string | null;
   created_at: string;
-  transport: string | null;
   interval_seconds: number | null;
 }
 
@@ -241,7 +240,7 @@ export async function loadStatus(
     db
       .prepare(
         `SELECT c.id, c.name, c.public_note, c.status, n.last_seen_at, c.created_at,
-                n.transport, n.interval_seconds
+                n.interval_seconds
          FROM checks c LEFT JOIN nodes n ON n.id = c.node_id
          WHERE c.public = 1 AND c.enabled = 1 ORDER BY c.name`,
       )
@@ -304,11 +303,7 @@ export async function loadStatus(
           row.status,
           row.last_seen_at,
           now,
-          staleAfterMs(
-            row.transport ?? "http",
-            row.interval_seconds ?? 60,
-            STALE_MS,
-          ),
+          staleAfterMs(row.interval_seconds ?? 60),
         ),
         uptime: uptime(own, createdAt, now),
         latencyMs: latency.get(row.id) ?? null,

@@ -1,22 +1,9 @@
-import { agentConfigResponseSchema } from "@krynodes/protocol";
+import { agentSupported, MIN_AGENT_VERSION } from "@krynodes/protocol";
 
-import { receiveReport } from "../actions/report";
-import { heartbeatActions } from "../actions/store";
-import {
-  acceptResults,
-  commit,
-  heartbeatResponse,
-  heartbeatStatements,
-  loadAgentConfig,
-  resultStatements,
-  type AgentNode,
-  updateRetry,
-  windowStatements,
-} from "../agent/ingest";
-import { agentHttpGone, agentHttpOn } from "../agent/legacy";
+import type { AgentNode } from "../agent/ingest";
 import { hubFor, streamsOn } from "../fleet/client";
 import { randomToken, readBearerToken, sha256 } from "../lib/crypto";
-import { actionsSchema, heartbeatSchema, hostSchema } from "../schemas";
+import { hostSchema } from "../schemas";
 import { readJson, type KrynodesApp, type KrynodesContext } from "./shared";
 
 export function registerAgentRoutes(app: KrynodesApp): void {
@@ -97,47 +84,13 @@ export function registerAgentRoutes(app: KrynodesApp): void {
     });
   });
 
-  app.post("/api/agent/heartbeat", async (context) => {
-    if (!(await agentHttpOn(context.env.DB))) return agentHttpGone(context);
-    const known = await authenticateAgent(context);
-    if (!known) return context.json({ code: "UNAUTHORIZED" }, 401);
-    const heartbeat = heartbeatSchema.safeParse(await readJson(context));
-    if (!heartbeat.success || heartbeat.data.nodeId !== known.id) {
-      return context.json({ code: "INVALID_HEARTBEAT" }, 400);
-    }
-
-    const now = Date.now();
-    const db = context.env.DB;
-    const retried = updateRetry(db, known, heartbeat.data, now);
-    const node = retried.node;
-    const agent = await loadAgentConfig(db, node);
-    const accepted = acceptResults(agent.checks, heartbeat.data.results ?? []);
-    await commit(
-      context.env,
-      node.id,
-      [
-        ...heartbeatStatements(db, node, heartbeat.data, now),
-        ...retried.statements,
-        ...(await windowStatements(
-          db,
-          node,
-          heartbeat.data.metrics,
-          accepted,
-          now,
-        )),
-      ],
-      resultStatements(db, agent.checks, accepted, now),
-    );
-    const actions = await heartbeatActions(context.env.DB, node.id, now);
-    return context.json(
-      heartbeatResponse(
-        node,
-        agent.configVersion,
-        heartbeat.data.agentVersion,
-        actions,
-      ),
-    );
-  });
+  for (const path of [
+    "/api/agent/heartbeat",
+    "/api/agent/config",
+    "/api/agent/actions",
+  ]) {
+    app.all(path, (context) => updateRequired(context, 410));
+  }
 
   app.get("/api/agent/stream", async (context) => {
     if (!streamsOn(context.env)) {
@@ -145,6 +98,12 @@ export function registerAgentRoutes(app: KrynodesApp): void {
     }
     if (context.req.header("upgrade")?.toLowerCase() !== "websocket") {
       return context.json({ code: "UPGRADE_REQUIRED" }, 426);
+    }
+    const announced = /^kry-agent\/(\S+)/u.exec(
+      context.req.header("user-agent") ?? "",
+    )?.[1];
+    if (announced && !agentSupported(announced)) {
+      return updateRequired(context, 426);
     }
     const node = await authenticateAgent(context);
     if (!node?.owner_user_id) {
@@ -163,33 +122,16 @@ export function registerAgentRoutes(app: KrynodesApp): void {
       new Request("https://fleet/connect", { headers }),
     );
   });
-
-  app.get("/api/agent/config", async (context) => {
-    if (!(await agentHttpOn(context.env.DB))) return agentHttpGone(context);
-    const node = await authenticateAgent(context);
-    if (!node) return context.json({ code: "UNAUTHORIZED" }, 401);
-    const agent = await loadAgentConfig(context.env.DB, node);
-    return context.json(
-      agentConfigResponseSchema.parse({
-        ...agent.config,
-        configVersion: agent.configVersion,
-      }),
-    );
-  });
-
-  app.post("/api/agent/actions", async (context) => {
-    if (!(await agentHttpOn(context.env.DB))) return agentHttpGone(context);
-    const node = await authenticateAgent(context);
-    if (!node) return context.json({ code: "UNAUTHORIZED" }, 401);
-    const payload = actionsSchema.safeParse(await readJson(context));
-    if (!payload.success || payload.data.nodeId !== node.id) {
-      return context.json({ code: "INVALID_ACTIONS" }, 400);
-    }
-    return context.json(
-      await receiveReport(context.env.DB, node, payload.data, Date.now()),
-    );
-  });
 }
+
+const updateRequired = (context: KrynodesContext, status: 410 | 426) =>
+  context.json(
+    {
+      code: "AGENT_UPDATE_REQUIRED",
+      message: `Agents before ${MIN_AGENT_VERSION} are no longer supported. Update the agent on the server.`,
+    },
+    status,
+  );
 
 async function authenticateAgent(
   context: KrynodesContext,
@@ -197,9 +139,7 @@ async function authenticateAgent(
   const token = readBearerToken(context.req.header("authorization"));
   if (!token) return null;
   return context.env.DB.prepare(
-    `SELECT id, owner_user_id, interval_seconds, update_requested_version,
-            update_requested_at, update_attempts, update_error, inventory_hash,
-            refresh_requested_at
+    `SELECT id, owner_user_id, interval_seconds
      FROM nodes
      WHERE agent_token_hash = ? AND enrolled_at IS NOT NULL
        AND disabled_at IS NULL LIMIT 1`,

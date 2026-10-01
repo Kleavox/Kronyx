@@ -1,19 +1,11 @@
+import { compareVersions } from "@krynodes/protocol";
+
 const RELEASES = "https://github.com/Kleavox/Krynodes/releases";
 const VERSION = /^\d+\.\d+\.\d+$/u;
 
 export interface AgentRelease {
   version: string | null;
   checkedAt: string | null;
-}
-
-export function compareVersions(a: string, b: string): number {
-  const left = a.split(".").map(Number);
-  const right = b.split(".").map(Number);
-  for (let index = 0; index < 3; index += 1) {
-    const difference = (left[index] ?? 0) - (right[index] ?? 0);
-    if (difference !== 0) return difference;
-  }
-  return 0;
 }
 
 export function canUpdateRemotely(agentVersion: string | null): boolean {

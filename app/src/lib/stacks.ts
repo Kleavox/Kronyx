@@ -6,7 +6,9 @@ import type {
   ServicesResponse,
   StackEntry,
 } from "../types";
-import { canDeploy, DEPLOY_SINCE } from "./devices";
+import { MIN_AGENT_VERSION } from "@krynodes/protocol/versions";
+
+import { agentCurrent } from "./devices";
 import { nodeState } from "./format";
 
 export interface StackMember {
@@ -76,7 +78,7 @@ export function groupStacks(
 }
 
 export function deployBlocker(member: StackMember): string | null {
-  if (!canDeploy(member.node)) return `Needs agent ${DEPLOY_SINCE}`;
+  if (!agentCurrent(member.node)) return `Needs agent ${MIN_AGENT_VERSION}`;
   if (!member.stack.compose) return "Docker Compose is not installed";
   if (!member.trusted) return "Not trusted yet";
   return null;

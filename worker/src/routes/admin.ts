@@ -3,7 +3,6 @@ import { z } from "zod";
 
 import { CHECK_LIMIT } from "../agent/ingest";
 import { readAgentRelease } from "../agent/releases";
-import { agentHttpOn, setAgentHttp } from "../agent/legacy";
 import { fleetLive, mergeLive, pokeSoon } from "../fleet/client";
 import { validateCheckTarget } from "../lib/checks";
 import {
@@ -30,7 +29,7 @@ export function registerAdminRoutes(
               cpu_percent, memory_used_bytes, memory_total_bytes,
               disk_used_bytes, disk_total_bytes, load_1, uptime_seconds,
               created_at, update_requested_version, update_requested_at,
-              update_attempts, update_error, auto_update, transport
+              update_attempts, update_error, auto_update
        FROM nodes WHERE owner_user_id = ? ORDER BY created_at DESC`,
       )
         .bind(ownerId)
@@ -61,16 +60,9 @@ export function registerAdminRoutes(
         .all(),
     ]);
 
-    const rows = nodes.results as {
-      id: string;
-      transport: string;
-      interval_seconds: number;
-    }[];
-    const live = rows.some((row) => row.transport === "stream")
-      ? await fleetLive(context.env, ownerId)
-      : {};
+    const rows = nodes.results as { id: string; interval_seconds: number }[];
+    const live = rows.length > 0 ? await fleetLive(context.env, ownerId) : {};
     return context.json({
-      agentHttp: await agentHttpOn(context.env.DB),
       nodes: mergeLive(rows, live),
       checks: checks.results,
       incidents: incidents.results,
@@ -79,15 +71,6 @@ export function registerAdminRoutes(
         updateCommand: `curl -fsSL ${agentOrigin(context.env)}/install.sh | sudo sh -s -- --update`,
       },
     });
-  });
-
-  app.put("/api/agent-http", requireAdmin, async (context) => {
-    const body = z
-      .strictObject({ enabled: z.boolean() })
-      .safeParse(await readJson(context));
-    if (!body.success) return invalidRequest(context);
-    await setAgentHttp(context.env.DB, body.data.enabled);
-    return context.json({ agentHttp: body.data.enabled });
   });
 
   app.patch("/api/nodes/:id", requireAdmin, async (context) => {

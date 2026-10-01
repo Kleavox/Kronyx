@@ -12,6 +12,7 @@ export {
   type TrustKeyRecord,
 } from "./change";
 export { summarizeChange, type ChangeSummary } from "./summary";
+export { agentSupported, compareVersions, MIN_AGENT_VERSION } from "./versions";
 export {
   evaluateQuorum,
   proofMessage,
@@ -174,19 +175,13 @@ export const stackEntrySchema = z
 
 const fingerprints = z.array(z.string().regex(/^[0-9a-f]{16}$/u)).max(20);
 
-export const trustReportSchema = z.union([
-  z.strictObject({
-    version: z.number().int().nonnegative(),
-    core: fingerprints,
-    access: fingerprints,
-    passphrase: z.boolean(),
-    requireUv: z.boolean().optional(),
-  }),
-  z.strictObject({
-    version: z.number().int().nonnegative(),
-    keys: fingerprints,
-  }),
-]);
+export const trustReportSchema = z.strictObject({
+  version: z.number().int().nonnegative(),
+  core: fingerprints,
+  access: fingerprints,
+  passphrase: z.boolean(),
+  requireUv: z.boolean().optional(),
+});
 
 export const actionResultSchema = z.strictObject({
   id: z.string().uuid(),

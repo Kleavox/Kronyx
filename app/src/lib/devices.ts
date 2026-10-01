@@ -15,14 +15,9 @@ import type {
   NodeTrust,
   PassphraseKey,
 } from "../types";
-import { compareVersions } from "./agent";
+import { agentSupported, MIN_AGENT_VERSION } from "@krynodes/protocol/versions";
 import { b64url, fromB64url } from "./passkeys";
 
-export const DEPLOY_SINCE = "0.2.0";
-const QUORUM_SINCE = "0.3.0";
-const RESTART_SINCE = "0.2.2";
-const UV_SINCE = "0.3.1";
-const VERSION = /^\d+\.\d+\.\d+$/u;
 const CHANGE_MS = 24 * 3_600_000;
 
 export interface FleetServer {
@@ -58,27 +53,14 @@ export async function fingerprint(publicKey: string): Promise<string> {
 export const formatPrint = (print: string) =>
   (print.toUpperCase().match(/.{1,4}/gu) ?? []).join(" ");
 
-const atLeast = (version: string | null, since: string) =>
-  version !== null &&
-  VERSION.test(version) &&
-  compareVersions(version, since) >= 0;
-
-export function canDeploy(node: Pick<NodeRecord, "agent_version">): boolean {
-  return atLeast(node.agent_version, DEPLOY_SINCE);
-}
-
-export function speaksQuorum(node: Pick<NodeRecord, "agent_version">): boolean {
-  return atLeast(node.agent_version, QUORUM_SINCE);
-}
+export const agentCurrent = (node: Pick<NodeRecord, "agent_version">) =>
+  agentSupported(node.agent_version);
 
 export function canRestartServer(
   node: Pick<NodeRecord, "agent_version">,
   trust: NodeTrust | null,
 ): boolean {
-  return (
-    atLeast(node.agent_version, RESTART_SINCE) &&
-    (trust?.access.length ?? 0) > 0
-  );
+  return agentCurrent(node) && (trust?.access.length ?? 0) > 0;
 }
 
 export function accessIds(
@@ -127,7 +109,7 @@ export const fingerprintsRequired = (view: FleetView) =>
   view.servers.some((server) => server.trust?.requireUv === true);
 
 export function serverState(view: FleetView, server: FleetServer): ServerState {
-  if (!speaksQuorum(server.node)) return "update";
+  if (!agentCurrent(server.node)) return "update";
   if (!server.trust || server.trust.core.length === 0) return "empty";
   const core = coreOf(view).map((device) => device.fingerprint);
   if (!sameSet(server.trust.core, core)) return "behind";
@@ -273,11 +255,9 @@ export function requireUvChange(view: FleetView): Plan {
 }
 
 export function uvBlocker(view: FleetView): string | null {
-  const old = view.servers.filter(
-    (server) => !atLeast(server.node.agent_version, UV_SINCE),
-  );
+  const old = view.servers.filter((server) => !agentCurrent(server.node));
   if (old.length > 0) {
-    return `Update ${old.map((server) => server.node.name).join(", ")} to agent ${UV_SINCE} first.`;
+    return `Update ${old.map((server) => server.node.name).join(", ")} to agent ${MIN_AGENT_VERSION} first.`;
   }
   if (!coreOf(view).some((device) => device.verifies !== false)) {
     return "Add a device that verifies a fingerprint first, such as your phone or a security key.";

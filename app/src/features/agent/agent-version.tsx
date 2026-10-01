@@ -45,6 +45,9 @@ export function AgentVersion({
       {state === "failed" && (
         <span className="text-destructive">Update failed</span>
       )}
+      {state === "unsupported" && (
+        <span className="text-destructive">Update by hand</span>
+      )}
     </span>
   );
 }

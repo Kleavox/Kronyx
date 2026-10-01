@@ -1,3 +1,4 @@
+import { MIN_AGENT_VERSION } from "@krynodes/protocol/versions";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -15,7 +16,7 @@ import {
   accessIds,
   buildChange,
   serverState,
-  speaksQuorum,
+  agentCurrent,
 } from "@/lib/devices";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
@@ -53,8 +54,8 @@ function Editor({
   onReview: (text: string) => void;
 }) {
   const wide = useMediaQuery("(min-width: 768px)");
-  const servers = fleet.trusted.filter((server) => speaksQuorum(server.node));
-  const blocked = fleet.trusted.filter((server) => !speaksQuorum(server.node));
+  const servers = fleet.trusted.filter((server) => agentCurrent(server.node));
+  const blocked = fleet.trusted.filter((server) => !agentCurrent(server.node));
   const current: Access = Object.fromEntries(
     servers.map((server) => [
       server.node.id,
@@ -206,7 +207,7 @@ function Editor({
       {(blocked.length > 0 || behind) && (
         <p className="text-xs text-muted-foreground">
           {blocked.length > 0 &&
-            `${blocked.map((server) => server.node.name).join(", ")} ${blocked.length === 1 ? "needs" : "need"} agent 0.3.0 before access can change there. `}
+            `${blocked.map((server) => server.node.name).join(", ")} ${blocked.length === 1 ? "needs" : "need"} agent ${MIN_AGENT_VERSION} before access can change there. `}
           {behind &&
             "Some servers are behind; sync them first so they count approvals the same way."}
         </p>

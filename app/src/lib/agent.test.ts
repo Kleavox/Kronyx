@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { agentState, compareVersions, needsOldPath } from "./agent";
+import { agentState } from "./agent";
 
 const NOW = Date.parse("2026-09-28T12:00:00Z");
 const ago = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
@@ -19,13 +19,6 @@ function node(
   };
 }
 
-describe("compareVersions", () => {
-  it("orders release numbers numerically", () => {
-    expect(compareVersions("0.5.10", "0.5.9")).toBeGreaterThan(0);
-    expect(compareVersions("0.5.1", "0.5.1")).toBe(0);
-  });
-});
-
 describe("agentState", () => {
   it("is unknown without a known release or a real agent version", () => {
     expect(agentState(node("0.5.1"), null, NOW)).toBe("unknown");
@@ -37,9 +30,16 @@ describe("agentState", () => {
     expect(agentState(node("0.5.2"), "0.5.2", NOW)).toBe("current");
   });
 
-  it("offers a remote update only to agents that can take one", () => {
+  it("offers a remote update to agents that can still connect", () => {
     expect(agentState(node("0.5.1"), "0.5.2", NOW)).toBe("available");
-    expect(agentState(node("0.1.0"), "0.2.0", NOW)).toBe("available");
+  });
+
+  it("calls an agent before 0.3.1 unsupported, since it can no longer connect", () => {
+    expect(agentState(node("0.3.0"), "0.5.2", NOW)).toBe("unsupported");
+    expect(agentState(node("0.2.4", "0.5.2", ago(3)), "0.5.2", NOW)).toBe(
+      "unsupported",
+    );
+    expect(agentState(node("0.3.0"), null, NOW)).toBe("unsupported");
   });
 
   it("keeps updating while Krynodes retries, and fails after the last attempt", () => {
@@ -58,22 +58,5 @@ describe("agentState", () => {
     expect(agentState(node("0.5.2", "0.5.2", ago(60)), "0.5.3", NOW)).toBe(
       "available",
     );
-  });
-});
-
-describe("needsOldPath", () => {
-  const server = (agent_version: string | null) => ({ agent_version });
-
-  it("lists servers whose agent cannot use the live connection only", () => {
-    const old = server("0.3.0");
-    const unknown = server(null);
-    const dev = server("dev");
-    expect(
-      needsOldPath([server("0.3.1"), old, server("0.4.0"), unknown, dev]),
-    ).toEqual([old, unknown, dev]);
-  });
-
-  it("is empty once every server runs 0.3.1 or later", () => {
-    expect(needsOldPath([server("0.3.1"), server("0.10.0")])).toEqual([]);
   });
 });

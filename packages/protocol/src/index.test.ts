@@ -448,7 +448,7 @@ describe("deploy messages", () => {
     ).toBe(true);
   });
 
-  it("accepts trust reports from agents before and after 0.3.0", () => {
+  it("accepts trust reports only in the shape agents send since 0.3.0", () => {
     const fp = "0123456789abcdef";
     expect(
       agentActionsRequestSchema.safeParse(
@@ -461,7 +461,7 @@ describe("deploy messages", () => {
       agentActionsRequestSchema.safeParse(
         inventory({ trust: { version: 2, keys: [fp] } }),
       ).success,
-    ).toBe(true);
+    ).toBe(false);
     expect(
       agentActionsRequestSchema.safeParse(
         inventory({
@@ -493,7 +493,12 @@ describe("deploy messages", () => {
       compose: true,
       rollback: false,
     };
-    const trust = { version: 2, keys: ["0123456789abcdef"] };
+    const trust = {
+      version: 2,
+      core: ["0123456789abcdef"],
+      access: [],
+      passphrase: false,
+    };
     expect(
       agentActionsRequestSchema.safeParse(inventory({ stacks: [stack], trust }))
         .success,
@@ -505,7 +510,9 @@ describe("deploy messages", () => {
     ).toBe(false);
     expect(
       agentActionsRequestSchema.safeParse(
-        inventory({ trust: { version: 1, keys: ["xyz"] } }),
+        inventory({
+          trust: { version: 1, core: ["xyz"], access: [], passphrase: false },
+        }),
       ).success,
     ).toBe(false);
   });

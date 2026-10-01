@@ -6,8 +6,6 @@ import {
   type StackEntry,
 } from "@krynodes/protocol";
 
-const REPORTING_MS = 3 * 60_000;
-
 function seenAt(value: string | null): number {
   if (value === null) return Number.NaN;
   return Date.parse(
@@ -189,19 +187,9 @@ export async function applyInventory(
       : []),
     ...(inventory.trust
       ? [
-          db.prepare("UPDATE nodes SET trust_report = ? WHERE id = ?").bind(
-            JSON.stringify(
-              "keys" in inventory.trust
-                ? {
-                    version: inventory.trust.version,
-                    core: inventory.trust.keys,
-                    access: inventory.trust.keys,
-                    passphrase: false,
-                  }
-                : inventory.trust,
-            ),
-            node.id,
-          ),
+          db
+            .prepare("UPDATE nodes SET trust_report = ? WHERE id = ?")
+            .bind(JSON.stringify(inventory.trust), node.id),
         ]
       : []),
     db
@@ -222,7 +210,7 @@ export async function requestRefresh(
 ): Promise<string[]> {
   const rows = await db
     .prepare(
-      `SELECT id, last_seen_at, transport, interval_seconds FROM nodes
+      `SELECT id, last_seen_at, interval_seconds FROM nodes
        WHERE owner_user_id = ? AND enrolled_at IS NOT NULL AND disabled_at IS NULL
        ORDER BY id`,
     )
@@ -230,13 +218,11 @@ export async function requestRefresh(
     .all<{
       id: string;
       last_seen_at: string | null;
-      transport: string;
       interval_seconds: number;
     }>();
   const wanted = rows.results.filter(
     (row) =>
-      now - seenAt(row.last_seen_at) <=
-        staleAfterMs(row.transport, row.interval_seconds, REPORTING_MS) &&
+      now - seenAt(row.last_seen_at) <= staleAfterMs(row.interval_seconds) &&
       (!nodeIds || nodeIds.includes(row.id)),
   );
   if (wanted.length === 0) return [];

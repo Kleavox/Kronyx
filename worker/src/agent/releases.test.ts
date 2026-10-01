@@ -5,7 +5,6 @@ import { createTestDb } from "../test/sqlite-d1";
 import {
   canUpdateRemotely,
   checkAgentRelease,
-  compareVersions,
   parseReleaseLocation,
   readAgentRelease,
   requestAutoUpdates,
@@ -21,13 +20,7 @@ function redirectTo(location: string) {
   return fetch;
 }
 
-describe("compareVersions", () => {
-  it("compares release numbers numerically", () => {
-    expect(compareVersions("0.5.10", "0.5.9")).toBeGreaterThan(0);
-    expect(compareVersions("0.5.1", "0.5.1")).toBe(0);
-    expect(compareVersions("0.4.9", "0.5.0")).toBeLessThan(0);
-  });
-
+describe("canUpdateRemotely", () => {
   it("lets every released agent update itself", () => {
     expect(canUpdateRemotely("0.1.0")).toBe(true);
     expect(canUpdateRemotely("0.6.2")).toBe(true);

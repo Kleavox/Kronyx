@@ -1,3 +1,5 @@
+import { agentSupported, compareVersions } from "@krynodes/protocol/versions";
+
 import type { NodeRecord } from "../types";
 
 const ATTEMPT_MS = 15 * 60_000;
@@ -6,17 +8,7 @@ export const UPDATE_ATTEMPTS = 3;
 const VERSION = /^\d+\.\d+\.\d+$/u;
 
 export type AgentState =
-  "unknown" | "current" | "available" | "updating" | "failed";
-
-export function compareVersions(a: string, b: string): number {
-  const left = a.split(".").map(Number);
-  const right = b.split(".").map(Number);
-  for (let index = 0; index < 3; index += 1) {
-    const difference = (left[index] ?? 0) - (right[index] ?? 0);
-    if (difference !== 0) return difference;
-  }
-  return 0;
-}
+  "unknown" | "current" | "available" | "updating" | "failed" | "unsupported";
 
 export function agentState(
   node: Pick<
@@ -30,6 +22,9 @@ export function agentState(
   now: number,
 ): AgentState {
   const version = node.agent_version;
+  if (version && VERSION.test(version) && !agentSupported(version)) {
+    return "unsupported";
+  }
   const requested = node.update_requested_version;
   const passed =
     requested !== null &&
@@ -45,17 +40,4 @@ export function agentState(
   }
   if (!latest || !version || !VERSION.test(version)) return "unknown";
   return compareVersions(version, latest) >= 0 ? "current" : "available";
-}
-
-export const LIVE_ONLY_VERSION = "0.3.1";
-
-export function needsOldPath<T extends Pick<NodeRecord, "agent_version">>(
-  nodes: T[],
-): T[] {
-  return nodes.filter(
-    (node) =>
-      !node.agent_version ||
-      !VERSION.test(node.agent_version) ||
-      compareVersions(node.agent_version, LIVE_ONLY_VERSION) < 0,
-  );
 }

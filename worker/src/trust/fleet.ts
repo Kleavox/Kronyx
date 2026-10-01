@@ -1,8 +1,6 @@
-import { compareVersions } from "../agent/releases";
-import { fingerprint } from "../lib/webauthn";
+import { agentSupported } from "@krynodes/protocol";
 
-const QUORUM_SINCE = "0.3.0";
-const UV_SINCE = "0.3.1";
+import { fingerprint } from "../lib/webauthn";
 
 export interface TrustReport {
   version: number;
@@ -49,18 +47,7 @@ export interface Fleet {
 export function readReport(text: string | null): TrustReport | null {
   if (!text) return null;
   try {
-    const parsed = JSON.parse(text) as Partial<TrustReport> & {
-      keys?: string[];
-    };
-    if (Array.isArray(parsed.keys)) {
-      return {
-        version: parsed.version ?? 0,
-        core: parsed.keys,
-        access: parsed.keys,
-        passphrase: false,
-        requireUv: false,
-      };
-    }
+    const parsed = JSON.parse(text) as Partial<TrustReport>;
     return {
       version: parsed.version ?? 0,
       core: parsed.core ?? [],
@@ -73,14 +60,8 @@ export function readReport(text: string | null): TrustReport | null {
   }
 }
 
-const atLeast = (node: FleetNode, since: string) =>
-  node.agentVersion !== null &&
-  /^\d+\.\d+\.\d+$/u.test(node.agentVersion) &&
-  compareVersions(node.agentVersion, since) >= 0;
-
-export const speaksQuorum = (node: FleetNode) => atLeast(node, QUORUM_SINCE);
-
-export const speaksUv = (node: FleetNode) => atLeast(node, UV_SINCE);
+export const agentCurrent = (node: FleetNode) =>
+  agentSupported(node.agentVersion);
 
 export async function loadFleet(
   db: D1Database,

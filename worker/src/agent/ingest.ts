@@ -7,7 +7,7 @@ import {
 } from "../incident/notify";
 import type { CheckKind } from "../lib/checks";
 import { sha256 } from "../lib/crypto";
-import { compareVersions } from "./releases";
+import { compareVersions } from "@krynodes/protocol";
 import {
   mergeChecks,
   parseChecks,
@@ -169,7 +169,6 @@ export function heartbeatStatements(
   node: AgentNode,
   heartbeat: Omit<AgentHeartbeat, "results">,
   now: number,
-  transport: "http" | "stream" = "http",
 ): D1PreparedStatement[] {
   const metrics = heartbeat.metrics;
   const at = sqliteTime(now);
@@ -182,7 +181,7 @@ export function heartbeatStatements(
              agent_version = ?, last_seen_at = ?,
              cpu_percent = ?, memory_used_bytes = ?, memory_total_bytes = ?,
              disk_used_bytes = ?, disk_total_bytes = ?, load_1 = ?,
-             uptime_seconds = ?, updated_at = ?, transport = ?,
+             uptime_seconds = ?, updated_at = ?,
              update_requested_at = CASE WHEN ?
                THEN NULL ELSE update_requested_at END,
              update_requested_version = CASE WHEN ?
@@ -205,7 +204,6 @@ export function heartbeatStatements(
         metrics.load1,
         metrics.uptimeSeconds,
         at,
-        transport,
         updated ? 1 : 0,
         updated ? 1 : 0,
         updated ? 1 : 0,
@@ -232,37 +230,6 @@ export function acceptResults(
 ): CheckResult[] {
   const known = new Set(checks.map((check) => check.id));
   return worstPerCheck(results.filter((result) => known.has(result.checkId)));
-}
-
-export async function windowStatements(
-  db: D1Database,
-  node: AgentNode,
-  metrics: AgentHeartbeat["metrics"],
-  accepted: CheckResult[],
-  now: number,
-): Promise<D1PreparedStatement[]> {
-  const start = windowStart(now, node.interval_seconds);
-  const row = await db
-    .prepare(
-      "SELECT checks FROM node_windows WHERE node_id = ? AND window_start = ?",
-    )
-    .bind(node.id, start)
-    .first<{ checks: string }>();
-  if (row) {
-    const current = parseChecks(row.checks);
-    const merged = mergeChecks(current, accepted);
-    if (merged === current) return [];
-    return [
-      db
-        .prepare(
-          "UPDATE node_windows SET checks = ? WHERE node_id = ? AND window_start = ?",
-        )
-        .bind(JSON.stringify(merged), node.id, start),
-    ];
-  }
-  return [
-    insertWindow(db, node.id, start, 1, metrics, mergeChecks({}, accepted)),
-  ];
 }
 
 export function insertWindow(

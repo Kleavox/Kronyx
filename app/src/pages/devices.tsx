@@ -1,3 +1,4 @@
+import { MIN_AGENT_VERSION } from "@krynodes/protocol/versions";
 import { Fingerprint } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
@@ -57,7 +58,7 @@ import {
   removeChange,
   requireUvChange,
   serverState,
-  speaksQuorum,
+  agentCurrent,
   syncChange,
   uvBlocker,
   type FleetServer,
@@ -72,7 +73,10 @@ const SECTION = "rounded-lg border bg-card";
 const DAY_MS = 24 * 3_600_000;
 
 const STATE: Record<ServerState, { label: string; tone: string }> = {
-  update: { label: "Needs agent 0.3.0", tone: "text-muted-foreground" },
+  update: {
+    label: `Needs agent ${MIN_AGENT_VERSION}`,
+    tone: "text-muted-foreground",
+  },
   empty: { label: "Not trusted yet", tone: "text-warning" },
   behind: { label: "Behind", tone: "text-warning" },
   current: { label: "Up to date", tone: "text-success" },
@@ -716,7 +720,7 @@ function Manage({ fleet }: { fleet: Fleet }) {
   const behind = fleet.servers.filter(
     (server) => states.get(server.node.id) === "behind",
   );
-  const old = fleet.trusted.filter((server) => !speaksQuorum(server.node));
+  const old = fleet.trusted.filter((server) => !agentCurrent(server.node));
   const admitting = new Set(
     fleet.open.flatMap((proposal) =>
       (decodeChange(proposal.change)?.core ?? []).map((key) => key.id),
@@ -777,14 +781,16 @@ function Manage({ fleet }: { fleet: Fleet }) {
         </Notice>
       ) : (
         <Notice tone="warning">
-          Update your servers to agent 0.3.0, then trust this device on them.
+          Update your servers to agent {MIN_AGENT_VERSION}, then trust this
+          device on them.
         </Notice>
       );
   } else if (old.length > 0) {
     notice = (
       <Notice tone="warning">
-        Update {old.map((server) => server.node.name).join(", ")} to agent
-        0.3.0. Devices and access cannot change until every server speaks it.
+        Update {old.map((server) => server.node.name).join(", ")} to agent{" "}
+        {MIN_AGENT_VERSION}. Devices and access cannot change until every server
+        speaks it.
       </Notice>
     );
   } else if (fleet.core.length === 1 && fleet.pending.length === 0) {

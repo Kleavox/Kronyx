@@ -1,11 +1,15 @@
-import { trustChangeSchema, type TrustChange } from "@krynodes/protocol";
+import {
+  MIN_AGENT_VERSION,
+  trustChangeSchema,
+  type TrustChange,
+} from "@krynodes/protocol";
 import type { MiddlewareHandler } from "hono";
 import { z } from "zod";
 
 import { createBatch, sweepStatements } from "../actions/store";
 import { pokeSoon } from "../fleet/client";
 import { fromB64url } from "../lib/b64url";
-import { loadFleet, speaksQuorum, speaksUv, type Fleet } from "../trust/fleet";
+import { agentCurrent, loadFleet, type Fleet } from "../trust/fleet";
 import {
   invalidRequest,
   readJson,
@@ -234,11 +238,11 @@ export function registerDeviceRoutes(
           404,
         );
       }
-      if (!speaksQuorum(node) || (fleet.requireUv && !speaksUv(node))) {
+      if (!agentCurrent(node)) {
         return context.json(
           {
             code: "NEEDS_AGENT",
-            message: `${node.name} needs agent ${fleet.requireUv ? "0.3.1" : "0.3.0"} or later.`,
+            message: `${node.name} needs agent ${MIN_AGENT_VERSION} or later.`,
           },
           422,
         );

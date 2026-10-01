@@ -13,32 +13,20 @@ const node = (
   extra: Partial<{
     disabled_at: string | null;
     enrolled_at: string | null;
-    transport: "http" | "stream";
   }> = {},
 ) => ({
   id,
   interval_seconds: interval,
   disabled_at: null,
   enrolled_at: "2026-09-01 00:00:00",
-  transport: "http" as const,
   ...extra,
 });
 
 const SHARE = { requests: 20_000, writes: 30_000, reads: 1_000_000 };
 
 describe("estimateDailyUse", () => {
-  it("charges an HTTP server its heartbeat row plus one window row in and out", () => {
-    const nodes = ["a", "b", "c", "d", "e"].map((id) => node(id));
-    expect(estimateDailyUse(nodes)).toEqual({
-      writes: 10_080,
-      requests: 10_200,
-    });
-  });
-
   it("charges a live connection a server row per window and almost no requests", () => {
-    const nodes = ["a", "b", "c", "d", "e"].map((id) =>
-      node(id, 60, { transport: "stream" }),
-    );
+    const nodes = ["a", "b", "c", "d", "e"].map((id) => node(id));
     expect(estimateDailyUse(nodes)).toEqual({
       writes: 4_320,
       requests: 3_120,
@@ -57,7 +45,7 @@ describe("estimateDailyUse", () => {
   it("scales with the node interval", () => {
     expect(estimateDailyUse([node("slow", 600)])).toEqual({
       writes: 432,
-      requests: 3_144,
+      requests: 3_024,
     });
   });
 });

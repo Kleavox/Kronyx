@@ -128,7 +128,6 @@ describe("overview with live connections", () => {
     const t = await setup({
       FLEET: hub.binding as unknown as DurableObjectNamespace,
     });
-    t.sqlite.prepare("UPDATE nodes SET transport = 'stream'").run();
     const body = (await (await t.call("/api/overview")).json()) as {
       nodes: Record<string, unknown>[];
     };
@@ -173,7 +172,6 @@ describe("overview with live connections", () => {
     const t = await setup({
       FLEET: hub.binding as unknown as DurableObjectNamespace,
     });
-    t.sqlite.prepare("UPDATE nodes SET transport = 'stream'").run();
     const response = await t.call("/api/overview");
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
@@ -194,18 +192,10 @@ describe("overview with live connections", () => {
     const t = await setup({
       FLEET: hub.binding as unknown as DurableObjectNamespace,
     });
-    t.sqlite
-      .prepare("UPDATE nodes SET transport = 'stream' WHERE id = ?")
-      .run(NODE);
     const body = (await (await t.call("/api/overview")).json()) as {
       nodes: Record<string, unknown>[];
     };
-    expect(body.nodes.find((entry) => entry.id === NODE)?.grace_seconds).toBe(
-      420,
-    );
-    expect(
-      body.nodes.find((entry) => entry.id === OTHER)?.grace_seconds,
-    ).toBeUndefined();
+    expect(body.nodes.map((entry) => entry.grace_seconds)).toEqual([420, 420]);
     errors.mockRestore();
   });
 });

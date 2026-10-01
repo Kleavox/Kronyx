@@ -40,7 +40,7 @@ const PASS: PassphraseKey = {
   publicKey: "_K0-Bfagmf_Jx6zhs7liJQ92RMtDjmgTQLxj6GQUfls",
 };
 
-const node = (id: string, agent = "0.3.0") =>
+const node = (id: string, agent = "0.3.1") =>
   ({
     id,
     name: id.slice(0, 2),
@@ -122,14 +122,12 @@ describe("access", () => {
     expect(signersFor(devices, [])).toEqual([]);
   });
 
-  it("offers a server restart only from agent 0.2.2 with access", () => {
+  it("offers a server restart to a current agent with access", () => {
     const own = trust(1, [laptop], [laptop]);
-    expect(canRestartServer(node(N1, "0.2.2"), own)).toBe(true);
-    expect(canRestartServer(node(N1, "0.2.1"), own)).toBe(false);
-    expect(canRestartServer(node(N1, "0.3.0"), trust(1, [laptop], []))).toBe(
-      false,
-    );
-    expect(canRestartServer(node(N1, "0.2.2"), null)).toBe(false);
+    expect(canRestartServer(node(N1, "0.3.1"), own)).toBe(true);
+    expect(canRestartServer(node(N1, "0.3.0"), own)).toBe(false);
+    expect(canRestartServer(node(N1), trust(1, [laptop], []))).toBe(false);
+    expect(canRestartServer(node(N1), null)).toBe(false);
   });
 });
 
