@@ -146,6 +146,44 @@ describe("overview with live connections", () => {
     ).toBeUndefined();
   });
 
+  it("still answers for a connection that opened before connectedAt existed", async () => {
+    const hub = fleet(
+      () =>
+        new Response(
+          JSON.stringify({
+            [NODE]: {
+              lastSeen: LAST_SEEN,
+              agentVersion: "0.3.0",
+              hostname: "pivox",
+              metrics: {
+                cpuPercent: 42,
+                memoryUsedBytes: 5,
+                memoryTotalBytes: 8,
+                diskUsedBytes: 1,
+                diskTotalBytes: 2,
+                load1: 1,
+                load5: 1,
+                load15: 1,
+                uptimeSeconds: 900,
+              },
+            },
+          }),
+        ),
+    );
+    const t = await setup({
+      FLEET: hub.binding as unknown as DurableObjectNamespace,
+    });
+    t.sqlite.prepare("UPDATE nodes SET transport = 'stream'").run();
+    const response = await t.call("/api/overview");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      nodes: Record<string, unknown>[];
+    };
+    const node = body.nodes.find((entry) => entry.id === NODE)!;
+    expect(node.last_seen_at).toBe("2026-10-01 08:04:30");
+    expect(node).not.toHaveProperty("connected_at");
+  });
+
   it("widens the offline grace of streaming servers when the hub cannot answer", async () => {
     const hub = fleet(() => {
       throw new Error("hub down");

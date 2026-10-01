@@ -81,7 +81,9 @@ export function mergeLive<T extends NodeRow>(
     return {
       ...row,
       last_seen_at: sqliteTime(entry.lastSeen),
-      connected_at: new Date(entry.connectedAt).toISOString(),
+      ...(Number.isFinite(entry.connectedAt)
+        ? { connected_at: new Date(entry.connectedAt).toISOString() }
+        : {}),
       agent_version: entry.agentVersion,
       hostname: entry.hostname,
       cpu_percent: entry.metrics.cpuPercent,
