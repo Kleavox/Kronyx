@@ -40,7 +40,6 @@ export function useFleet(poll = false): Fleet | null {
     origin: window.location.origin,
     devices: devices.data.devices,
     servers,
-    passphrase: devices.data.passphrase,
   };
   const list = devices.data.devices;
   const known = new Set(thisBrowser());

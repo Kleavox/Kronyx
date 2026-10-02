@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { Env } from "../env";
-import { sendDigestEmail, sendServerEmail } from "./mail";
+import { sendServerEmail } from "./mail";
 
 function mailEnv(extra: Partial<Env> = {}) {
   const send = vi.fn(async () => ({ messageId: "m-1" }));
@@ -18,7 +18,7 @@ function mailEnv(extra: Partial<Env> = {}) {
 }
 
 const at = "2026-09-28T08:05:09.123Z";
-const down = (checkName: string, summary = `${checkName} is down`) => ({
+const down = (checkName: string | null, summary = `${checkName} is down`) => ({
   checkName,
   summary,
   occurredAt: at,
@@ -28,12 +28,12 @@ describe("incident email", () => {
   it("goes to the operator through the Cloudflare binding, one mail per server", async () => {
     const { env, sent } = mailEnv();
     await sendServerEmail(env, {
+      nodeId: "n1",
       nodeName: "pivox",
       down: [
         down("API <health>", "API <health> is down: timeout"),
         down("Web"),
       ],
-      up: [],
     });
     const message = sent();
     expect(message.to).toBe("operator@example.test");
@@ -53,41 +53,25 @@ describe("incident email", () => {
     expect(message.text).toContain("https://kry.example.test/incidents");
   });
 
-  it("says when checks are back up, alone or next to new failures", async () => {
-    const { env, send } = mailEnv();
-    await sendServerEmail(env, {
-      nodeName: "pivox",
-      down: [],
-      up: [down("API")],
-    });
-    await sendServerEmail(env, {
-      nodeName: "pivox",
-      down: [down("Web")],
-      up: [down("API"), down("Health")],
-    });
-    const subjects = (
-      send.mock.calls as unknown as [Record<string, string>][]
-    ).map(([message]) => message.subject);
-    expect(subjects).toEqual([
-      "[Krynodes] pivox: check back up — API",
-      "[Krynodes] pivox: 1 check down — Web · back up — API, Health",
-    ]);
-  });
-
-  it("sums up what was held back", async () => {
+  it("says plainly when a server stops reporting", async () => {
     const { env, sent } = mailEnv();
-    await sendDigestEmail(env, { count: 4, since: Date.parse(at) });
-    expect(sent().subject).toBe("[Krynodes] 4 more check changes");
-    expect(sent().text).toContain("2026-09-28 08:05 UTC");
+    await sendServerEmail(env, {
+      nodeId: "n1",
+      nodeName: "pivox",
+      down: [down(null, "pivox stopped reporting")],
+    });
+    expect(sent().subject).toBe("[Krynodes] pivox: offline");
+    expect(sent().text).toContain("Last report: 2026-09-28 08:05 UTC");
+    expect(sent().text).toContain("https://kry.example.test/nodes/n1");
   });
 
   it("sends nothing when no operator address or binding is configured", async () => {
     for (const extra of [{ ALERT_EMAIL: undefined }, { EMAIL: undefined }]) {
       const { env, send } = mailEnv(extra);
       await sendServerEmail(env, {
+        nodeId: "n1",
         nodeName: "pivox",
         down: [down("API")],
-        up: [],
       });
       expect(send).not.toHaveBeenCalled();
     }

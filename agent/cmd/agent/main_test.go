@@ -117,17 +117,13 @@ func TestTrustArgumentsMayStartWithADash(t *testing.T) {
 	}
 }
 
-func TestTrustArgumentsCarryThePassphraseAndTheGrant(t *testing.T) {
-	options, err := parseTrust([]string{"--initial", "--origin", "https://kry.kleavox.xyz", "--passphrase", "SALT.600000.KEY", "--grant", "--", "-abc.-7.KEY"})
-	if err != nil {
-		t.Fatal(err)
+func TestTrustArgumentsCarryTheGrant(t *testing.T) {
+	options, err := parseTrust([]string{"--initial", "--origin", "https://kry.kleavox.xyz", "--grant", "--", "-abc.-7.KEY"})
+	if err != nil || !options.grant || len(options.keys) != 1 {
+		t.Fatalf("options %+v err %v", options, err)
 	}
-	if options.passphrase != "SALT.600000.KEY" || !options.grant || len(options.keys) != 1 {
-		t.Fatalf("options %+v", options)
-	}
-	plain, err := parseTrust([]string{"--initial", "--origin", "https://kry.kleavox.xyz", "--", "abc.-7.KEY"})
-	if err != nil || plain.passphrase != "" || plain.grant {
-		t.Fatalf("plain %+v err %v", plain, err)
+	if _, err := parseTrust([]string{"--initial", "--passphrase", "SALT.600000.KEY"}); err == nil {
+		t.Fatal("the passphrase flag is gone")
 	}
 }
 

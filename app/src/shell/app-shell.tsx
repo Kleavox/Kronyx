@@ -14,7 +14,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useDeploySession } from "@/features/deploy/use-deploy-session";
-import { PassphrasePrompt } from "@/features/devices/passphrase-dialogs";
 import { useSignedAction } from "@/features/deploy/use-signed-action";
 import { useDevices, useOverview, useProposals, useServices } from "@/lib/api";
 import { timeAgo } from "@/lib/format";
@@ -160,7 +159,6 @@ export function AppShell({
           </NavLink>
         ))}
       </nav>
-      <PassphrasePrompt />
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}

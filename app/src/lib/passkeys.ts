@@ -4,25 +4,16 @@ export const SESSION_MS = 15 * 60_000;
 const COMMAND_GRACE_MS = 60 * 60_000;
 const BROWSER_KEY = "kry.devices";
 
-interface Assertion {
+export interface Approval {
   credentialId: string;
   authenticatorData: string;
   clientDataJSON: string;
   signature: string;
 }
 
-export interface Approval extends Assertion {
-  proof?: string;
-}
-
 interface SignedGrant extends Approval {
   grant: string;
 }
-
-export type Prove = (
-  purpose: string,
-  data: Uint8Array<ArrayBuffer>,
-) => Promise<string>;
 
 export interface SignedCommand {
   grant: SignedGrant;
@@ -74,9 +65,9 @@ const NOT_TOUCHED =
   "The passkey was not touched. Try again and confirm on your device.";
 
 const NO_FINGERPRINT =
-  "This passkey did not confirm a fingerprint. Choose Use a phone, or use a security key.";
+  "This passkey did not verify a fingerprint. Use the fingerprint, or choose Use a phone or a security key.";
 
-export type Proof = Prove | "fingerprint" | null;
+const HINTS = ["client-device", "security-key", "hybrid"];
 
 export function nameFor(transports: string[], fallback: string): string {
   if (transports.includes("hybrid")) return "Phone";
@@ -86,17 +77,19 @@ export function nameFor(transports: string[], fallback: string): string {
   return fallback;
 }
 
-function requirePresent(
+function requireFingerprint(
   authenticatorData: ArrayBuffer,
   attachment: string | null | undefined,
-): boolean {
+) {
   const flags = new Uint8Array(authenticatorData)[32] ?? 0;
-  if ((flags & 0x01) === 0x01) return (flags & 0x04) === 0x04;
-  const detail = [
-    `flags 0x${flags.toString(16).padStart(2, "0")}`,
-    attachment ?? "unknown authenticator",
-  ].join(", ");
-  throw new Error(`${NOT_TOUCHED} (${detail})`);
+  if ((flags & 0x01) !== 0x01) {
+    const detail = [
+      `flags 0x${flags.toString(16).padStart(2, "0")}`,
+      attachment ?? "unknown authenticator",
+    ].join(", ");
+    throw new Error(`${NOT_TOUCHED} (${detail})`);
+  }
+  if ((flags & 0x04) !== 0x04) throw new Error(NO_FINGERPRINT);
 }
 
 export function thisBrowser(): string[] {
@@ -130,7 +123,7 @@ export async function registerDevice(
   rpId: string,
   user: { id: string; name: string },
   existing: string[],
-  options: { required?: boolean; guessed?: boolean } = {},
+  options: { guessed?: boolean } = {},
 ): Promise<DeviceInput> {
   const credential = (await navigator.credentials.create({
     publicKey: {
@@ -146,9 +139,10 @@ export async function registerDevice(
         { type: "public-key", alg: -257 },
       ],
       authenticatorSelection: {
-        userVerification: options.required ? "required" : "preferred",
+        userVerification: "required",
         residentKey: "preferred",
       },
+      hints: HINTS,
       attestation: "none",
       excludeCredentials: existing.map((id) => ({
         type: "public-key" as const,
@@ -159,15 +153,10 @@ export async function registerDevice(
   })) as PublicKeyCredential | null;
   if (!credential) throw new Error("No passkey was created.");
   const response = credential.response as AuthenticatorAttestationResponse;
-  const verifies = requirePresent(
+  requireFingerprint(
     response.getAuthenticatorData(),
     credential.authenticatorAttachment,
   );
-  if (options.required && !verifies) {
-    throw new Error(
-      "This passkey cannot verify a fingerprint. Choose Use a phone, or use a security key.",
-    );
-  }
   const publicKey = response.getPublicKey();
   if (!publicKey)
     throw new Error("This browser does not share the passkey's public key.");
@@ -181,66 +170,42 @@ export async function registerDevice(
       : name,
     alg: response.getPublicKeyAlgorithm(),
     publicKey: b64url(publicKey),
-    verifies,
+    verifies: true,
   };
 }
 
 async function assert(
-  challenge: Uint8Array<ArrayBuffer>,
+  bytes: Uint8Array<ArrayBuffer>,
   rpId: string,
   devices: string[],
-  required: boolean,
-): Promise<{ assertion: Assertion; verified: boolean }> {
+): Promise<Approval> {
   const credential = (await navigator.credentials.get({
     publicKey: {
-      challenge,
+      challenge: await sha256(bytes),
       rpId,
       allowCredentials: devices.map((id) => ({
         type: "public-key" as const,
         id: fromB64url(id),
       })),
-      userVerification: required ? "required" : "preferred",
+      userVerification: "required",
+      hints: HINTS,
       timeout: 120_000,
     },
   })) as PublicKeyCredential | null;
   if (!credential) throw new Error("The passkey did not answer.");
   const response = credential.response as AuthenticatorAssertionResponse;
-  const verified = requirePresent(
+  requireFingerprint(
     response.authenticatorData,
     credential.authenticatorAttachment,
   );
-  if (required && !verified) throw new Error(NO_FINGERPRINT);
   if (credential.authenticatorAttachment !== "cross-platform") {
     remember(credential.id);
   }
   return {
-    assertion: {
-      credentialId: credential.id,
-      authenticatorData: b64url(response.authenticatorData),
-      clientDataJSON: b64url(response.clientDataJSON),
-      signature: b64url(response.signature),
-    },
-    verified,
-  };
-}
-
-async function approveBytes(
-  bytes: Uint8Array<ArrayBuffer>,
-  rpId: string,
-  devices: string[],
-  prove: Proof,
-  purpose: (credentialId: string) => string,
-): Promise<Approval> {
-  const { assertion, verified } = await assert(
-    await sha256(bytes),
-    rpId,
-    devices,
-    prove === "fingerprint",
-  );
-  if (verified || !prove || prove === "fingerprint") return assertion;
-  return {
-    ...assertion,
-    proof: await prove(purpose(assertion.credentialId), bytes),
+    credentialId: credential.id,
+    authenticatorData: b64url(response.authenticatorData),
+    clientDataJSON: b64url(response.clientDataJSON),
+    signature: b64url(response.signature),
   };
 }
 
@@ -248,26 +213,13 @@ export function approveChange(
   change: string,
   devices: string[],
   rpId: string,
-  prove: Proof = null,
 ): Promise<Approval> {
-  return approveBytes(
-    fromB64url(change),
-    rpId,
-    devices,
-    prove,
-    (id) => `approve:${id}`,
-  );
-}
-
-export function grantVerified(session: Session): boolean {
-  const flags = fromB64url(session.grant.authenticatorData)[32] ?? 0;
-  return (flags & 0x04) === 0x04;
+  return assert(fromB64url(change), rpId, devices);
 }
 
 export async function createSession(
   devices: string[],
   rpId: string,
-  prove: Proof = null,
   now = Date.now(),
 ): Promise<Session> {
   const pair = await crypto.subtle.generateKey(
@@ -287,13 +239,7 @@ export async function createSession(
       nonce: b64url(random(16)),
     }),
   );
-  const approval = await approveBytes(
-    grantBytes,
-    rpId,
-    devices,
-    prove,
-    () => "grant",
-  );
+  const approval = await assert(grantBytes, rpId, devices);
   return {
     key: pair.privateKey,
     grant: { grant: b64url(grantBytes), ...approval },

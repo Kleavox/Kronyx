@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/ecdsa"
-	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -64,39 +63,19 @@ func (t Trust) coreIDs() []string {
 	return ids
 }
 
-func (t Trust) verified(uv bool, proof, purpose string, data []byte) error {
+func verified(uv bool) error {
 	if uv {
 		return nil
 	}
-	if t.RequireUV {
-		return errors.New("the passkey did not verify a fingerprint; this server requires one")
-	}
-	if t.Passphrase == nil {
-		return nil
-	}
-	if proof == "" {
-		return errors.New("the passkey did not verify the user; the passphrase is needed")
-	}
-	return verifyProof(*t.Passphrase, purpose, data, proof)
+	return errors.New("the passkey did not verify a fingerprint; every server requires one")
 }
 
-func proofMessage(purpose string, data []byte) string {
-	return "krynodes-passphrase\n" + purpose + "\n" + b64.EncodeToString(digest(data))
-}
-
-func verifyProof(key PassphraseKey, purpose string, data []byte, proof string) error {
-	public, err := decode("passphrase key", key.PublicKey)
-	if err != nil || len(public) != ed25519.PublicKeySize {
-		return errors.New("the passphrase key is malformed")
+func settled(t Trust) Trust {
+	t.Passphrase = nil
+	if len(t.Core) > 0 {
+		t.RequireUV = true
 	}
-	signature, err := decode("passphrase proof", proof)
-	if err != nil {
-		return err
-	}
-	if !ed25519.Verify(public, []byte(proofMessage(purpose, data)), signature) {
-		return errors.New("the passphrase is wrong")
-	}
-	return nil
+	return t
 }
 
 type Assertion struct {
@@ -289,7 +268,7 @@ func VerifyCommand(trust Trust, request Request, now time.Time) (Command, error)
 	if err != nil {
 		return Command{}, err
 	}
-	if err := trust.verified(uv, signed.Grant.Proof, "grant", grantBytes); err != nil {
+	if err := verified(uv); err != nil {
 		return Command{}, err
 	}
 	var session grant

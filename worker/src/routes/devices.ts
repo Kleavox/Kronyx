@@ -77,13 +77,7 @@ function firstTrustAllowed(fleet: Fleet, change: TrustChange): boolean {
   if (!expected || !sameIds(core, expected)) return false;
   const founding = expected.length < 2;
   if (!sameIds(access, founding ? core : [])) return false;
-  if ((change.requireUv === true) !== fleet.requireUv) return false;
-  const passphrase = fleet.requireUv ? null : fleet.passphrase;
-  return passphrase
-    ? change.passphrase?.salt === passphrase.salt &&
-        change.passphrase.iterations === passphrase.iterations &&
-        change.passphrase.publicKey === passphrase.publicKey
-    : change.passphrase === null;
+  return change.requireUv === true && change.passphrase === null;
 }
 
 export function registerDeviceRoutes(
@@ -106,7 +100,6 @@ export function registerDeviceRoutes(
           fingerprint: device.fingerprint,
           core: fleet.core.includes(device.id),
         })),
-      passphrase: fleet.passphrase,
     });
   });
 
@@ -115,7 +108,21 @@ export function registerDeviceRoutes(
     if (!parsed.success) return invalidRequest(context);
     const device = parsed.data;
     const fleet = await loadFleet(context.env.DB, context.get("identity").id);
-    if (fleet.requireUv && device.verifies !== true) {
+    const twin = fleet.devices.find(
+      (entry) =>
+        entry.removedAt === null &&
+        (entry.id === device.id || entry.publicKey === device.publicKey),
+    );
+    if (twin) {
+      return context.json(
+        {
+          code: "DEVICE_EXISTS",
+          message: `This passkey is already registered as ${twin.name}.`,
+        },
+        409,
+      );
+    }
+    if (device.verifies !== true) {
       return context.json(
         {
           code: "CANNOT_VERIFY",
@@ -182,7 +189,7 @@ export function registerDeviceRoutes(
       return context.json(
         {
           code: "CORE_DEVICE",
-          message: "A core device leaves only through an approved change.",
+          message: "A trusted device leaves only through an approved change.",
         },
         409,
       );

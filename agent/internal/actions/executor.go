@@ -339,7 +339,7 @@ func (e Executor) trustChange(request Request) Result {
 	if err := SaveTrust(e.StateDir, next); err != nil {
 		return e.refuse(request.ID, err)
 	}
-	return Result{ID: request.ID, OK: true, Output: fmt.Sprintf("%d core devices, %d with access, version %d", len(next.Core), len(next.Access), next.Version), FinishedAt: e.stamp()}
+	return Result{ID: request.ID, OK: true, Output: fmt.Sprintf("%d trusted devices, %d reach this server, version %d", len(next.Core), len(next.Access), next.Version), FinishedAt: e.stamp()}
 }
 
 func remember(stopped []string, name string, keep bool) []string {

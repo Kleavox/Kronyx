@@ -1,21 +1,16 @@
-import type {
-  PassphraseKeyRecord,
-  TrustChange,
-  TrustKeyRecord,
-} from "@krynodes/protocol";
+import type { TrustChange, TrustKeyRecord } from "@krynodes/protocol";
 import { evaluateQuorum } from "@krynodes/protocol/quorum";
 import {
   summarizeChange,
   type ChangeSummary,
 } from "@krynodes/protocol/summary";
 
-import type {
-  DeviceRecord,
-  NodeRecord,
-  NodeTrust,
-  PassphraseKey,
-} from "../types";
-import { agentSupported, MIN_AGENT_VERSION } from "@krynodes/protocol/versions";
+import type { DeviceRecord, NodeRecord, NodeTrust } from "../types";
+import {
+  agentSupported,
+  compareVersions,
+  TRUST_AGENT,
+} from "@krynodes/protocol/versions";
 import { b64url, fromB64url } from "./passkeys";
 
 const CHANGE_MS = 24 * 3_600_000;
@@ -29,12 +24,10 @@ export interface FleetView {
   origin: string;
   devices: DeviceRecord[];
   servers: FleetServer[];
-  passphrase: PassphraseKey | null;
 }
 
 export interface Plan {
   core: TrustKeyRecord[] | null;
-  passphrase: PassphraseKeyRecord | null;
   requireUv?: true;
   access: Record<string, string[]>;
 }
@@ -55,6 +48,11 @@ export const formatPrint = (print: string) =>
 
 export const agentCurrent = (node: Pick<NodeRecord, "agent_version">) =>
   agentSupported(node.agent_version);
+
+export const trustReady = (node: Pick<NodeRecord, "agent_version">) =>
+  agentCurrent(node) &&
+  (!/^\d+\.\d+\.\d+$/u.test(node.agent_version ?? "") ||
+    compareVersions(node.agent_version!, TRUST_AGENT) >= 0);
 
 export function canRestartServer(
   node: Pick<NodeRecord, "agent_version">,
@@ -105,19 +103,11 @@ const sameSet = (a: string[], b: string[]) =>
 export const trustedServers = (view: FleetView) =>
   view.servers.filter((server) => (server.trust?.core.length ?? 0) > 0);
 
-export const fingerprintsRequired = (view: FleetView) =>
-  view.servers.some((server) => server.trust?.requireUv === true);
-
 export function serverState(view: FleetView, server: FleetServer): ServerState {
-  if (!agentCurrent(server.node)) return "update";
+  if (!trustReady(server.node)) return "update";
   if (!server.trust || server.trust.core.length === 0) return "empty";
   const core = coreOf(view).map((device) => device.fingerprint);
-  if (!sameSet(server.trust.core, core)) return "behind";
-  if (fingerprintsRequired(view)) {
-    return server.trust.requireUv ? "current" : "behind";
-  }
-  if (view.passphrase && !server.trust.passphrase) return "behind";
-  return "current";
+  return sameSet(server.trust.core, core) ? "current" : "behind";
 }
 
 export function nextVersion(view: FleetView): number {
@@ -147,7 +137,7 @@ export function buildChange(
     issuedAt: new Date(now).toISOString(),
     expiresAt: new Date(now + CHANGE_MS).toISOString(),
     core: plan.core,
-    passphrase: plan.passphrase,
+    passphrase: null,
     ...(plan.requireUv ? { requireUv: true as const } : {}),
     access: plan.access,
   };
@@ -177,12 +167,19 @@ export function decodeChange(text: string): TrustChange | null {
   }
 }
 
+export const twinOf = (view: FleetView, device: DeviceRecord) =>
+  coreOf(view).find(
+    (entry) => entry.id !== device.id && entry.publicKey === device.publicKey,
+  ) ?? null;
+
 export function admitChange(view: FleetView, device: DeviceRecord): Plan {
   const core = coreOf(view);
+  if (twinOf(view, device)) {
+    return { core: core.map(keyOf), access: currentAccess(view) };
+  }
   const founding = core.length < 2;
   return {
     core: [...core, device].map(keyOf),
-    passphrase: null,
     access: Object.fromEntries(
       Object.entries(currentAccess(view)).map(([nodeId, ids]) => [
         nodeId,
@@ -197,7 +194,6 @@ export function removeChange(view: FleetView, device: DeviceRecord): Plan {
     core: coreOf(view)
       .filter((entry) => entry.id !== device.id)
       .map(keyOf),
-    passphrase: null,
     access: Object.fromEntries(
       Object.entries(currentAccess(view)).map(([nodeId, ids]) => [
         nodeId,
@@ -214,7 +210,6 @@ export function accessChange(
   const current = currentAccess(view);
   return {
     core: null,
-    passphrase: null,
     access: Object.fromEntries(
       Object.entries(desired).filter(
         ([nodeId, ids]) => !sameSet(ids, current[nodeId] ?? []),
@@ -224,45 +219,7 @@ export function accessChange(
 }
 
 export function syncChange(view: FleetView): Plan {
-  const ruled = fingerprintsRequired(view);
-  const missing = trustedServers(view).some(
-    (server) => view.passphrase && !server.trust?.passphrase,
-  );
-  return {
-    core: coreOf(view).map(keyOf),
-    passphrase: !ruled && missing ? view.passphrase : null,
-    ...(ruled && trustedServers(view).some((server) => !server.trust?.requireUv)
-      ? { requireUv: true as const }
-      : {}),
-    access: currentAccess(view),
-  };
-}
-
-export function requireUvChange(view: FleetView): Plan {
-  const keep = coreOf(view).filter((device) => device.verifies !== false);
-  const ids = keep.map((device) => device.id);
-  return {
-    core: keep.map(keyOf),
-    passphrase: null,
-    requireUv: true,
-    access: Object.fromEntries(
-      Object.entries(currentAccess(view)).map(([nodeId, list]) => [
-        nodeId,
-        list.filter((id) => ids.includes(id)),
-      ]),
-    ),
-  };
-}
-
-export function uvBlocker(view: FleetView): string | null {
-  const old = view.servers.filter((server) => !agentCurrent(server.node));
-  if (old.length > 0) {
-    return `Update ${old.map((server) => server.node.name).join(", ")} to agent ${MIN_AGENT_VERSION} first.`;
-  }
-  if (!coreOf(view).some((device) => device.verifies !== false)) {
-    return "Add a device that verifies a fingerprint first, such as your phone or a security key.";
-  }
-  return null;
+  return { core: coreOf(view).map(keyOf), access: currentAccess(view) };
 }
 
 export function firstTrusts(
@@ -277,12 +234,10 @@ export function firstTrusts(
       ? known
       : view.devices.filter((device) => device.id === founder);
   const access = core.length < 2 ? core.map((device) => device.id) : [];
-  const ruled = fingerprintsRequired(view);
   return nodeIds.map((nodeId) =>
     buildChange(view, {
       core: core.map(keyOf),
-      passphrase: ruled ? null : view.passphrase,
-      ...(ruled ? { requireUv: true as const } : {}),
+      requireUv: true,
       access: { [nodeId]: access },
       version: 1,
       now,
@@ -298,14 +253,11 @@ export function describeChange(
     view.devices.map((device) => [device.id, device.name]),
   );
   for (const key of change.core ?? []) names[key.id] ??= key.name;
-  const passphrase =
-    change.passphrase !== null &&
-    (view.passphrase === null ||
-      change.passphrase.publicKey !== view.passphrase.publicKey ||
-      change.passphrase.salt !== view.passphrase.salt ||
-      change.passphrase.iterations !== view.passphrase.iterations);
   return summarizeChange({
     names,
+    servers: Object.fromEntries(
+      view.servers.map((server) => [server.node.id, server.node.name]),
+    ),
     currentCore: coreOf(view).map((device) => device.id),
     currentAccess: Object.fromEntries(
       view.servers.map((server) => [
@@ -313,11 +265,8 @@ export function describeChange(
         accessIds(view.devices, server.trust),
       ]),
     ),
-    currentPassphrase: view.passphrase !== null,
     change: {
       core: change.core?.map((key) => key.id) ?? null,
-      passphrase,
-      requireUv: change.requireUv === true && !fingerprintsRequired(view),
       access: change.access,
     },
   });
@@ -338,18 +287,9 @@ export function predictMissing(
       },
       change: {
         core: change.core?.map((key) => key.id) ?? null,
-        passphraseChanged:
-          change.passphrase !== null &&
-          (!trust?.passphrase ||
-            change.passphrase.publicKey !== view.passphrase?.publicKey),
-        requireUv: change.requireUv === true && !trust?.requireUv,
         access,
       },
-      approvals: approvers.map((id) => ({
-        id,
-        verified: true,
-        uv: view.devices.find((device) => device.id === id)?.verifies !== false,
-      })),
+      approvals: approvers,
     });
     if (!result.ok) return result.reason;
   }

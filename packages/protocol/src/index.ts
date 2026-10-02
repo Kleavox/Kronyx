@@ -17,13 +17,9 @@ export {
   compareVersions,
   LOGS_AGENT,
   MIN_AGENT_VERSION,
+  TRUST_AGENT,
 } from "./versions";
-export {
-  evaluateQuorum,
-  proofMessage,
-  type QuorumInput,
-  type QuorumResult,
-} from "./quorum";
+export { evaluateQuorum, type QuorumInput, type QuorumResult } from "./quorum";
 
 export const agentHostSchema = z.object({
   hostname: z.string().min(1).max(255),

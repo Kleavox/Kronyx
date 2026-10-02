@@ -253,27 +253,110 @@ describe("FleetHub", () => {
     ]);
   });
 
-  it("mails once per server 90 seconds after an incident opens, and nothing for a flap", async () => {
+  it("mails a confirmed failure at once and never its recovery", async () => {
     const t = setup();
     const ws = await t.connect();
     await t.send(ws, BASE + 5_000, heartbeat(10, [result("DOWN")]));
-    await t.send(ws, BASE + 65_000, heartbeat(10, [result("DOWN")]));
     expect(t.mail).toEqual([]);
-    expect(t.storage.alarm).toBe(BASE + 155_000);
-
-    vi.setSystemTime(BASE + 155_000);
-    await t.hub.alarm();
+    await t.send(ws, BASE + 65_000, heartbeat(10, [result("DOWN")]));
     expect(t.mail.map((message) => message.subject)).toEqual([
       `[Krynodes] ${NODE}: 1 check down — ${CHECK}`,
     ]);
-    expect(t.storage.alarm).toBeNull();
-
-    await t.send(ws, BASE + 185_000, heartbeat(10, [result("UP")]));
+    await t.send(ws, BASE + 125_000, heartbeat(10, [result("UP")]));
+    await t.send(ws, BASE + 185_000, heartbeat(10, [result("DOWN")]));
     await t.send(ws, BASE + 245_000, heartbeat(10, [result("DOWN")]));
-    await t.send(ws, BASE + 250_000, heartbeat(10, [result("DOWN")]));
-    vi.setSystemTime(BASE + 275_000);
+    vi.setSystemTime(BASE + 300_000);
     await t.hub.alarm();
     expect(t.mail).toHaveLength(1);
+  });
+
+  it("mails at once when a server stops reporting, once an hour, and never that it is back", async () => {
+    const t = setup();
+    const ws = await t.connect();
+    await t.send(ws, BASE + 5_000, heartbeat(10));
+    expect(t.storage.alarm).toBe(BASE + 185_000);
+
+    vi.setSystemTime(BASE + 120_000);
+    await t.hub.alarm();
+    expect(t.mail).toEqual([]);
+
+    vi.setSystemTime(BASE + 186_000);
+    await t.hub.alarm();
+    expect(t.mail.map((message) => message.subject)).toEqual([
+      `[Krynodes] ${NODE}: offline`,
+    ]);
+
+    await t.send(ws, BASE + 300_000, heartbeat(10));
+    vi.setSystemTime(BASE + 600_000);
+    await t.hub.alarm();
+    expect(t.mail).toHaveLength(1);
+
+    ws.close(1006, "gone");
+    await t.hub.webSocketClose(ws as unknown as WebSocket);
+    const again = await t.connect();
+    await t.send(again, BASE + 3_700_000, heartbeat(10));
+    vi.setSystemTime(BASE + 3_900_000);
+    await t.hub.alarm();
+    expect(t.mail.map((message) => message.subject).at(-1)).toBe(
+      `[Krynodes] ${NODE}: offline`,
+    );
+    expect(t.mail).toHaveLength(2);
+  });
+
+  it("waits while a restart from the dashboard runs, then mails if the server stays away", async () => {
+    const t = setup();
+    const ws = await t.connect();
+    await t.send(ws, BASE + 5_000, heartbeat(10));
+    t.sqlite
+      .prepare(
+        `INSERT INTO actions (id, batch_id, position, mode, node_id, kind, name, action,
+           status, requested_by, requested_at, deliverable_at, sent_at, finished_at)
+         VALUES ('r1', 'b1', 0, 'rolling', ?, 'host', 'server', 'reboot', 'done', 'owner@example.test', ?, ?, ?, ?)`,
+      )
+      .run(
+        NODE,
+        new Date(BASE + 10_000).toISOString(),
+        new Date(BASE + 10_000).toISOString(),
+        new Date(BASE + 20_000).toISOString(),
+        new Date(BASE + 30_000).toISOString(),
+      );
+    ws.close(1006, "rebooting");
+    await t.hub.webSocketClose(ws as unknown as WebSocket);
+
+    vi.setSystemTime(BASE + 200_000);
+    await t.hub.alarm();
+    expect(t.mail).toEqual([]);
+    expect(t.storage.alarm).toBe(BASE + 260_000);
+
+    vi.setSystemTime(BASE + 660_000);
+    await t.hub.alarm();
+    expect(t.mail.map((message) => message.subject)).toEqual([
+      `[Krynodes] ${NODE}: offline`,
+    ]);
+  });
+
+  it("follows a changed report interval before calling a server offline", async () => {
+    const t = setup();
+    const ws = await t.connect();
+    t.sqlite
+      .prepare("UPDATE nodes SET interval_seconds = 300 WHERE id = ?")
+      .run(NODE);
+    await t.send(ws, BASE + 5_000, heartbeat(10));
+    expect(t.storage.alarm).toBe(BASE + 905_000);
+    vi.setSystemTime(BASE + 400_000);
+    await t.hub.alarm();
+    expect(t.mail).toEqual([]);
+  });
+
+  it("never mails about a server that was deleted", async () => {
+    const t = setup();
+    const ws = await t.connect();
+    await t.send(ws, BASE + 5_000, heartbeat(10));
+    t.sqlite.prepare("DELETE FROM nodes WHERE id = ?").run(NODE);
+    vi.setSystemTime(BASE + 300_000);
+    await t.hub.alarm();
+    expect(t.mail).toEqual([]);
+    expect(t.storage.alarm).toBeNull();
   });
 
   it("opens no incident during planned work on the server, then one at the next failure", async () => {

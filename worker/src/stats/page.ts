@@ -51,6 +51,28 @@ function shortDate(ms: number): string {
   return `${date.getUTCDate()} ${MONTHS[date.getUTCMonth()]}`;
 }
 
+interface Clock {
+  when(ms: number, now: number): string;
+  clock(ms: number): string;
+  weekday(ms: number): string;
+  zone: string;
+}
+
+const UTC: Clock = { when, clock, weekday, zone: " UTC" };
+
+const LOCAL: Clock = {
+  when: (ms) => `{w:${ms}}`,
+  clock: (ms) => `{c:${ms}}`,
+  weekday: (ms) => `{d:${ms}}`,
+  zone: "",
+};
+
+export const LOCAL_TIMES = String.raw`(()=>{const z=Intl.DateTimeFormat().resolvedOptions().timeZone;const M=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];const F=Intl.DateTimeFormat("en-US",{timeZone:z,weekday:"short",year:"numeric",month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit",hourCycle:"h23"});const p=m=>Object.fromEntries(F.formatToParts(m).map(x=>[x.type,x.value]));const c=q=>q.hour+":"+q.minute;const d=q=>q.weekday+", "+q.day+" "+M[q.month-1];const k=q=>q.year+"-"+q.month+"-"+q.day;const f={c,d,t:q=>q.day+" "+M[q.month-1]+" "+q.year+", "+c(q),w:q=>(k(q)===k(p(Date.now()))?"":d(q)+" ")+c(q)};const fill=s=>s.replace(/\{([cdtw]):(\d+)\}/g,(_,x,n)=>f[x](p(Number(n))));for(const e of document.querySelectorAll("[data-local]")){const v=fill(e.getAttribute("data-local"));if(e.tagName==="TIME")e.textContent=v;else e.setAttribute("data-tip",v)}for(const e of document.querySelectorAll("[data-zone]"))e.textContent="Times are in your time zone ("+z+")."})();`;
+
+function moment(ms: number): string {
+  return `<time datetime="${new Date(ms).toISOString()}" data-local="{t:${ms}}">${dateTime(ms)} UTC</time>`;
+}
+
 function dateTime(ms: number): string {
   const date = new Date(ms);
   const hours = String(date.getUTCHours()).padStart(2, "0");
@@ -172,51 +194,59 @@ function dayTip(day: DayBar): string {
   return `${date} · down ${formatDuration(day.downMs)}`;
 }
 
-function slotTip(slot: SlotBar, now: number): string {
-  const span = `${when(slot.start, now)}–${clock(slot.start + 30 * 60_000)} UTC`;
+function slotTip(slot: SlotBar, now: number, c: Clock): string {
+  const span = `${c.when(slot.start, now)}–${c.clock(slot.start + 30 * 60_000)}${c.zone}`;
   if (slot.state === "none") return `${span} · not monitored yet`;
   if (slot.state === "nodata") return `${span} · no data`;
   if (slot.state === "up") return `${span} · up`;
   return `${span} · down ${slot.down} of ${slot.up + slot.down}`;
 }
 
-function recentTip(info: RecentInfo, now: number): string {
-  const since = `Since ${when(info.since, now)} UTC`;
+function recentTip(info: RecentInfo, now: number, c: Clock): string {
+  const since = `Since ${c.when(info.since, now)}${c.zone}`;
   if (info.total === 0) return `${since}\nNo reports yet`;
   return [
     since,
     `${info.up} of ${info.total} reports up`,
     info.lastDown === null
       ? "No downtime recorded"
-      : `Last down ${when(info.lastDown, now)} UTC`,
+      : `Last down ${c.when(info.lastDown, now)}${c.zone}`,
   ].join("\n");
 }
 
-function longTip(info: LongInfo): string {
+function longTip(info: LongInfo, c: Clock): string {
   const since = `Since ${weekday(info.since)}`;
   if (info.lastDown === null) return `${since}\nNo downtime recorded`;
   return [
     since,
     `${info.incidents} ${info.incidents === 1 ? "incident" : "incidents"}, down ${formatDuration(info.downMs)}`,
-    `Last down ${weekday(info.lastDown)} ${clock(info.lastDown)} UTC`,
+    `Last down ${c.weekday(info.lastDown)} ${c.clock(info.lastDown)}${c.zone}`,
   ].join("\n");
 }
 
-function uptimeTip(value: number | null, tip: string): string {
-  return `<span class="tip" tabindex="0" data-tip="${escapeHtml(tip)}">${uptimeText(value)} uptime</span>`;
+function tips(tip: (c: Clock) => string): string {
+  const utc = tip(UTC);
+  const local = tip(LOCAL);
+  return `data-tip="${escapeHtml(utc)}"${local === utc ? "" : ` data-local="${escapeHtml(local)}"`}`;
 }
 
-function bar(state: string, tip: string): string {
-  return `<span class="bar bar-${state}" data-tip="${escapeHtml(tip)}"></span>`;
+function uptimeTip(value: number | null, tip: (c: Clock) => string): string {
+  return `<span class="tip" tabindex="0" ${tips(tip)}>${uptimeText(value)} uptime</span>`;
+}
+
+function bar(state: string, tip: (c: Clock) => string): string {
+  return `<span class="bar bar-${state}" ${tips(tip)}></span>`;
 }
 
 function serviceItem(service: Service, now: number): string {
   const daySummary = `${service.name}: ${uptimeText(service.recentUptime)} of reports up over 24 hours`;
   const longSummary = `${service.name}: ${uptimeText(service.uptime)} uptime over 90 days`;
   const slots = service.recent
-    .map((slot) => bar(slot.state, slotTip(slot, now)))
+    .map((slot) => bar(slot.state, (c) => slotTip(slot, now, c)))
     .join("");
-  const days = service.days.map((day) => bar(day.state, dayTip(day))).join("");
+  const days = service.days
+    .map((day) => bar(day.state, () => dayTip(day)))
+    .join("");
   return `<li class="service">
 <div class="head"><div class="name"><h3>${escapeHtml(service.name)}</h3>${
     service.note ? `<p class="note">${escapeHtml(service.note)}</p>` : ""
@@ -226,9 +256,9 @@ function serviceItem(service: Service, now: number): string {
       : ""
   }<span class="state state-${service.state}">${STATE_LABEL[service.state]}</span></div></div>
 <div class="view view-day"><div class="bars" role="img" aria-label="${escapeHtml(daySummary)}">${slots}</div>
-<div class="legend"><span>24 hours ago</span>${uptimeTip(service.recentUptime, recentTip(service.recentInfo, now))}<span>Now</span></div></div>
+<div class="legend"><span>24 hours ago</span>${uptimeTip(service.recentUptime, (c) => recentTip(service.recentInfo, now, c))}<span>Now</span></div></div>
 <div class="view view-90"><div class="bars" role="img" aria-label="${escapeHtml(longSummary)}">${days}</div>
-<div class="legend"><span><span class="wide">90 days ago</span><span class="narrow">30 days ago</span></span>${uptimeTip(service.uptime, longTip(service.longInfo))}<span>Today</span></div></div>
+<div class="legend"><span><span class="wide">90 days ago</span><span class="narrow">30 days ago</span></span>${uptimeTip(service.uptime, (c) => longTip(service.longInfo, c))}<span>Today</span></div></div>
 </li>`;
 }
 
@@ -242,7 +272,7 @@ function incidentList(view: StatusView, now: number): string {
         incident.resolvedAt === null
           ? `<span class="incident-open">Ongoing for ${formatDuration(now - incident.startedAt)}</span>`
           : `<span class="incident-resolved">Resolved after ${formatDuration(incident.resolvedAt - incident.startedAt)}</span>`;
-      return `<li><span class="incident-name">${escapeHtml(incident.name)}</span>${outcome}<span class="incident-time">${dateTime(incident.startedAt)} UTC</span></li>`;
+      return `<li><span class="incident-name">${escapeHtml(incident.name)}</span>${outcome}<span class="incident-time">${moment(incident.startedAt)}</span></li>`;
     })
     .join("");
   return `<ul class="incidents">${items}</ul>`;
@@ -265,7 +295,7 @@ export function personalize(
     ? ""
     : `<meta http-equiv="refresh" content="${REFRESH_SECONDS};url=/?r=${round + 1}">`;
   const notice = paused
-    ? `<div class="paused" role="status"><p><strong>Updates paused.</strong> This page stopped refreshing after ${(REFRESH_ROUNDS * REFRESH_SECONDS) / 60} minutes. The data below is from ${dateTime(renderedAt)} UTC.</p><a class="resume" href="/">Resume updates</a></div>`
+    ? `<div class="paused" role="status"><p><strong>Updates paused.</strong> This page stopped refreshing after ${(REFRESH_ROUNDS * REFRESH_SECONDS) / 60} minutes. The data below is from ${moment(renderedAt)}.</p><a class="resume" href="/">Resume updates</a></div>`
     : "";
   return html
     .replace("<!--refresh-->", refresh)
@@ -299,11 +329,12 @@ export function renderStatus(view: StatusView, now: number): string {
 <p class="banner banner-${head.tone}">${head.text}</p>
 <div class="section-head"><h2>Services</h2><div class="tabs" role="group" aria-label="Range"><label for="range-day">24 hours</label><label for="range-90">90 days</label></div></div>
 ${services}
-<p class="basis">The 24-hour view counts check reports; the 90-day view and its uptime come from recorded incidents. Orange means part of a bar was down, red most of it. Times are UTC.</p>
+<p class="basis">The 24-hour view counts check reports; the 90-day view and its uptime come from recorded incidents. Orange means part of a bar was down, red most of it. <span data-zone="">Times are UTC.</span></p>
 <h2>Incidents, last 30 days</h2>
 ${incidentList(view, now)}
-<footer>Monitored by Krynodes · updated ${dateTime(now)} UTC</footer>
+<footer>Monitored by Krynodes · updated ${moment(now)}</footer>
 </main>
+<script>${LOCAL_TIMES}</script>
 </body>
 </html>`;
 }

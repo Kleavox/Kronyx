@@ -1,108 +1,85 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  BATCH_MS,
-  drain,
-  emptyBox,
-  enqueue,
-  nextAlarm,
-  type IncidentNotice,
-} from "./notify";
+import { emptyBox, loadBox, receive, type IncidentNotice } from "./notify";
 
-const T = Date.parse("2026-10-01T10:00:00.000Z");
-const HOUR = 3_600_000;
+const T = Date.parse("2026-10-02T10:00:00.000Z");
+const MINUTE = 60_000;
 
 const notice = (
   nodeId: string,
-  checkName: string,
-  kind: "opened" | "resolved",
+  checkName: string | null,
+  kind: "opened" | "resolved" = "opened",
 ): IncidentNotice => ({
   nodeId,
+  checkId: checkName === null ? null : `${nodeId}-${checkName}`,
   checkName,
   kind,
-  summary: kind === "opened" ? `${checkName} is down` : "",
+  summary: `${checkName ?? nodeId} is down`,
   occurredAt: new Date(T).toISOString(),
 });
 
-describe("incident mail box", () => {
-  it("waits 90 seconds, then sends one mail per server", () => {
-    const box = enqueue(
-      emptyBox(),
-      [
-        notice("pivox", "Health", "opened"),
-        notice("pivox", "API", "opened"),
-        notice("vps", "Web", "opened"),
-      ],
-      T,
-    );
-    expect(nextAlarm(box)).toBe(T + BATCH_MS);
-    expect(drain(box, T + 10_000).send).toEqual([]);
-
-    const { send, box: after } = drain(box, T + BATCH_MS);
-    expect(send.map((server) => server.nodeId)).toEqual(["pivox", "vps"]);
-    expect(send[0]!.down.map((entry) => entry.checkName)).toEqual([
-      "Health",
-      "API",
-    ]);
-    expect(after.queue).toEqual([]);
-    expect(nextAlarm(after)).toBeNull();
-  });
-
-  it("keeps the first deadline when more changes arrive", () => {
-    const first = enqueue(emptyBox(), [notice("pivox", "API", "opened")], T);
-    const second = enqueue(
-      first,
-      [notice("pivox", "Health", "opened")],
-      T + 60_000,
-    );
-    expect(nextAlarm(second)).toBe(T + BATCH_MS);
-  });
-
-  it("leaves out a check that went down and came back inside the wait", () => {
-    const box = enqueue(
-      emptyBox(),
-      [
-        notice("pivox", "API", "opened"),
-        notice("pivox", "Health", "opened"),
-        notice("pivox", "API", "resolved"),
-      ],
-      T,
-    );
-    const { send } = drain(box, T + BATCH_MS);
-    expect(send).toHaveLength(1);
-    expect(send[0]!.down.map((entry) => entry.checkName)).toEqual(["Health"]);
-    expect(send[0]!.up).toEqual([]);
-
-    const flap = enqueue(
-      emptyBox(),
-      [notice("pivox", "API", "opened"), notice("pivox", "API", "resolved")],
-      T,
-    );
-    expect(drain(flap, T + BATCH_MS).send).toEqual([]);
-  });
-
-  it("sends 6 mails an hour, holds the rest, then one digest", () => {
-    let box = emptyBox();
-    let sent = 0;
-    for (let index = 0; index < 8; index += 1) {
-      const at = T + index * 2 * BATCH_MS;
-      box = enqueue(box, [notice(`n${index}`, "API", "opened")], at);
-      const result = drain(box, at + BATCH_MS);
-      sent += result.send.length;
-      box = result.box;
+function run(steps: [number, IncidentNotice[]][]) {
+  let box = emptyBox();
+  const mails: { at: number; nodeId: string; down: string[] }[] = [];
+  for (const [at, notices] of steps) {
+    const result = receive(box, notices, at);
+    box = result.box;
+    for (const server of result.send) {
+      mails.push({
+        at,
+        nodeId: server.nodeId,
+        down: server.down.map((entry) => entry.checkName ?? "server"),
+      });
     }
-    expect(sent).toBe(6);
-    expect(box.held).toBe(2);
-    const digestAt = T + BATCH_MS + HOUR;
-    expect(nextAlarm(box)).toBe(digestAt);
+  }
+  return mails;
+}
 
-    expect(drain(box, digestAt - 1).digest).toBeNull();
-    const result = drain(box, digestAt);
-    expect(result.digest).toEqual({
-      count: 2,
-      since: T + 12 * BATCH_MS + BATCH_MS,
-    });
-    expect(result.box.held).toBe(0);
-    expect(nextAlarm(result.box)).toBeNull();
+describe("incident mail", () => {
+  it("mails a failure at once, one mail per server per report", () => {
+    expect(
+      run([
+        [
+          T,
+          [
+            notice("pivox", "Health"),
+            notice("pivox", "API"),
+            notice("vps", null),
+          ],
+        ],
+      ]),
+    ).toEqual([
+      { at: T, nodeId: "pivox", down: ["Health", "API"] },
+      { at: T, nodeId: "vps", down: ["server"] },
+    ]);
+  });
+
+  it("never mails a recovery", () => {
+    expect(
+      run([
+        [T, [notice("pivox", "Health")]],
+        [T + 5 * MINUTE, [notice("pivox", "Health", "resolved")]],
+        [T + 6 * MINUTE, [notice("pivox", null, "resolved")]],
+      ]),
+    ).toHaveLength(1);
+  });
+
+  it("mails a check's first failure in an hour, not the ones after it", () => {
+    const mails = run([
+      [T, [notice("pivox", "Health")]],
+      [T + 10 * MINUTE, [notice("pivox", "Health")]],
+      [T + 20 * MINUTE, [notice("pivox", "API"), notice("pivox", "Health")]],
+      [T + 61 * MINUTE, [notice("pivox", "Health")]],
+    ]);
+    expect(mails.map((mail) => [mail.at, mail.down])).toEqual([
+      [T, ["Health"]],
+      [T + 20 * MINUTE, ["API"]],
+      [T + 61 * MINUTE, ["Health"]],
+    ]);
+  });
+
+  it("starts empty when the stored box has an older shape", () => {
+    expect(loadBox({ queue: [], held: 2 } as never)).toEqual(emptyBox());
+    expect(loadBox(undefined)).toEqual(emptyBox());
   });
 });

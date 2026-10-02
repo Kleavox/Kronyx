@@ -32,7 +32,6 @@ const trusted = {
   version: 1,
   core: ["0123456789abcdef"],
   access: ["0123456789abcdef"],
-  passphrase: false,
 };
 
 const data: ServicesResponse = {

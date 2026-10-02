@@ -142,8 +142,6 @@ describe("dashboard actions that destroy or hide", () => {
       op: "node.delete",
       target: A,
       core: ["phone"],
-      requireUv: false,
-      passphrase: null,
     });
     const other = await t.call(
       "DELETE",

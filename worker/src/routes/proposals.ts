@@ -1,5 +1,6 @@
 import {
   MIN_AGENT_VERSION,
+  TRUST_AGENT,
   evaluateQuorum,
   summarizeChange,
   trustChangeSchema,
@@ -13,9 +14,13 @@ import { pokeNodes } from "../fleet/client";
 import type { Env } from "../env";
 import { fromB64url } from "../lib/b64url";
 import { sendProposalEmail } from "../lib/mail";
-import { assertionUv } from "../lib/webauthn";
 import { Refusal, verifyApproval } from "../trust/approval";
-import { agentCurrent, loadFleet, type Fleet } from "../trust/fleet";
+import {
+  agentCurrent,
+  loadFleet,
+  trustCurrent,
+  type Fleet,
+} from "../trust/fleet";
 import {
   invalidRequest,
   readJson,
@@ -78,13 +83,6 @@ function decodeChange(text: string): TrustChange | null {
   }
 }
 
-const samePassphrase = (fleet: Fleet, change: TrustChange) =>
-  change.passphrase === null ||
-  (fleet.passphrase !== null &&
-    fleet.passphrase.salt === change.passphrase.salt &&
-    fleet.passphrase.iterations === change.passphrase.iterations &&
-    fleet.passphrase.publicKey === change.passphrase.publicKey);
-
 function describe(fleet: Fleet, change: TrustChange) {
   const names = Object.fromEntries(
     fleet.devices.map((device) => [device.id, device.name]),
@@ -92,6 +90,9 @@ function describe(fleet: Fleet, change: TrustChange) {
   for (const key of change.core ?? []) names[key.id] ??= key.name;
   return summarizeChange({
     names,
+    servers: Object.fromEntries(
+      fleet.nodes.map((node) => [node.id, node.name]),
+    ),
     currentCore: fleet.core,
     currentAccess: Object.fromEntries(
       fleet.nodes.map((node) => [
@@ -99,11 +100,8 @@ function describe(fleet: Fleet, change: TrustChange) {
         fleet.ids(node.report?.access ?? []),
       ]),
     ),
-    currentPassphrase: fleet.passphrase !== null,
     change: {
       core: change.core?.map((key) => key.id) ?? null,
-      passphrase: !samePassphrase(fleet, change),
-      requireUv: change.requireUv === true && !fleet.requireUv,
       access: change.access,
     },
   }).title;
@@ -121,19 +119,8 @@ function missing(
         core: fleet.ids(node?.report?.core ?? []),
         access: fleet.ids(node?.report?.access ?? []),
       },
-      change: {
-        core: change.core?.map((key) => key.id) ?? null,
-        passphraseChanged:
-          !samePassphrase(fleet, change) ||
-          (change.passphrase !== null && !node?.report?.passphrase),
-        requireUv: change.requireUv === true && !node?.report?.requireUv,
-        access,
-      },
-      approvals: approvals.map((approval) => ({
-        id: approval.credentialId,
-        verified: true,
-        uv: assertionUv(approval.authenticatorData),
-      })),
+      change: { core: change.core?.map((key) => key.id) ?? null, access },
+      approvals: approvals.map((approval) => approval.credentialId),
     });
     if (!result.ok) return result.reason;
   }
@@ -155,14 +142,16 @@ function checkChange(env: Env, fleet: Fleet, change: TrustChange, now: number) {
     );
   }
   const targets = Object.keys(change.access);
+  const devicesOrRule =
+    change.core !== null || change.passphrase !== null || change.requireUv;
   for (const nodeId of targets) {
     const node = fleet.nodes.find((entry) => entry.id === nodeId);
     if (!node) throw new Refusal(404, "NOT_FOUND", "A server was not found.");
-    if (!agentCurrent(node)) {
+    if (!agentCurrent(node) || (devicesOrRule && !trustCurrent(node))) {
       throw new Refusal(
         422,
         "NEEDS_AGENT",
-        `${node.name} needs agent ${MIN_AGENT_VERSION} or later.`,
+        `Update ${node.name} to agent ${agentCurrent(node) ? TRUST_AGENT : MIN_AGENT_VERSION} first.`,
       );
     }
     if ((node.report?.core.length ?? 0) === 0) {
@@ -181,7 +170,7 @@ function checkChange(env: Env, fleet: Fleet, change: TrustChange, now: number) {
     }
   }
   checkFingerprints(fleet, change);
-  if (change.core !== null || change.passphrase !== null || change.requireUv) {
+  if (devicesOrRule) {
     const trusted = fleet.nodes.filter(
       (node) => (node.report?.core.length ?? 0) > 0,
     );
@@ -189,38 +178,27 @@ function checkChange(env: Env, fleet: Fleet, change: TrustChange, now: number) {
       throw new Refusal(
         400,
         "INCOMPLETE",
-        "A change to the core, the passphrase or the fingerprint rule must reach every server.",
+        "Adding or removing a device, the passphrase or the fingerprint rule must reach every server.",
       );
     }
   }
 }
 
 function checkFingerprints(fleet: Fleet, change: TrustChange) {
-  const ruled = fleet.requireUv || change.requireUv === true;
-  if (!ruled) return;
   if (change.passphrase !== null) {
     throw new Refusal(
       400,
       "NO_PASSPHRASE",
-      "Fingerprints are required, so the passphrase is not used.",
+      "Krynodes no longer uses a passphrase; fingerprints confirm every change.",
     );
   }
-  const next = change.core?.map((key) => key.id) ?? fleet.core;
-  for (const id of next) {
-    const device = fleet.devices.find((entry) => entry.id === id);
-    const name = device?.name ?? "A device";
-    if (!fleet.core.includes(id) && device?.verifies !== true) {
+  for (const key of change.core ?? []) {
+    const device = fleet.devices.find((entry) => entry.id === key.id);
+    if (!fleet.core.includes(key.id) && device?.verifies !== true) {
       throw new Refusal(
         422,
         "CANNOT_VERIFY",
-        `${name} has not shown it can verify a fingerprint, so it cannot join while fingerprints are required.`,
-      );
-    }
-    if (change.requireUv && !fleet.requireUv && device?.verifies === false) {
-      throw new Refusal(
-        422,
-        "CANNOT_VERIFY",
-        `${name} cannot verify a fingerprint. Remove it in the same change.`,
+        `${device?.name ?? "A device"} has not shown it can verify a fingerprint, so it cannot join.`,
       );
     }
   }
@@ -322,32 +300,6 @@ async function apply(
         ),
       ),
   ];
-  if (input.change.passphrase) {
-    statements.push(
-      db
-        .prepare(
-          `INSERT INTO passphrase (owner_user_id, salt, iterations, public_key, set_at)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(owner_user_id) DO UPDATE SET salt = excluded.salt,
-             iterations = excluded.iterations, public_key = excluded.public_key,
-             set_at = excluded.set_at`,
-        )
-        .bind(
-          input.ownerId,
-          input.change.passphrase.salt,
-          input.change.passphrase.iterations,
-          input.change.passphrase.publicKey,
-          at,
-        ),
-    );
-  }
-  if (input.change.requireUv) {
-    statements.push(
-      db
-        .prepare("DELETE FROM passphrase WHERE owner_user_id = ?")
-        .bind(input.ownerId),
-    );
-  }
   if (input.change.core) {
     statements.push(
       db
@@ -455,13 +407,7 @@ export function registerProposalRoutes(
         );
       }
       const bytes = fromB64url(parsed.data.change);
-      await verifyApproval(
-        context.env,
-        fleet,
-        bytes,
-        parsed.data.approval,
-        `approve:${parsed.data.approval.credentialId}`,
-      );
+      await verifyApproval(context.env, fleet, bytes, parsed.data.approval);
       const approvals = [parsed.data.approval];
       const id = crypto.randomUUID();
       const title = describe(fleet, change);
@@ -537,7 +483,7 @@ export function registerProposalRoutes(
         throw new Refusal(
           409,
           "ALREADY_APPROVED",
-          "This device already approved the change. Approve on another core device.",
+          "This device already approved the change. Approve on another trusted device.",
         );
       }
       const fleet = await loadFleet(context.env.DB, identity.id);
@@ -547,7 +493,6 @@ export function registerProposalRoutes(
         fleet,
         fromB64url(row.change),
         parsed.data.approval,
-        `approve:${parsed.data.approval.credentialId}`,
       );
       approvals.push(parsed.data.approval);
       const waiting = missing(fleet, change, approvals);

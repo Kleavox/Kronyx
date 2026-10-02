@@ -5,12 +5,18 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/Kleavox/krynodes/agent/internal/reporter"
 )
+
+func TestMain(m *testing.M) {
+	recheckDelay = 0
+	os.Exit(m.Run())
+}
 
 func TestHTTPCheck(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -80,7 +86,12 @@ func TestServiceChecksShareOneSystemctlCall(t *testing.T) {
 	previous := serviceStates
 	serviceStates = func(_ context.Context, units []string) (string, error) {
 		calls = append(calls, units)
-		return "active\ninactive\n", nil
+		states := map[string]string{"nginx.service": "active", "docker": "inactive"}
+		var answer strings.Builder
+		for _, unit := range units {
+			answer.WriteString(states[unit] + "\n")
+		}
+		return answer.String(), nil
 	}
 	defer func() { serviceStates = previous }()
 
@@ -89,7 +100,7 @@ func TestServiceChecksShareOneSystemctlCall(t *testing.T) {
 		{ID: "bad", Kind: "SERVICE", Target: "bad;unit", TimeoutSeconds: 2},
 		{ID: "docker", Kind: "SERVICE", Target: "docker", TimeoutSeconds: 2},
 	})
-	if len(calls) != 1 || strings.Join(calls[0], " ") != "nginx.service docker" {
+	if len(calls) == 0 || strings.Join(calls[0], " ") != "nginx.service docker" {
 		t.Fatalf("calls %#v", calls)
 	}
 	if results[0].Status != "UP" || results[2].Status != "DOWN" || *results[2].Message != "inactive" {
@@ -122,5 +133,67 @@ func TestServiceUnitsNeverReachSystemctlAsOptions(t *testing.T) {
 	args := systemctlArgs([]string{"--help", "nginx.service"})
 	if strings.Join(args, " ") != "is-active -- --help nginx.service" {
 		t.Fatalf("args %q", args)
+	}
+}
+
+func TestAFailingCheckIsRetriedBeforeItCountsAsDown(t *testing.T) {
+	previous := recheckDelay
+	recheckDelay = 0
+	defer func() { recheckDelay = previous }()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	result := RunAll(context.Background(), []reporter.Check{{ID: "web", Kind: "HTTP", Target: server.URL, TimeoutSeconds: 2}})[0]
+	if result.Status != "UP" || requests.Load() != 2 {
+		t.Fatalf("result %+v after %d requests", result, requests.Load())
+	}
+}
+
+func TestACheckIsDownOnlyAfterThreeFailedAttempts(t *testing.T) {
+	previous := recheckDelay
+	recheckDelay = 0
+	defer func() { recheckDelay = previous }()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	result := RunAll(context.Background(), []reporter.Check{{ID: "web", Kind: "HTTP", Target: server.URL, TimeoutSeconds: 2}})[0]
+	if result.Status != "DOWN" || requests.Load() != 3 {
+		t.Fatalf("result %+v after %d requests", result, requests.Load())
+	}
+}
+
+func TestOnlyFailedServicesAreAskedAgain(t *testing.T) {
+	previous, delay := serviceStates, recheckDelay
+	recheckDelay = 0
+	var calls []string
+	serviceStates = func(_ context.Context, units []string) (string, error) {
+		calls = append(calls, strings.Join(units, " "))
+		if len(calls) == 1 {
+			return "active\nactivating\n", nil
+		}
+		return "active\n", nil
+	}
+	defer func() { serviceStates, recheckDelay = previous, delay }()
+
+	results := RunAll(context.Background(), []reporter.Check{
+		{ID: "nginx", Kind: "SERVICE", Target: "nginx.service", TimeoutSeconds: 2},
+		{ID: "app", Kind: "SERVICE", Target: "app.service", TimeoutSeconds: 2},
+	})
+	if strings.Join(calls, "|") != "nginx.service app.service|app.service" {
+		t.Fatalf("calls %q", calls)
+	}
+	if results[0].Status != "UP" || results[1].Status != "UP" {
+		t.Fatalf("results %+v", results)
 	}
 }

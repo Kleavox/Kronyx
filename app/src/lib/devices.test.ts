@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type {
-  DeviceRecord,
-  NodeRecord,
-  NodeTrust,
-  PassphraseKey,
-} from "../types";
+import type { DeviceRecord, NodeRecord, NodeTrust } from "../types";
 import {
   accessChange,
   accessIds,
@@ -15,17 +10,16 @@ import {
   decodeChange,
   describeChange,
   fingerprint,
-  fingerprintsRequired,
   firstTrusts,
   formatPrint,
   nextVersion,
   predictMissing,
   removeChange,
-  requireUvChange,
   serverState,
+  trustReady,
+  twinOf,
   signersFor,
   syncChange,
-  uvBlocker,
   type FleetView,
 } from "./devices";
 
@@ -34,13 +28,8 @@ const ORIGIN = "https://kry.example.test";
 const N1 = "11111111-1111-4111-8111-111111111111";
 const N2 = "22222222-2222-4222-8222-222222222222";
 const N3 = "33333333-3333-4333-8333-333333333333";
-const PASS: PassphraseKey = {
-  salt: "AAECAwQFBgcICQoLDA0ODw",
-  iterations: 600000,
-  publicKey: "_K0-Bfagmf_Jx6zhs7liJQ92RMtDjmgTQLxj6GQUfls",
-};
 
-const node = (id: string, agent = "0.3.1") =>
+const node = (id: string, agent = "0.3.5") =>
   ({
     id,
     name: id.slice(0, 2),
@@ -65,12 +54,10 @@ const trust = (
   version: number,
   core: DeviceRecord[],
   access: DeviceRecord[],
-  passphrase = false,
 ): NodeTrust => ({
   version,
   core: core.map((entry) => entry.fingerprint),
   access: access.map((entry) => entry.fingerprint),
-  passphrase,
 });
 
 const laptop = device("laptop");
@@ -80,9 +67,8 @@ const tablet = device("tablet", false);
 function view(
   devices: DeviceRecord[],
   servers: { node: NodeRecord; trust: NodeTrust | null }[],
-  passphrase: PassphraseKey | null = null,
 ): FleetView {
-  return { devices, servers, passphrase, origin: ORIGIN };
+  return { devices, servers, origin: ORIGIN };
 }
 
 const bytes = (text: string) =>
@@ -124,7 +110,7 @@ describe("access", () => {
 
   it("offers a server restart to a current agent with access", () => {
     const own = trust(1, [laptop], [laptop]);
-    expect(canRestartServer(node(N1, "0.3.1"), own)).toBe(true);
+    expect(canRestartServer(node(N1, "0.3.5"), own)).toBe(true);
     expect(canRestartServer(node(N1, "0.3.0"), own)).toBe(false);
     expect(canRestartServer(node(N1), trust(1, [laptop], []))).toBe(false);
     expect(canRestartServer(node(N1), null)).toBe(false);
@@ -151,12 +137,18 @@ describe("server state", () => {
       [{ node: node(N1), trust: trust(3, [laptop, phone], []) }],
     );
     expect(serverState(current, current.servers[0]!)).toBe("current");
-    const strict = view(
+  });
+
+  it("asks for agent 0.3.5 before devices can change", () => {
+    expect(trustReady(node(N1, "0.3.5"))).toBe(true);
+    expect(trustReady(node(N1, "0.4.0"))).toBe(true);
+    expect(trustReady(node(N1, "dev"))).toBe(true);
+    expect(trustReady(node(N1, "0.3.4"))).toBe(false);
+    const fleet = view(
       [laptop, phone],
-      [{ node: node(N1), trust: trust(3, [laptop, phone], []) }],
-      PASS,
+      [{ node: node(N1, "0.3.4"), trust: trust(3, [laptop, phone], []) }],
     );
-    expect(serverState(strict, strict.servers[0]!)).toBe("behind");
+    expect(serverState(fleet, fleet.servers[0]!)).toBe("update");
   });
 
   it("the next version beats every server", () => {
@@ -189,7 +181,6 @@ describe("changes", () => {
   it("encodes a change as the exact bytes the servers read", () => {
     const text = buildChange(two, {
       core: null,
-      passphrase: null,
       access: { [N1]: ["laptop"] },
       now: T,
     });
@@ -228,6 +219,23 @@ describe("changes", () => {
     });
   });
 
+  it("skips a waiting device that holds the same passkey as a trusted one", () => {
+    const twin = {
+      ...device("phone-again", false),
+      publicKey: phone.publicKey,
+    };
+    const fleet = view(
+      [laptop, phone, twin],
+      [{ node: node(N1), trust: trust(4, [laptop, phone], [laptop]) }],
+    );
+    expect(twinOf(fleet, twin)?.id).toBe("phone");
+    expect(twinOf(fleet, tablet)).toBeNull();
+    expect(admitChange(fleet, twin).core?.map((key) => key.id)).toEqual([
+      "laptop",
+      "phone",
+    ]);
+  });
+
   it("admits the second device with access to every trusted server (founding)", () => {
     const one = view(
       [laptop, { ...phone, core: false }],
@@ -256,31 +264,26 @@ describe("changes", () => {
       }),
     ).toEqual({
       core: null,
-      passphrase: null,
       access: { [N2]: ["laptop", "phone"] },
     });
     expect(accessChange(two, { [N1]: ["laptop", "phone"] }).access).toEqual({});
   });
 
-  it("syncs servers that missed a change, adding the passphrase only where missing", () => {
+  it("syncs servers that missed a change with the devices and access only", () => {
     const behind = view(
       [laptop, phone],
       [
-        { node: node(N1), trust: trust(4, [laptop, phone], [laptop], true) },
-        { node: node(N2), trust: trust(3, [laptop], [laptop], false) },
+        { node: node(N1), trust: trust(4, [laptop, phone], [laptop]) },
+        { node: node(N2), trust: trust(3, [laptop], [laptop]) },
       ],
-      PASS,
     );
     const change = syncChange(behind);
     expect(change.core?.map((key) => key.id)).toEqual(["laptop", "phone"]);
-    expect(change.passphrase).toEqual(PASS);
     expect(change.access).toEqual({ [N1]: ["laptop"], [N2]: ["laptop"] });
-    const clean = view(
-      [laptop, phone],
-      [{ node: node(N1), trust: trust(4, [laptop, phone], [laptop], true) }],
-      PASS,
-    );
-    expect(syncChange(clean).passphrase).toBeNull();
+    expect(change).not.toHaveProperty("requireUv");
+    expect(bytes(buildChange(behind, { ...change, now: T }))).toMatchObject({
+      passphrase: null,
+    });
   });
 
   it("first trust sends the core with founding access, one server each", () => {
@@ -298,6 +301,7 @@ describe("changes", () => {
       version: 1,
       core: [{ id: "laptop" }],
       passphrase: null,
+      requireUv: true,
       access: { [N1]: ["laptop"] },
     });
     expect(second?.access).toEqual({ [N2]: ["laptop"] });
@@ -307,12 +311,12 @@ describe("changes", () => {
         { node: node(N1), trust: trust(4, [laptop, phone], [laptop]) },
         { node: node(N3), trust: null },
       ],
-      PASS,
     );
     expect(bytes(firstTrusts(later, [N3], "laptop", T)[0]!)).toMatchObject({
       version: 1,
       core: [{ id: "laptop" }, { id: "phone" }],
-      passphrase: PASS,
+      passphrase: null,
+      requireUv: true,
       access: { [N3]: [] },
     });
   });
@@ -323,23 +327,13 @@ describe("changes", () => {
     expect(summary.title).toBe("Admit Tablet");
     const grant = buildChange(two, {
       core: null,
-      passphrase: null,
       access: { [N2]: ["laptop", "phone"] },
       now: T,
     });
     expect(describeChange(two, decodeChange(grant)!)).toMatchObject({
-      title: "Change access on 1 server",
+      title: "Give Phone access to 22",
       access: [{ nodeId: N2, added: ["phone"], removed: [] }],
     });
-    const pass = buildChange(two, {
-      core: null,
-      passphrase: PASS,
-      access: { [N1]: ["laptop", "phone"], [N2]: ["laptop"] },
-      now: T,
-    });
-    expect(describeChange(two, decodeChange(pass)!).title).toBe(
-      "Set passphrase",
-    );
   });
 });
 
@@ -356,10 +350,19 @@ describe("prediction", () => {
     const admit = decodeChange(
       buildChange(fleet, { ...admitChange(fleet, tablet), now: T }),
     )!;
-    expect(predictMissing(fleet, admit, ["laptop"])).toBe(
-      "needs 1 more core device",
+    expect(predictMissing(fleet, admit, ["laptop"])).toBeNull();
+    const helper = device("helper", false);
+    const three = view(
+      [laptop, phone, tablet, helper],
+      [{ node: node(N1), trust: trust(4, [laptop, phone, tablet], [laptop]) }],
     );
-    expect(predictMissing(fleet, admit, ["laptop", "phone"])).toBeNull();
+    const fourth = decodeChange(
+      buildChange(three, { ...admitChange(three, helper), now: T }),
+    )!;
+    expect(predictMissing(three, fourth, ["laptop"])).toBe(
+      "needs 1 more approval",
+    );
+    expect(predictMissing(three, fourth, ["laptop", "phone"])).toBeNull();
     const grant = decodeChange(
       buildChange(fleet, {
         ...accessChange(fleet, { [N1]: ["laptop", "phone"], [N2]: ["phone"] }),
@@ -367,99 +370,24 @@ describe("prediction", () => {
       }),
     )!;
     expect(predictMissing(fleet, grant, ["phone"])).toBe(
-      "needs approval from another device with access here",
+      "needs approval from another device that reaches this server",
     );
     expect(predictMissing(fleet, grant, ["laptop"])).toBeNull();
   });
 });
 
-describe("fingerprint rule", () => {
-  const touch = { ...laptop, verifies: false };
-  const ruled = (
-    core: DeviceRecord[],
-    access: DeviceRecord[],
-    version = 4,
-  ): NodeTrust => ({ ...trust(version, core, access), requireUv: true });
-  const before = view(
-    [touch, phone],
-    [
-      {
-        node: node(N1, "0.3.1"),
-        trust: trust(4, [touch, phone], [touch, phone], true),
-      },
-      { node: node(N2, "0.3.1"), trust: trust(4, [touch, phone], [touch]) },
-      { node: node(N3, "0.3.1"), trust: null },
-    ],
-    PASS,
-  );
-
-  it("turns the rule on by removing devices that only touch, everywhere", () => {
-    const plan = requireUvChange(before);
-    expect(plan.core?.map((key) => key.id)).toEqual(["phone"]);
-    expect(plan.passphrase).toBeNull();
-    expect(plan.requireUv).toBe(true);
-    expect(plan.access).toEqual({ [N1]: ["phone"], [N2]: [] });
-    expect(bytes(buildChange(before, { ...plan, now: T }))).toMatchObject({
-      requireUv: true,
-      passphrase: null,
-    });
-    expect(
-      describeChange(before, decodeChange(buildChange(before, plan))!).title,
-    ).toBe("Remove Laptop · Require fingerprint");
-  });
-
-  it("predicts the approvals the rule needs", () => {
-    const change = decodeChange(
-      buildChange(before, { ...requireUvChange(before), now: T }),
-    )!;
-    expect(predictMissing(before, change, ["laptop"])).toBe(
-      "needs 1 more core device",
-    );
-    expect(predictMissing(before, change, ["laptop", "phone"])).toBeNull();
-    const keeping = decodeChange(
-      buildChange(before, {
-        core: null,
-        passphrase: null,
-        requireUv: true,
-        access: { [N1]: ["laptop", "phone"], [N2]: ["laptop"] },
-        now: T,
-      }),
-    )!;
-    expect(predictMissing(before, keeping, ["laptop", "phone"])).toBe(
-      "every core device that stays must approve with a fingerprint",
-    );
-  });
-
-  it("says why the rule cannot be turned on yet", () => {
-    expect(uvBlocker(before)).toBeNull();
-    const old = view(
+describe("fingerprint, always", () => {
+  it("lets the other device remove one that cannot verify while there are two", () => {
+    const touch = { ...laptop, verifies: false };
+    const pair = view(
       [touch, phone],
-      [{ node: node(N1, "0.3.0"), trust: trust(4, [touch, phone], [touch]) }],
+      [{ node: node(N1), trust: trust(4, [touch, phone], [touch, phone]) }],
     );
-    expect(uvBlocker(old)).toBe("Update 11 to agent 0.3.1 first.");
-    const onlyTouch = view(
-      [touch],
-      [{ node: node(N1, "0.3.1"), trust: trust(4, [touch], [touch]) }],
-    );
-    expect(uvBlocker(onlyTouch)).toMatch(/^Add a device that verifies/u);
-  });
-
-  it("keeps the rule on new and lagging servers", () => {
-    const after = view(
-      [phone, tablet],
-      [
-        { node: node(N1, "0.3.1"), trust: ruled([phone], [phone], 5) },
-        { node: node(N2, "0.3.1"), trust: trust(4, [phone], [phone]) },
-        { node: node(N3, "0.3.1"), trust: null },
-      ],
-    );
-    expect(fingerprintsRequired(after)).toBe(true);
-    expect(fingerprintsRequired(before)).toBe(false);
-    expect(serverState(after, after.servers[1]!)).toBe("behind");
-    const sync = syncChange(after);
-    expect(sync.requireUv).toBe(true);
-    expect(sync.passphrase).toBeNull();
-    const [first] = firstTrusts(after, [N3], "phone", T);
-    expect(bytes(first!)).toMatchObject({ requireUv: true, passphrase: null });
+    const change = decodeChange(
+      buildChange(pair, { ...removeChange(pair, touch), now: T }),
+    )!;
+    expect(change.core?.map((key) => key.id)).toEqual(["phone"]);
+    expect(predictMissing(pair, change, ["phone"])).toBeNull();
+    expect(describeChange(pair, change).title).toBe("Remove Laptop");
   });
 });

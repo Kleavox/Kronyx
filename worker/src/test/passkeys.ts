@@ -1,5 +1,3 @@
-import { proofMessage } from "@krynodes/protocol";
-
 import { toB64url } from "../lib/b64url";
 
 const encoder = new TextEncoder();
@@ -109,18 +107,6 @@ export async function testPassphrase() {
       salt: toB64url(new Uint8Array(16)),
       iterations: 600000,
       publicKey: toB64url(raw),
-    },
-    async proof(purpose: string, data: Uint8Array) {
-      const message = proofMessage(purpose, toB64url(await sha256(data)));
-      return toB64url(
-        new Uint8Array(
-          await crypto.subtle.sign(
-            { name: "Ed25519" },
-            pair.privateKey,
-            encoder.encode(message),
-          ),
-        ),
-      );
     },
   };
 }

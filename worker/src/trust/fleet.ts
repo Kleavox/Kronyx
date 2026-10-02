@@ -1,4 +1,8 @@
-import { agentSupported } from "@krynodes/protocol";
+import {
+  TRUST_AGENT,
+  agentSupported,
+  compareVersions,
+} from "@krynodes/protocol";
 
 import { fingerprint } from "../lib/webauthn";
 
@@ -29,18 +33,10 @@ export interface FleetNode {
   report: TrustReport | null;
 }
 
-interface PassphraseRecord {
-  salt: string;
-  iterations: number;
-  publicKey: string;
-}
-
 export interface Fleet {
   devices: FleetDevice[];
   nodes: FleetNode[];
   core: string[];
-  passphrase: PassphraseRecord | null;
-  requireUv: boolean;
   ids: (prints: string[]) => string[];
 }
 
@@ -63,11 +59,16 @@ export function readReport(text: string | null): TrustReport | null {
 export const agentCurrent = (node: FleetNode) =>
   agentSupported(node.agentVersion);
 
+export const trustCurrent = (node: FleetNode) =>
+  agentCurrent(node) &&
+  (!/^\d+\.\d+\.\d+$/u.test(node.agentVersion ?? "") ||
+    compareVersions(node.agentVersion!, TRUST_AGENT) >= 0);
+
 export async function loadFleet(
   db: D1Database,
   ownerId: string,
 ): Promise<Fleet> {
-  const [devices, nodes, passphrase] = await Promise.all([
+  const [devices, nodes] = await Promise.all([
     db
       .prepare(
         `SELECT id, name, alg, public_key, created_at, last_used_at, removed_at, verifies
@@ -97,12 +98,6 @@ export async function loadFleet(
         agent_version: string | null;
         trust_report: string | null;
       }>(),
-    db
-      .prepare(
-        "SELECT salt, iterations, public_key FROM passphrase WHERE owner_user_id = ?",
-      )
-      .bind(ownerId)
-      .first<{ salt: string; iterations: number; public_key: string }>(),
   ]);
   const listed = await Promise.all(
     devices.results.map(async (row) => ({
@@ -132,14 +127,6 @@ export async function loadFleet(
     devices: listed,
     nodes: listedNodes,
     core: ids([...union]),
-    passphrase: passphrase
-      ? {
-          salt: passphrase.salt,
-          iterations: passphrase.iterations,
-          publicKey: passphrase.public_key,
-        }
-      : null,
-    requireUv: listedNodes.some((node) => node.report?.requireUv),
     ids,
   };
 }

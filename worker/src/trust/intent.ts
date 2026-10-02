@@ -25,14 +25,14 @@ async function verifyIntent(
     throw new Refusal(
       403,
       "PROOF_NEEDED",
-      "Confirm with the passkey of a core device.",
+      "Confirm with the passkey of a trusted device.",
     );
   }
   const signed = signedCommandSchema.safeParse(decodeJson(header));
   if (!signed.success) throw bad("The confirmation is malformed.");
   const { grant: grantText, ...approval } = signed.data.grant;
   const grantBytes = fromB64url(grantText);
-  await verifyApproval(env, fleet, grantBytes, approval, "grant");
+  await verifyApproval(env, fleet, grantBytes, approval);
 
   const origin = new URL(env.PUBLIC_ORIGIN);
   const grant = decodeJson(grantText) as Fields;
@@ -105,8 +105,6 @@ export async function confirmed(
               op,
               target,
               core: owned.core,
-              requireUv: owned.requireUv,
-              passphrase: owned.passphrase,
             }
           : {}),
       },

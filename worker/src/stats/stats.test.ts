@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { seedCheck, seedNode, seedResult } from "../test/seed";
@@ -14,7 +15,7 @@ import {
   uptime,
 } from "./data";
 import { serveStats, type StatsEnv } from "./index";
-import { banner, formatDuration } from "./page";
+import { banner, formatDuration, LOCAL_TIMES } from "./page";
 
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
@@ -568,7 +569,7 @@ describe("serveStats", () => {
     expect(html).toContain('data-tip="11:30–12:00 UTC · no data"');
     expect(html).toContain('data-tip="Mon, 28 Sep · no incidents"');
     expect(html).toContain(
-      'tabindex="0" data-tip="Since Sun, 27 Sep 12:00 UTC\nNo reports yet">-- uptime</span>',
+      'tabindex="0" data-tip="Since Sun, 27 Sep 12:00 UTC\nNo reports yet" data-local="Since {w:1790510400000}\nNo reports yet">-- uptime</span>',
     );
     expect(html).toContain(
       'tabindex="0" data-tip="Since Wed, 1 Jul\nNo downtime recorded">100.00% uptime</span>',
@@ -591,16 +592,96 @@ describe("serveStats", () => {
     const html = await (await visit(db)).text();
     expect(html).toContain(".bar-partial{background:var(--partial)}");
     expect(html).toContain(
-      '<span class="bar bar-partial" data-tip="11:00–11:30 UTC · down 1 of 6">',
+      '<span class="bar bar-partial" data-tip="11:00–11:30 UTC · down 1 of 6" data-local="{w:1790593200000}–{c:1790595000000} · down 1 of 6">',
     );
     expect(html).toContain(
       '<span class="bar bar-partial" data-tip="Mon, 28 Sep · down 20m">',
     );
     expect(html).toContain(
-      'tabindex="0" data-tip="Since Sun, 27 Sep 12:00 UTC\n11 of 12 reports up\nLast down 11:15 UTC">91.66% uptime</span>',
+      'tabindex="0" data-tip="Since Sun, 27 Sep 12:00 UTC\n11 of 12 reports up\nLast down 11:15 UTC" data-local="Since {w:1790510400000}\n11 of 12 reports up\nLast down {w:1790594100000}">91.66% uptime</span>',
     );
     expect(html).toContain(
-      'tabindex="0" data-tip="Since Wed, 1 Jul\n1 incident, down 20m\nLast down Mon, 28 Sep 09:00 UTC">99.98% uptime</span>',
+      'tabindex="0" data-tip="Since Wed, 1 Jul\n1 incident, down 20m\nLast down Mon, 28 Sep 09:00 UTC" data-local="Since Wed, 1 Jul\n1 incident, down 20m\nLast down {d:1790586000000} {c:1790586000000}">99.98% uptime</span>',
+    );
+  });
+
+  it("shows times in the visitor's time zone, with UTC for browsers without script", async () => {
+    const { db, sqlite } = fleet();
+    publish(sqlite, "a", { name: "Website" });
+    incident(
+      sqlite,
+      "a",
+      "2026-09-28T09:00:00.000Z",
+      "2026-09-28T09:20:00.000Z",
+    );
+    const response = await visit(db);
+    const html = await response.text();
+    const script = /<script>([\s\S]*?)<\/script>/u.exec(html)?.[1] ?? "";
+    expect(script).toBe(LOCAL_TIMES);
+    const digest = createHash("sha256").update(script).digest("base64");
+    expect(response.headers.get("content-security-policy")).toContain(
+      `script-src 'sha256-${digest}'`,
+    );
+    expect(html).toContain(
+      '<time datetime="2026-09-28T09:00:00.000Z" data-local="{t:1790586000000}">28 Sep 2026, 09:00 UTC</time>',
+    );
+    expect(html).toContain('<span data-zone="">Times are UTC.</span>');
+  });
+
+  it("fills the templates with the browser's zone", () => {
+    const elements = [
+      {
+        tagName: "SPAN",
+        attributes: {
+          "data-local": "{c:1790593200000}–{c:1790595000000} · up",
+        },
+      },
+      {
+        tagName: "TIME",
+        attributes: { "data-local": "{t:1790586000000}" },
+        textContent: "",
+      },
+      {
+        tagName: "SPAN",
+        attributes: { "data-local": "Last down {w:1790586000000}" },
+      },
+    ].map((element) => ({
+      ...element,
+      getAttribute(name: string) {
+        return (this.attributes as Record<string, string>)[name] ?? null;
+      },
+      setAttribute(name: string, value: string) {
+        (this.attributes as Record<string, string>)[name] = value;
+      },
+    }));
+    const zone = { textContent: "Times are UTC." };
+    const document = {
+      querySelectorAll: (selector: string) =>
+        selector === "[data-local]" ? elements : [zone],
+    };
+    const RealFormat = Intl.DateTimeFormat;
+    const intl = {
+      DateTimeFormat(locale?: string, options?: Intl.DateTimeFormatOptions) {
+        return locale === undefined
+          ? { resolvedOptions: () => ({ timeZone: "Asia/Jakarta" }) }
+          : RealFormat(locale, { ...options, timeZone: "Asia/Jakarta" });
+      },
+    };
+    const clock = { now: () => Date.parse("2026-09-28T13:00:00Z") };
+    new Function("document", "Intl", "Date", LOCAL_TIMES)(
+      document,
+      intl,
+      Object.assign(function () {}, { now: clock.now }),
+    );
+    expect(elements[0]!.attributes["data-tip" as never]).toBe(
+      "18:00–18:30 · up",
+    );
+    expect(elements[1]!.textContent).toBe("28 Sep 2026, 16:00");
+    expect(elements[2]!.attributes["data-tip" as never]).toBe(
+      "Last down 16:00",
+    );
+    expect(zone.textContent).toBe(
+      "Times are in your time zone (Asia/Jakarta).",
     );
   });
 
@@ -638,7 +719,7 @@ describe("serveStats", () => {
       note: '"quoted" & <b>',
     });
     const html = await (await visit(db)).text();
-    expect(html).not.toContain("<script>");
+    expect(html).not.toContain("<script>alert");
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     expect(html).toContain("&quot;quoted&quot; &amp; &lt;b&gt;");
   });

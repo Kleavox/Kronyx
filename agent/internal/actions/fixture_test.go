@@ -16,7 +16,6 @@ type browserFixture struct {
 	First      Request `json:"first"`
 	Admit      Request `json:"admit"`
 	Passphrase Request `json:"passphrase"`
-	Deploy     Request `json:"deploy"`
 }
 
 func loadBrowserFixture(t *testing.T) browserFixture {
@@ -53,22 +52,6 @@ func issuedAt(t *testing.T, request Request) time.Time {
 	return at.Add(time.Second)
 }
 
-func browserTrust(t *testing.T, fixture browserFixture) Trust {
-	t.Helper()
-	trust := Trust{}
-	for _, step := range []struct {
-		name    string
-		request Request
-	}{{"first trust", fixture.First}, {"admission", fixture.Admit}, {"passphrase", fixture.Passphrase}} {
-		next, err := ApplyTrustChange(trust, step.request, issuedAt(t, step.request))
-		if err != nil {
-			t.Fatalf("%s: %v", step.name, err)
-		}
-		trust = next
-	}
-	return trust
-}
-
 func TestTheBrowsersFirstTrustApplies(t *testing.T) {
 	fixture := loadBrowserFixture(t)
 	trust, err := ApplyTrustChange(Trust{}, fixture.First, issuedAt(t, fixture.First))
@@ -80,44 +63,12 @@ func TestTheBrowsersFirstTrustApplies(t *testing.T) {
 	}
 }
 
-func TestTheBrowsersAdmissionAndPassphraseApply(t *testing.T) {
+func TestTheBrowsersPassphraseChangeIsRefused(t *testing.T) {
 	fixture := loadBrowserFixture(t)
-	trust := browserTrust(t, fixture)
-	if len(trust.Core) != 2 || len(trust.Access) != 2 || trust.Passphrase == nil || trust.NodeID != fixture.NodeID {
-		t.Fatalf("trust %+v", trust)
-	}
-}
-
-func TestTheBrowsersPassphraseProvenDeployVerifies(t *testing.T) {
-	fixture := loadBrowserFixture(t)
-	now, err := time.Parse(time.RFC3339Nano, fixture.Now)
+	trust, err := ApplyTrustChange(Trust{}, fixture.First, issuedAt(t, fixture.First))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var signed SignedCommand
-	if err := json.Unmarshal(fixture.Deploy.Signed, &signed); err != nil {
-		t.Fatal(err)
-	}
-	if signed.Grant.Proof == "" {
-		t.Fatal("the fixture's grant should carry a passphrase proof")
-	}
-	command, err := VerifyCommand(browserTrust(t, fixture), fixture.Deploy, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if command.Name != "listmonk" || command.Action != "deploy" || command.NodeID != fixture.NodeID {
-		t.Fatalf("command %+v", command)
-	}
-}
-
-func TestTheBrowsersCommandIsRefusedForAnotherOrigin(t *testing.T) {
-	fixture := loadBrowserFixture(t)
-	now, err := time.Parse(time.RFC3339Nano, fixture.Now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	trust := browserTrust(t, fixture)
-	trust.Origin = "https://kry.kleavox.xyz"
-	_, err = VerifyCommand(trust, fixture.Deploy, now)
-	refused(t, err, "origin does not match")
+	_, err = ApplyTrustChange(trust, fixture.Passphrase, issuedAt(t, fixture.Passphrase))
+	refused(t, err, "no longer use a passphrase")
 }

@@ -10,6 +10,7 @@ import type { MiddlewareHandler } from "hono";
 import { z } from "zod";
 
 import { requestRefresh } from "../actions/inventory";
+import { assertionUv } from "../lib/webauthn";
 import {
   cancelStatement,
   createBatch,
@@ -253,6 +254,20 @@ export function registerServiceRoutes(
         {
           code: "SIGNATURE_MISMATCH",
           message: "The signed command does not match the request.",
+        },
+        400,
+      );
+    }
+    if (
+      targets.some(
+        (target) => !assertionUv(target.signed!.grant.authenticatorData),
+      )
+    ) {
+      return context.json(
+        {
+          code: "FINGERPRINT_NEEDED",
+          message:
+            "This passkey did not verify a fingerprint. Use the fingerprint, or choose Use a phone in the passkey window.",
         },
         400,
       );

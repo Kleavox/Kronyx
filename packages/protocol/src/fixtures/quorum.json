@@ -8,35 +8,23 @@
       },
       "change": {
         "core": ["a", "b"],
-        "passphraseChanged": false,
         "access": ["a", "b"]
       },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true
-        }
-      ],
+      "approvals": ["a"],
       "ok": true
     },
     {
-      "name": "a third device needs two approvals",
+      "name": "with two devices, one approval admits a third",
       "current": {
         "core": ["a", "b"],
         "access": ["a", "b"]
       },
       "change": {
         "core": ["a", "b", "c"],
-        "passphraseChanged": false,
         "access": ["a", "b"]
       },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true
-        }
-      ],
-      "ok": false
+      "approvals": ["a"],
+      "ok": true
     },
     {
       "name": "two approvals admit a third device",
@@ -46,43 +34,49 @@
       },
       "change": {
         "core": ["a", "b", "c"],
-        "passphraseChanged": false,
         "access": ["a", "b"]
       },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true
-        },
-        {
-          "id": "b",
-          "verified": true
-        }
-      ],
+      "approvals": ["a", "b"],
       "ok": true
     },
     {
       "name": "one approval twice is still one",
       "current": {
+        "core": ["a", "b", "c"],
+        "access": ["a", "b", "c"]
+      },
+      "change": {
+        "core": ["a", "b", "c", "d"],
+        "access": ["a", "b", "c"]
+      },
+      "approvals": ["a", "a"],
+      "ok": false
+    },
+    {
+      "name": "with three devices, a fourth needs two approvals",
+      "current": {
+        "core": ["a", "b", "c"],
+        "access": ["a", "b", "c"]
+      },
+      "change": {
+        "core": ["a", "b", "c", "d"],
+        "access": ["a", "b", "c"]
+      },
+      "approvals": ["a"],
+      "ok": false
+    },
+    {
+      "name": "with two devices, one approval removes the other",
+      "current": {
         "core": ["a", "b"],
         "access": ["a", "b"]
       },
       "change": {
-        "core": ["a", "b", "c"],
-        "passphraseChanged": false,
-        "access": ["a", "b"]
+        "core": ["a"],
+        "access": ["a"]
       },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true
-        },
-        {
-          "id": "a",
-          "verified": true
-        }
-      ],
-      "ok": false
+      "approvals": ["a"],
+      "ok": true
     },
     {
       "name": "a device with access gives another device access",
@@ -92,15 +86,9 @@
       },
       "change": {
         "core": null,
-        "passphraseChanged": false,
         "access": ["a", "b", "c"]
       },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true
-        }
-      ],
+      "approvals": ["a"],
       "ok": true
     },
     {
@@ -111,15 +99,9 @@
       },
       "change": {
         "core": null,
-        "passphraseChanged": false,
         "access": ["a", "b", "c"]
       },
-      "approvals": [
-        {
-          "id": "c",
-          "verified": true
-        }
-      ],
+      "approvals": ["c"],
       "ok": false
     },
     {
@@ -130,15 +112,9 @@
       },
       "change": {
         "core": null,
-        "passphraseChanged": false,
         "access": ["a", "b", "d"]
       },
-      "approvals": [
-        {
-          "id": "c",
-          "verified": true
-        }
-      ],
+      "approvals": ["c"],
       "ok": false
     },
     {
@@ -149,100 +125,88 @@
       },
       "change": {
         "core": null,
-        "passphraseChanged": false,
         "access": ["a", "b", "f"]
       },
-      "approvals": [
-        {
-          "id": "h",
-          "verified": true
-        },
-        {
-          "id": "f",
-          "verified": true
-        }
-      ],
+      "approvals": ["h", "f"],
       "ok": false
     },
     {
-      "name": "two other core devices give access when nobody has it",
+      "name": "devices that do not reach a server cannot give it while another device reaches it, even two of them",
       "current": {
-        "core": ["a", "b", "c"],
-        "access": []
+        "core": ["a", "b", "c", "d"],
+        "access": ["a"]
       },
       "change": {
         "core": null,
-        "passphraseChanged": false,
+        "access": ["a", "d"]
+      },
+      "approvals": ["b", "c"],
+      "ok": false
+    },
+    {
+      "name": "the device that reaches a server gives it to another",
+      "current": {
+        "core": ["a", "b", "c", "d"],
         "access": ["a"]
       },
-      "approvals": [
-        {
-          "id": "b",
-          "verified": true
-        },
-        {
-          "id": "c",
-          "verified": true
-        }
-      ],
+      "change": {
+        "core": null,
+        "access": ["a", "d"]
+      },
+      "approvals": ["a"],
       "ok": true
     },
     {
-      "name": "one other core device is not enough when three exist",
+      "name": "two other devices give access when nobody has it",
       "current": {
         "core": ["a", "b", "c"],
         "access": []
       },
       "change": {
         "core": null,
-        "passphraseChanged": false,
         "access": ["a"]
       },
-      "approvals": [
-        {
-          "id": "b",
-          "verified": true
-        }
-      ],
+      "approvals": ["b", "c"],
+      "ok": true
+    },
+    {
+      "name": "one other device is not enough when three exist",
+      "current": {
+        "core": ["a", "b", "c"],
+        "access": []
+      },
+      "change": {
+        "core": null,
+        "access": ["a"]
+      },
+      "approvals": ["b"],
       "ok": false
     },
     {
-      "name": "in a two-device core the other device gives access",
+      "name": "with two devices the other device gives access",
       "current": {
         "core": ["a", "b"],
         "access": []
       },
       "change": {
         "core": null,
-        "passphraseChanged": false,
         "access": ["a"]
       },
-      "approvals": [
-        {
-          "id": "b",
-          "verified": true
-        }
-      ],
+      "approvals": ["b"],
       "ok": true
     },
     {
-      "name": "a single device gives itself access to an empty server",
+      "name": "a single device never gives a server to itself",
       "current": {
         "core": ["a"],
         "access": []
       },
       "change": {
         "core": null,
-        "passphraseChanged": false,
         "access": ["a"]
       },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true
-        }
-      ],
-      "ok": true
+      "approvals": ["a"],
+      "ok": false
     },
     {
       "name": "a device with access takes another's away",
@@ -252,15 +216,9 @@
       },
       "change": {
         "core": null,
-        "passphraseChanged": false,
         "access": ["a"]
       },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true
-        }
-      ],
+      "approvals": ["a"],
       "ok": true
     },
     {
@@ -271,15 +229,9 @@
       },
       "change": {
         "core": null,
-        "passphraseChanged": false,
         "access": ["a"]
       },
-      "approvals": [
-        {
-          "id": "c",
-          "verified": true
-        }
-      ],
+      "approvals": ["c"],
       "ok": true
     },
     {
@@ -290,57 +242,35 @@
       },
       "change": {
         "core": null,
-        "passphraseChanged": false,
         "access": ["a"]
       },
-      "approvals": [
-        {
-          "id": "b",
-          "verified": true
-        }
-      ],
+      "approvals": ["b"],
       "ok": false
     },
     {
-      "name": "two approvals remove a core device, with its access",
+      "name": "two approvals remove a device, with its access",
       "current": {
         "core": ["a", "b", "c"],
         "access": ["c"]
       },
       "change": {
         "core": ["a", "b"],
-        "passphraseChanged": false,
         "access": []
       },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true
-        },
-        {
-          "id": "b",
-          "verified": true
-        }
-      ],
+      "approvals": ["a", "b"],
       "ok": true
     },
     {
-      "name": "one approval cannot remove a core device",
+      "name": "with three devices, one approval cannot remove one",
       "current": {
         "core": ["a", "b", "c"],
         "access": ["a", "b", "c"]
       },
       "change": {
         "core": ["a", "b"],
-        "passphraseChanged": false,
         "access": ["a", "b"]
       },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true
-        }
-      ],
+      "approvals": ["a"],
       "ok": false
     },
     {
@@ -351,122 +281,35 @@
       },
       "change": {
         "core": ["a", "b"],
-        "passphraseChanged": false,
         "access": ["a", "b"]
       },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true
-        },
-        {
-          "id": "c",
-          "verified": true
-        }
-      ],
+      "approvals": ["a", "c"],
       "ok": true
     },
     {
-      "name": "a passphrase change needs two approvals",
+      "name": "an approval from an untrusted device is refused",
       "current": {
         "core": ["a", "b"],
         "access": ["a", "b"]
       },
       "change": {
         "core": null,
-        "passphraseChanged": true,
-        "access": ["a", "b"]
-      },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true
-        }
-      ],
-      "ok": false
-    },
-    {
-      "name": "two approvals set the passphrase",
-      "current": {
-        "core": ["a", "b"],
-        "access": ["a", "b"]
-      },
-      "change": {
-        "core": null,
-        "passphraseChanged": true,
-        "access": ["a", "b"]
-      },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true
-        },
-        {
-          "id": "b",
-          "verified": true
-        }
-      ],
-      "ok": true
-    },
-    {
-      "name": "an unverified approval is refused",
-      "current": {
-        "core": ["a", "b"],
-        "access": ["a", "b"]
-      },
-      "change": {
-        "core": null,
-        "passphraseChanged": false,
         "access": ["a"]
       },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": false
-        }
-      ],
+      "approvals": ["x"],
       "ok": false
     },
     {
-      "name": "an approval from outside the core is refused",
-      "current": {
-        "core": ["a", "b"],
-        "access": ["a", "b"]
-      },
-      "change": {
-        "core": null,
-        "passphraseChanged": false,
-        "access": ["a"]
-      },
-      "approvals": [
-        {
-          "id": "x",
-          "verified": true
-        }
-      ],
-      "ok": false
-    },
-    {
-      "name": "access outside the new core is refused",
+      "name": "access for a device that leaves is refused",
       "current": {
         "core": ["a", "b", "c"],
         "access": ["a", "b", "c"]
       },
       "change": {
         "core": ["a", "b"],
-        "passphraseChanged": false,
         "access": ["a", "b", "c"]
       },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true
-        },
-        {
-          "id": "b",
-          "verified": true
-        }
-      ],
+      "approvals": ["a", "b"],
       "ok": false
     },
     {
@@ -477,7 +320,6 @@
       },
       "change": {
         "core": null,
-        "passphraseChanged": false,
         "access": ["a"]
       },
       "approvals": [],
@@ -491,234 +333,9 @@
       },
       "change": {
         "core": null,
-        "passphraseChanged": false,
         "access": ["a"]
       },
-      "approvals": [
-        {
-          "id": "b",
-          "verified": true
-        }
-      ],
-      "ok": true
-    },
-    {
-      "name": "fingerprint: removing the touch-only device turns it on",
-      "current": {
-        "core": ["a", "b"],
-        "access": ["a", "b"]
-      },
-      "change": {
-        "core": ["b"],
-        "passphraseChanged": false,
-        "requireUv": true,
-        "access": ["b"]
-      },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true,
-          "uv": false
-        },
-        {
-          "id": "b",
-          "verified": true,
-          "uv": true
-        }
-      ],
-      "ok": true
-    },
-    {
-      "name": "fingerprint: a touch-only device cannot stay in the core",
-      "current": {
-        "core": ["a", "b"],
-        "access": ["a", "b"]
-      },
-      "change": {
-        "core": null,
-        "passphraseChanged": false,
-        "requireUv": true,
-        "access": ["a", "b"]
-      },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true,
-          "uv": false
-        },
-        {
-          "id": "b",
-          "verified": true,
-          "uv": true
-        }
-      ],
-      "ok": false
-    },
-    {
-      "name": "fingerprint: turning it on with two core devices needs both",
-      "current": {
-        "core": ["a", "b"],
-        "access": ["a", "b"]
-      },
-      "change": {
-        "core": ["b"],
-        "passphraseChanged": false,
-        "requireUv": true,
-        "access": ["b"]
-      },
-      "approvals": [
-        {
-          "id": "b",
-          "verified": true,
-          "uv": true
-        }
-      ],
-      "ok": false
-    },
-    {
-      "name": "fingerprint: a lone core device turns it on with its fingerprint",
-      "current": {
-        "core": ["a"],
-        "access": ["a"]
-      },
-      "change": {
-        "core": null,
-        "passphraseChanged": false,
-        "requireUv": true,
-        "access": ["a"]
-      },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true,
-          "uv": true
-        }
-      ],
-      "ok": true
-    },
-    {
-      "name": "fingerprint: a lone touch-only device cannot turn it on",
-      "current": {
-        "core": ["a"],
-        "access": ["a"]
-      },
-      "change": {
-        "core": null,
-        "passphraseChanged": false,
-        "requireUv": true,
-        "access": ["a"]
-      },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true,
-          "uv": false
-        }
-      ],
-      "ok": false
-    },
-    {
-      "name": "fingerprint: both devices that stay approve with a fingerprint",
-      "current": {
-        "core": ["a", "b", "c"],
-        "access": ["a", "b", "c"]
-      },
-      "change": {
-        "core": ["b", "c"],
-        "passphraseChanged": false,
-        "requireUv": true,
-        "access": ["b", "c"]
-      },
-      "approvals": [
-        {
-          "id": "b",
-          "verified": true,
-          "uv": true
-        },
-        {
-          "id": "c",
-          "verified": true,
-          "uv": true
-        }
-      ],
-      "ok": true
-    },
-    {
-      "name": "fingerprint: a staying device that only touched blocks it",
-      "current": {
-        "core": ["a", "b", "c"],
-        "access": ["a", "b", "c"]
-      },
-      "change": {
-        "core": ["b", "c"],
-        "passphraseChanged": false,
-        "requireUv": true,
-        "access": ["b", "c"]
-      },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true,
-          "uv": false
-        },
-        {
-          "id": "b",
-          "verified": true,
-          "uv": true
-        },
-        {
-          "id": "c",
-          "verified": true,
-          "uv": false
-        }
-      ],
-      "ok": false
-    },
-    {
-      "name": "fingerprint: turning it on alone still needs two core devices",
-      "current": {
-        "core": ["a", "b"],
-        "access": ["a", "b"]
-      },
-      "change": {
-        "core": null,
-        "passphraseChanged": false,
-        "requireUv": true,
-        "access": ["a", "b"]
-      },
-      "approvals": [
-        {
-          "id": "b",
-          "verified": true,
-          "uv": true
-        }
-      ],
-      "ok": false
-    },
-    {
-      "name": "fingerprint: two fingerprint devices turn it on without a core change",
-      "current": {
-        "core": ["a", "b"],
-        "access": ["a", "b"]
-      },
-      "change": {
-        "core": null,
-        "passphraseChanged": false,
-        "requireUv": true,
-        "access": ["a", "b"]
-      },
-      "approvals": [
-        {
-          "id": "a",
-          "verified": true,
-          "uv": true
-        },
-        {
-          "id": "b",
-          "verified": true,
-          "uv": true
-        }
-      ],
+      "approvals": ["b"],
       "ok": true
     }
   ]

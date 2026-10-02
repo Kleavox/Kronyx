@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { testPassphrase, testPasskey } from "../test/passkeys";
 import { fromB64url } from "./b64url";
-import { fingerprint, verifyAssertion, verifyProof } from "./webauthn";
+import { fingerprint, verifyAssertion } from "./webauthn";
 
 const ORIGIN = "https://kry.example.test";
 const RP = "kry.example.test";
@@ -53,18 +53,6 @@ describe("webauthn", () => {
     await expect(verifyAssertion(phone, signed, expected)).rejects.toThrow(
       /signature/u,
     );
-  });
-
-  it("checks a passphrase proof for its purpose", async () => {
-    const passphrase = await testPassphrase();
-    const data = new Uint8Array(new TextEncoder().encode("change"));
-    const proof = await passphrase.proof("approve:bGFwdG9w", data);
-    await expect(
-      verifyProof(passphrase.key.publicKey, "approve:bGFwdG9w", data, proof),
-    ).resolves.toBe(true);
-    await expect(
-      verifyProof(passphrase.key.publicKey, "grant", data, proof),
-    ).resolves.toBe(false);
   });
 
   it("fingerprints a key the way the agent does", async () => {
