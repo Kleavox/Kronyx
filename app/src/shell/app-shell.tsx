@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet } from "react-router";
-import { ChevronDown, Lock, Search, User } from "lucide-react";
+import { ChevronDown, Search, User } from "lucide-react";
 import { displayHandle } from "@/lib/format";
 import { errorMessage } from "@/lib/http";
 
@@ -13,7 +13,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useDeploySession } from "@/features/deploy/use-deploy-session";
 import { useSignedAction } from "@/features/deploy/use-signed-action";
 import { useDevices, useOverview, useProposals, useServices } from "@/lib/api";
 import { timeAgo } from "@/lib/format";
@@ -136,7 +135,7 @@ export function AppShell({
       </main>
       <nav
         aria-label="Sections"
-        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t bg-card md:hidden"
+        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t bg-card md:hidden"
       >
         {SECTIONS.map((section) => (
           <NavLink
@@ -215,7 +214,6 @@ function AccountMenu({
 }) {
   const handle = displayHandle(identity.username, identity.email);
   const links = accountLinks(via);
-  const session = useDeploySession();
   const proposals = useProposals();
   const devices = useDevices();
   const approvals =
@@ -253,12 +251,6 @@ function AccountMenu({
         {approvals > 0 && (
           <DropdownMenuItem asChild>
             <Link to="/devices">Approvals · {approvals}</Link>
-          </DropdownMenuItem>
-        )}
-        {session.state && (
-          <DropdownMenuItem onSelect={session.lock}>
-            <Lock aria-hidden="true" />
-            Lock actions
           </DropdownMenuItem>
         )}
         {links.length > 0 && <DropdownMenuSeparator />}

@@ -27,6 +27,7 @@ import {
 } from "./shared";
 
 const RECENT_MS = 24 * 3_600_000;
+const HISTORY_PAGE = 50;
 
 const actionRequestSchema = z.object({
   action: z.enum([
@@ -183,6 +184,38 @@ export function registerServiceRoutes(
       actions: actions.results.map((row) =>
         toActionRecord(row.action === "logs" ? { ...row, output: null } : row),
       ),
+    });
+  });
+
+  app.get("/api/history", requireOperator, async (context) => {
+    const [at, id] = (context.req.query("before") ?? "").split("|");
+    const rows = await context.env.DB.prepare(
+      `SELECT * FROM actions
+       WHERE node_id IN (SELECT id FROM nodes WHERE owner_user_id = ?1)
+         AND kind <> 'trust'
+         AND (?2 IS NULL OR node_id = ?2)
+         AND (?3 IS NULL OR requested_at < ?3 OR (requested_at = ?3 AND id < ?4))
+       ORDER BY requested_at DESC, id DESC LIMIT ?5`,
+    )
+      .bind(
+        context.get("identity").id,
+        context.req.query("node") ?? null,
+        at || null,
+        id ?? "",
+        HISTORY_PAGE + 1,
+      )
+      .all<ActionRow>();
+    const page = rows.results.slice(0, HISTORY_PAGE);
+    const last = page.at(-1);
+    return context.json({
+      actions: page.map((row) => ({
+        ...toActionRecord(row),
+        output: row.action === "logs" ? null : row.output,
+      })),
+      next:
+        rows.results.length > HISTORY_PAGE && last
+          ? `${last.requested_at}|${last.id}`
+          : null,
     });
   });
 

@@ -37,6 +37,7 @@ import {
   type Review,
 } from "@/features/devices/approval-dialog";
 import { BigPrint, plural, when } from "@/features/devices/parts";
+import { RecentChanges } from "@/features/devices/recent-changes";
 import { failure } from "@/lib/proof";
 import { useFleet, type Fleet } from "@/features/devices/use-fleet";
 import {
@@ -74,7 +75,6 @@ import { cn } from "@/lib/utils";
 import type { DeviceRecord, ProposalRecord } from "@/types";
 
 const SECTION = "rounded-lg border bg-card";
-const DAY_MS = 24 * 3_600_000;
 
 const STATE: Record<ServerState, { label: string; tone: string }> = {
   update: {
@@ -416,66 +416,6 @@ function ServerRow({
         <span aria-hidden="true" className="size-8 shrink-0" />
       )}
     </li>
-  );
-}
-
-function RecentChanges({ fleet }: { fleet: Fleet }) {
-  const services = useServices();
-  const now = Date.now();
-  const recent = fleet.proposals
-    .filter(
-      (proposal) =>
-        proposal.status === "applied" &&
-        proposal.closedAt !== null &&
-        now - Date.parse(proposal.closedAt) < DAY_MS,
-    )
-    .reverse()
-    .slice(0, 3);
-  if (recent.length === 0) return null;
-  return (
-    <div className="border-t px-4 py-3">
-      <h3 className="mb-2 text-xs font-medium text-muted-foreground">
-        Recent changes
-      </h3>
-      <ul className="space-y-2 text-sm">
-        {recent.map((proposal) => {
-          const change = decodeChange(proposal.change);
-          if (!change) return null;
-          const targets = Object.keys(change.access);
-          const done = targets.filter(
-            (id) =>
-              (fleet.servers.find((server) => server.node.id === id)?.trust
-                ?.version ?? 0) >= change.version,
-          ).length;
-          const refused = (services.data?.actions ?? []).filter(
-            (action) =>
-              action.kind === "trust" &&
-              action.status === "failed" &&
-              targets.includes(action.nodeId) &&
-              action.requestedAt >= (proposal.closedAt ?? ""),
-          );
-          return (
-            <li key={proposal.id}>
-              <p className="truncate">
-                {proposal.title || describeChange(fleet.view, change).title}
-              </p>
-              <p className="font-mono text-xs text-muted-foreground">
-                Applied on {done} of {plural(targets.length, "server")}
-              </p>
-              {refused.map((action) => (
-                <p key={action.id} className="text-xs text-destructive">
-                  Refused on{" "}
-                  {fleet.servers.find(
-                    (server) => server.node.id === action.nodeId,
-                  )?.node.name ?? "a server"}
-                  : {action.output ?? "no reason given"}
-                </p>
-              ))}
-            </li>
-          );
-        })}
-      </ul>
-    </div>
   );
 }
 
@@ -988,9 +928,10 @@ function Manage({ fleet }: { fleet: Fleet }) {
               />
             ))}
           </ul>
-          <RecentChanges fleet={fleet} />
         </section>
       </div>
+
+      <RecentChanges fleet={fleet} />
 
       <ApprovalDialog
         fleet={fleet}

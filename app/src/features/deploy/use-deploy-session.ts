@@ -1,11 +1,6 @@
 import { useSyncExternalStore } from "react";
 
-import {
-  endSession,
-  openSession,
-  sessionSnapshot,
-  subscribe,
-} from "@/lib/deploy-session";
+import { openSession, sessionSnapshot, subscribe } from "@/lib/deploy-session";
 
 export function useDeploySession() {
   const state = useSyncExternalStore(
@@ -13,5 +8,5 @@ export function useDeploySession() {
     sessionSnapshot,
     sessionSnapshot,
   );
-  return { state, open: openSession, lock: endSession };
+  return { state, open: openSession };
 }

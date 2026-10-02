@@ -110,6 +110,21 @@ export function serverState(view: FleetView, server: FleetServer): ServerState {
   return sameSet(server.trust.core, core) ? "current" : "behind";
 }
 
+export function appliedOn(
+  view: FleetView,
+  change: { version: number; targets: string[] },
+) {
+  const servers = view.servers.filter((server) =>
+    change.targets.includes(server.node.id),
+  );
+  return {
+    done: servers.filter(
+      (server) => (server.trust?.version ?? 0) >= change.version,
+    ).length,
+    total: servers.length,
+  };
+}
+
 export function nextVersion(view: FleetView): number {
   return (
     Math.max(1, ...view.servers.map((server) => server.trust?.version ?? 0)) + 1

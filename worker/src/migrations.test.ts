@@ -334,3 +334,17 @@ describe("migrations 0020 and 0021", () => {
     ).toBe(4);
   });
 });
+
+describe("migration 0022", () => {
+  it("drops the passphrase table nothing reads any more", () => {
+    const sqlite = new DatabaseSync(":memory:");
+    apply(sqlite, () => true);
+    expect(
+      sqlite
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'passphrase'",
+        )
+        .all(),
+    ).toEqual([]);
+  });
+});

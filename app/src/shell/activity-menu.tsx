@@ -1,4 +1,4 @@
-import { Check, History, X } from "lucide-react";
+import { Hourglass } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router";
 
@@ -11,9 +11,8 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useOverview, useServices } from "@/lib/api";
-import { clockTime } from "@/lib/format";
 import { activity, type ActivityItem } from "@/lib/operations";
-import { outcomeText, runningText } from "@/lib/services";
+import { runningText } from "@/lib/services";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 
@@ -39,41 +38,6 @@ function Running({ item, onPick }: { item: ActivityItem; onPick: () => void }) {
   );
 }
 
-function Finished({
-  item,
-  onPick,
-}: {
-  item: ActivityItem;
-  onPick: () => void;
-}) {
-  const outcome = outcomeText(item.action, item.nodeName);
-  if (!outcome) return null;
-  const Icon = outcome.ok ? Check : X;
-  return (
-    <li>
-      <Link to={`/nodes/${item.nodeId}`} onClick={onPick} className={ROW}>
-        <Icon
-          aria-hidden="true"
-          className={cn(
-            "mt-0.5 size-3.5",
-            outcome.ok ? "text-success" : "text-destructive",
-          )}
-        />
-        <span className="min-w-0">
-          <span
-            className={cn("block truncate", !outcome.ok && "text-destructive")}
-          >
-            {outcome.text}
-          </span>
-          <span className="block font-mono text-[11px] text-muted-foreground">
-            {item.by} · {clockTime(item.at)}
-          </span>
-        </span>
-      </Link>
-    </li>
-  );
-}
-
 export function ActivityMenu() {
   const services = useServices();
   const overview = useOverview();
@@ -84,7 +48,7 @@ export function ActivityMenu() {
     overview.data?.nodes ?? [],
     now,
   );
-  const running = list.running.length;
+  const running = list.length;
   const close = () => setOpen(false);
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -93,7 +57,7 @@ export function ActivityMenu() {
           variant="outline"
           size="sm"
           aria-label={
-            running > 0 ? `Activity, ${running} in progress` : "Activity"
+            running > 0 ? `${running} in progress` : "Nothing in progress"
           }
           className={cn(running > 0 && "border-warning/40")}
         >
@@ -106,7 +70,7 @@ export function ActivityMenu() {
               </span>
             </>
           ) : (
-            <History aria-hidden="true" />
+            <Hourglass aria-hidden="true" />
           )}
         </Button>
       </PopoverTrigger>
@@ -123,25 +87,18 @@ export function ActivityMenu() {
           </p>
         ) : (
           <ul>
-            {list.running.map((item) => (
+            {list.map((item) => (
               <Running key={item.id} item={item} onPick={close} />
             ))}
           </ul>
         )}
-        <h2 className="mt-1 border-t px-2 pt-2.5 pb-1.5 text-[11px] tracking-wider text-muted-foreground uppercase">
-          Last hour
-        </h2>
-        {list.recent.length === 0 ? (
-          <p className="px-2 pb-1 text-sm text-muted-foreground">
-            No actions in the last hour.
-          </p>
-        ) : (
-          <ul>
-            {list.recent.map((item) => (
-              <Finished key={item.id} item={item} onPick={close} />
-            ))}
-          </ul>
-        )}
+        <Link
+          to="/history"
+          onClick={close}
+          className="mt-1 block border-t px-2 pt-2.5 pb-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          View history
+        </Link>
       </PopoverContent>
     </Popover>
   );

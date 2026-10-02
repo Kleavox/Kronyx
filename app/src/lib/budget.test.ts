@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   budgetLevel,
   estimateDailyUse,
+  formatBytes,
   formatThousands,
   quotaLine,
 } from "./budget";
@@ -91,5 +92,14 @@ describe("quotaLine", () => {
     expect(
       quotaLine({ writes: 6_000, requests: 1_000, reads: 950_000 }, SHARE),
     ).toEqual({ percent: 95, detail: "950k of 1m reads" });
+  });
+});
+
+describe("database size", () => {
+  it("reads in KB below a megabyte and in MB above", () => {
+    expect(formatBytes(800_000)).toBe("800 KB");
+    expect(formatBytes(1_212_416)).toBe("1.2 MB");
+    expect(formatBytes(25_400_000)).toBe("25 MB");
+    expect(formatBytes(500_000_000)).toBe("500 MB");
   });
 });

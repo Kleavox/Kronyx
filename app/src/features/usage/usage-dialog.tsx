@@ -12,7 +12,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useSaveBudget } from "@/lib/api";
-import { formatThousands, type DailyUse } from "@/lib/budget";
+import { formatBytes, formatThousands, type DailyUse } from "@/lib/budget";
 import { clockTime } from "@/lib/format";
 import { errorMessage } from "@/lib/http";
 import { cn } from "@/lib/utils";
@@ -51,11 +51,13 @@ function Meter({
   used,
   limit,
   note,
+  format = formatThousands,
 }: {
   label: string;
   used: number | null;
   limit: number;
   note: string;
+  format?: (value: number) => string;
 }) {
   const percent = used === null ? null : Math.round((used / limit) * 100);
   return (
@@ -65,7 +67,7 @@ function Meter({
         <span className="font-mono text-xs text-muted-foreground">
           {used === null
             ? "No data"
-            : `${formatThousands(used)} of ${formatThousands(limit)} · ${percent}%`}
+            : `${format(used)} of ${format(limit)} · ${percent}%`}
         </span>
       </div>
       <Bar used={used ?? 0} limit={limit} />
@@ -217,6 +219,17 @@ export function UsageDialog({
             }
           />
         </section>
+        {usage && (
+          <section className="border-t pt-4" aria-label="Database">
+            <Meter
+              label="Database size"
+              used={usage.storage.bytes}
+              limit={usage.storage.limit}
+              format={formatBytes}
+              note="A daily cleanup keeps it small: actions 90 days, server metrics 8 days, trust changes a year."
+            />
+          </section>
+        )}
         {account && (
           <section
             className="space-y-4 border-t pt-4"

@@ -11,8 +11,6 @@ import { displayName, isPending } from "./services";
 const REBOOT_WINDOW_MS = 10 * 60_000;
 const SETTLE_MS = 2 * 60_000;
 const STAYED_UP_MS = 90_000;
-const RECENT_MS = 60 * 60_000;
-const RECENT_LIMIT = 10;
 
 export type ServerOperation =
   | { kind: "restarting"; by: string; since: number; actionId: string }
@@ -109,7 +107,7 @@ export function activity(
   actions: ActionRecord[],
   nodes: NodeRecord[],
   now: number,
-): { running: ActivityItem[]; recent: ActivityItem[] } {
+): ActivityItem[] {
   const names = new Map(nodes.map((node) => [node.id, node.name]));
   const visible = actions.filter(
     (action) => action.action !== "logs" && names.has(action.nodeId),
@@ -123,31 +121,12 @@ export function activity(
         parseTimestamp(action.requestedAt),
       ),
     );
-  const restarting = new Set<string>();
   for (const node of nodes) {
     const reboot = rebootInFlight(node, visible, now);
     if (!reboot || isPending(reboot)) continue;
-    restarting.add(reboot.id);
     running.push(item(reboot, node.name, parseTimestamp(reboot.requestedAt)));
   }
-  const recent = visible
-    .filter(
-      (action) =>
-        !isPending(action) &&
-        !restarting.has(action.id) &&
-        action.finishedAt !== null &&
-        now - parseTimestamp(action.finishedAt) < RECENT_MS,
-    )
-    .map((action) =>
-      item(
-        action,
-        names.get(action.nodeId)!,
-        parseTimestamp(action.finishedAt!),
-      ),
-    )
-    .sort((a, b) => b.at - a.at)
-    .slice(0, RECENT_LIMIT);
-  return { running, recent };
+  return running;
 }
 
 export function elapsedText(milliseconds: number): string {

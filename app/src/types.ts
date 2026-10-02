@@ -234,6 +234,28 @@ export interface ProposalRecord {
   missing: string | null;
 }
 
+export interface ChangeEntry {
+  id: string;
+  title: string;
+  status: Exclude<ProposalStatus, "open">;
+  version: number;
+  targets: string[];
+  openedBy: string;
+  approvedBy: string[];
+  openedAt: string;
+  closedAt: string;
+}
+
+export interface ActionHistory {
+  actions: ActionRecord[];
+  next: string | null;
+}
+
+export interface ChangeHistory {
+  changes: ChangeEntry[];
+  next: string | null;
+}
+
 export interface ActionRecord {
   id: string;
   batchId: string;
@@ -273,6 +295,7 @@ export interface UsageResponse {
   account: (UsageShare & { objects: number }) | null;
   krynodes: UsageShare | null;
   budget: UsageShare;
+  storage: { bytes: number | null; limit: number };
   quotas: UsageShare & { objects: number };
   resetAt: string;
 }

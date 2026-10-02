@@ -18,12 +18,15 @@ function retentionEnv() {
   return { env, statements, run };
 }
 
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+
 describe("Krynodes retention", () => {
   it("deletes expired history, incident and action records", async () => {
     const { env, statements, run } = retentionEnv();
     await runRetention(env);
 
-    expect(run).toHaveBeenCalledTimes(4);
+    expect(run).toHaveBeenCalledTimes(7);
     expect(statements[0]).toContain("DELETE FROM node_windows");
     expect(statements.join("\n")).toContain("incidents");
     expect(statements[3]).toContain("FROM actions");
@@ -70,6 +73,76 @@ describe("Krynodes retention", () => {
 
     expect(sqlite.prepare("SELECT id FROM enrollment_tokens").all()).toEqual([
       { id: "fresh" },
+    ]);
+  });
+
+  it("erases log text a day after it arrives and keeps the row", async () => {
+    const { db, sqlite } = createTestDb();
+    sqlite.exec(
+      "INSERT INTO nodes (id, owner_user_id, name, agent_token_hash) VALUES ('n1', 'standalone', 'pivox', 'h1')",
+    );
+    const at = (age: number) => new Date(Date.now() - age).toISOString();
+    const insert = sqlite.prepare(
+      `INSERT INTO actions (id, batch_id, position, mode, node_id, kind, name, action,
+         status, requested_by, requested_at, finished_at, output)
+       VALUES (?, ?, 0, 'parallel', 'n1', 'docker', 'adguard', ?, ?, 'owner', ?, ?, 'text')`,
+    );
+    insert.run("old-logs", "b1", "logs", "done", at(2 * DAY), at(2 * DAY));
+    insert.run("new-logs", "b2", "logs", "done", at(HOUR), at(HOUR));
+    insert.run("waiting-logs", "b3", "logs", "sent", at(2 * DAY), null);
+    insert.run(
+      "old-restart",
+      "b4",
+      "restart",
+      "done",
+      at(2 * DAY),
+      at(2 * DAY),
+    );
+
+    await runRetention({ DB: db } as unknown as Env);
+
+    expect(
+      sqlite.prepare("SELECT id, output FROM actions ORDER BY id").all(),
+    ).toEqual([
+      { id: "new-logs", output: "text" },
+      { id: "old-logs", output: null },
+      { id: "old-restart", output: "text" },
+      { id: "waiting-logs", output: "text" },
+    ]);
+  });
+
+  it("forgets closed trust changes and removed devices after a year", async () => {
+    const { db, sqlite } = createTestDb();
+    const at = (age: number) => new Date(Date.now() - age).toISOString();
+    const proposal = sqlite.prepare(
+      `INSERT INTO proposals (id, owner_user_id, change, title, version, approvals, status, opened_by, opened_at, expires_at, closed_at)
+       VALUES (?, 'standalone', 'e30', 'Admit Phone', 2, '[]', ?, 'd1', ?, ?, ?)`,
+    );
+    proposal.run("old", "applied", at(400 * DAY), at(400 * DAY), at(400 * DAY));
+    proposal.run(
+      "recent",
+      "expired",
+      at(100 * DAY),
+      at(100 * DAY),
+      at(100 * DAY),
+    );
+    proposal.run("open", "open", at(400 * DAY), at(-DAY), null);
+    const device = sqlite.prepare(
+      `INSERT INTO devices (id, owner_user_id, name, alg, public_key, created_at, removed_at)
+       VALUES (?, 'standalone', ?, -7, ?, ?, ?)`,
+    );
+    device.run("gone", "Old phone", "k1", at(500 * DAY), at(400 * DAY));
+    device.run("left", "Tablet", "k2", at(50 * DAY), at(10 * DAY));
+    device.run("here", "Laptop", "k3", at(500 * DAY), null);
+
+    await runRetention({ DB: db } as unknown as Env);
+
+    expect(
+      sqlite.prepare("SELECT id FROM proposals ORDER BY id").all(),
+    ).toEqual([{ id: "open" }, { id: "recent" }]);
+    expect(sqlite.prepare("SELECT id FROM devices ORDER BY id").all()).toEqual([
+      { id: "here" },
+      { id: "left" },
     ]);
   });
 

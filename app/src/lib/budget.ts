@@ -53,6 +53,12 @@ export function formatThousands(value: number): string {
   return COMPACT.format(value).toLowerCase();
 }
 
+export function formatBytes(bytes: number): string {
+  if (bytes < 1_000_000) return `${Math.round(bytes / 1_000)} KB`;
+  const megabytes = bytes / 1_000_000;
+  return `${megabytes < 10 ? megabytes.toFixed(1) : Math.round(megabytes)} MB`;
+}
+
 export function quotaLine(
   use: DailyUse,
   budget: Budget,

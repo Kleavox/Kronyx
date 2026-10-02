@@ -105,7 +105,7 @@ changed check within seconds; others at their next report.
 
 Removing a check, pausing it or changing its kind, target or server asks for
 a trusted device's fingerprint (see Deploy), like deleting a server or creating
-an install command. One fingerprint covers 15 minutes of such work. An owner
+an install command. One fingerprint covers 5 minutes of such work. An owner
 with no trusted device yet is not asked.
 
 Incident mail goes out the moment a failure is confirmed, one mail per server
@@ -209,9 +209,11 @@ Each server on the Services page carries the same menu.
 Everything in flight is visible to everyone: the server reads
 "Restarting · owner · 1:12" on every page until its agent reports again, its
 services wait with their buttons hidden, a service being restarted shows who
-asked and for how long, and the **Activity** button in the top bar lists what
-runs now and what finished in the last hour. There are no pop-up toasts for
-other people's work.
+asked and for how long, and the hourglass button in the top bar lists what
+runs or waits now. **History** (its own tab) lists the actions of the last 90
+days by day, with who asked, from which device, the outcome and how long it
+took, and filters by server; trust updates stay in **Recent changes**. There
+are no pop-up toasts for other people's work.
 
 From agent 0.3.3 a service's or stack's menu has **Logs**: the last 300 lines
 (`journalctl -u`, `docker logs`, `docker compose logs`), at most 64 KiB, signed
@@ -242,9 +244,11 @@ Deploys, like start, stop and restart, need a fingerprint. On **Trusted
 devices** (account menu) you register a passkey on your laptop or phone; each
 server keeps the public keys in `/var/lib/kry-exec/trust.json`, and the root
 executor checks every action against them, so nothing on Cloudflare can run one
-on its own. One fingerprint opens a 15-minute session, like sudo: nothing on
-screen counts it down, a tab hidden for 2 minutes ends it, and **Lock actions**
-in the account menu ends it at once.
+on its own. One fingerprint opens a 5-minute session, like sudo. It ends at
+once when the page is hidden (another tab or app in front, the screen locked, a
+phone screen off) and is checked against the clock before every signature, so
+a laptop that slept needs a new fingerprint. Nothing on screen shows whether a
+session is open. Agents and the Worker accept sessions of at most 15 minutes.
 
 From agent 0.3.0 one admin login can be shared safely by several people, and
 from agent 0.3.5 the rules are these:
@@ -269,6 +273,9 @@ from agent 0.3.5 the rules are these:
 - Changes wait under **Waiting for approval** for up to 24 hours. Each approval
   signs the exact change; the dialog shows new devices' key fingerprints for
   you to compare with the new device's screen.
+- **Recent changes**, under the devices and servers, lists every closed change
+  newest first ("Give Budi access to pivox"): its outcome, who opened and
+  approved it and when, and any server that has not taken it yet.
 - Every approval, session and confirmation needs a passkey that verifies you:
   the fingerprint by default, a face on Windows Hello, a Mac or an iPhone, or a
   security key such as a YubiKey. A touch alone ("a finger is there") is
@@ -289,6 +296,26 @@ To start over on a server:
 ```sh
 sudo kry trust --reset
 ```
+
+## Data retention
+
+A daily cron (03:17 UTC) keeps the database small enough for the Free plan's
+500 MB and its daily write quota. **Usage** shows the database size.
+
+| Data                               | Kept                               |
+| ---------------------------------- | ---------------------------------- |
+| Server metrics (5-minute windows)  | 8 days                             |
+| Check results                      | latest per check only              |
+| Incidents                          | while open, then 180 days          |
+| Actions (**History**)              | 90 days                            |
+| Log text fetched with **Logs**     | 1 day; the action stays            |
+| Trust changes (**Recent changes**) | open up to 24 hours, closed 1 year |
+| Removed devices                    | 1 year after removal               |
+| Enrollment tokens                  | 1 day after they expire            |
+| Mail throttle (Durable Object)     | 1 hour                             |
+
+With 5 servers and about 50 actions a day this settles near 10 MB, and the
+cleanup writes about 3,500 rows a day.
 
 ## Status page
 

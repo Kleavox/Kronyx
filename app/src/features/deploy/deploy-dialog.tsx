@@ -195,7 +195,7 @@ function DeployForm({
           disabled={working || signers.length === 0 || targets.length === 0}
           onClick={submit}
         >
-          {!state && !working && <Fingerprint aria-hidden="true" />}
+          {!working && <Fingerprint aria-hidden="true" />}
           {working
             ? state
               ? "Sending…"

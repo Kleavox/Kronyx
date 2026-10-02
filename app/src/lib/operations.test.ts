@@ -121,7 +121,7 @@ describe("server operations", () => {
 });
 
 describe("activity", () => {
-  it("lists running work, restarts not back yet, and the last hour's outcomes", () => {
+  it("lists only running and waiting work and restarts not back yet", () => {
     const list = activity(
       [
         action({ id: "x1", status: "done", finishedAt: ago(70) }),
@@ -134,9 +134,8 @@ describe("activity", () => {
       [node()],
       NOW,
     );
-    expect(list.running.map((item) => item.id)).toEqual(["x5", "r1"]);
-    expect(list.recent.map((item) => item.id)).toEqual(["x3", "x2"]);
-    expect(list.running[0]).toMatchObject({
+    expect(list.map((item) => item.id)).toEqual(["x5", "r1"]);
+    expect(list[0]).toMatchObject({
       nodeName: "pivox",
       by: "budi",
       label: "redis",

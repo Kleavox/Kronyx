@@ -8,24 +8,11 @@ import {
   useRefreshServices,
   useServices,
 } from "@/lib/api";
-import { clockTime } from "@/lib/format";
-import {
-  displayName,
-  durationText,
-  groupByServer,
-  isPending,
-  refreshPending,
-  verb,
-} from "@/lib/services";
+import { groupByServer, refreshPending } from "@/lib/services";
 import type { NodeRecord } from "@/types";
 
 import { ActionDialog, type ActionRequest } from "./action-dialog";
-import {
-  ActionOutcome,
-  PendingText,
-  ServiceRows,
-  TrustLink,
-} from "./service-list";
+import { ActionRow, ServiceRows, TrustLink } from "./service-list";
 
 const SECTION_TITLE =
   "text-[11px] tracking-wider text-muted-foreground uppercase";
@@ -117,36 +104,14 @@ export function RecentActions({ node }: { node: NodeRecord }) {
         </p>
       ) : (
         <ul className="min-h-0 divide-y overflow-y-auto rounded-lg border bg-card">
-          {list.map((action) => {
-            const duration = durationText(action);
-            return (
-              <li
-                key={action.id}
-                className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-1 px-3 py-2.5 text-sm sm:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)]"
-              >
-                <span className="font-mono text-xs leading-5 text-muted-foreground">
-                  {clockTime(action.requestedAt)}
-                </span>
-                <span className="min-w-0 truncate">
-                  {verb(action.action)} {displayName(action.kind, action.name)}
-                  {deviceName(action.deviceId) && (
-                    <span className="text-muted-foreground">
-                      {" "}
-                      · {deviceName(action.deviceId)}
-                    </span>
-                  )}
-                </span>
-                <span className="col-start-2 flex min-w-0 flex-wrap items-baseline gap-x-1 font-mono text-xs text-muted-foreground sm:col-start-auto sm:justify-end">
-                  {isPending(action) ? (
-                    <PendingText action={action} nodeName={node.name} />
-                  ) : (
-                    <ActionOutcome action={action} nodeName={node.name} />
-                  )}
-                  {duration && <span>· {duration}</span>}
-                </span>
-              </li>
-            );
-          })}
+          {list.map((action) => (
+            <ActionRow
+              key={action.id}
+              action={action}
+              nodeName={node.name}
+              deviceName={deviceName(action.deviceId)}
+            />
+          ))}
         </ul>
       )}
     </section>

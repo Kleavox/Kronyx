@@ -72,7 +72,7 @@ describe("passkeys", () => {
       v: 1,
       rpId: "kry.example.test",
       issuedAt: new Date(T).toISOString(),
-      expiresAt: new Date(T + 15 * MINUTE).toISOString(),
+      expiresAt: new Date(T + 5 * MINUTE).toISOString(),
     });
     expect(session.grant).toMatchObject({
       credentialId: "ZGV2aWNl",
@@ -80,7 +80,7 @@ describe("passkeys", () => {
       clientDataJSON: "e30",
       signature: "BAU",
     });
-    expect(session.expiresAt).toBe(T + 15 * MINUTE);
+    expect(session.expiresAt).toBe(T + 5 * MINUTE);
   });
 
   it("signs a command the session key verifies (P1363)", async () => {
@@ -123,7 +123,7 @@ describe("passkeys", () => {
       name: "listmonk",
       action: "deploy",
       issuedAt: new Date(T + MINUTE).toISOString(),
-      expiresAt: new Date(T + 75 * MINUTE).toISOString(),
+      expiresAt: new Date(T + 65 * MINUTE).toISOString(),
     });
     expect(signed.grant).toBe(session.grant);
   });

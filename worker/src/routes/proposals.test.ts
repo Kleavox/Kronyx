@@ -272,6 +272,118 @@ describe("proposals", () => {
     ]);
   });
 
+  it("keeps an open change in view after a busy month", async () => {
+    const t = setup();
+    const insert = t.sqlite.prepare(
+      `INSERT INTO proposals (id, owner_user_id, change, title, version, approvals, status, opened_by, opened_at, expires_at, closed_at)
+       VALUES (?, 'standalone', 'e30', 'Refresh servers', 2, '[]', ?, 'd1', ?, ?, ?)`,
+    );
+    for (let index = 0; index < 55; index += 1) {
+      const at = new Date(
+        Date.now() - (20 - index / 3) * 86_400_000,
+      ).toISOString();
+      insert.run(`closed-${index}`, "applied", at, at, at);
+    }
+    insert.run(
+      "waiting",
+      "open",
+      new Date().toISOString(),
+      new Date(Date.now() + 3_600_000).toISOString(),
+      null,
+    );
+    const listed = (await (await t.call("GET", "/api/proposals")).json()) as {
+      proposals: { id: string }[];
+    };
+    const ids = listed.proposals.map((proposal) => proposal.id);
+    expect(ids).toContain("waiting");
+    expect(ids).toContain("closed-54");
+    expect(ids.at(-1)).toBe("waiting");
+  });
+
+  it("lists closed changes newest first with device names, twenty at a time", async () => {
+    const t = setup();
+    const [laptop, phone, tablet] = await fleet(3);
+    await t.register(laptop!);
+    await t.register(phone!);
+    t.sqlite
+      .prepare("UPDATE devices SET removed_at = ? WHERE id = ?")
+      .run(new Date().toISOString(), phone!.id);
+    const text = t.change({
+      core: [laptop!, tablet!],
+      access: { [A]: [laptop!, tablet!] },
+    });
+    const insert = t.sqlite.prepare(
+      `INSERT INTO proposals (id, owner_user_id, change, title, version, approvals, status, opened_by, opened_at, expires_at, closed_at)
+       VALUES (?, 'standalone', ?, ?, 2, ?, ?, ?, ?, ?, ?)`,
+    );
+    const approvals = JSON.stringify([
+      { credentialId: phone!.id },
+      { credentialId: tablet!.id },
+    ]);
+    for (let index = 0; index < 25; index += 1) {
+      const at = new Date(Date.UTC(2026, 8, 1, 10, index)).toISOString();
+      insert.run(
+        `c-${String(index).padStart(2, "0")}`,
+        text,
+        `Change ${index}`,
+        approvals,
+        index % 2 === 0 ? "applied" : "expired",
+        laptop!.id,
+        at,
+        at,
+        at,
+      );
+    }
+    insert.run(
+      "open",
+      text,
+      "Waiting",
+      "[]",
+      "open",
+      laptop!.id,
+      new Date().toISOString(),
+      new Date(Date.now() + 3_600_000).toISOString(),
+      null,
+    );
+    const first = (await (
+      await t.call("GET", "/api/proposals/history")
+    ).json()) as {
+      changes: {
+        id: string;
+        title: string;
+        status: string;
+        targets: string[];
+        openedBy: string;
+        approvedBy: string[];
+      }[];
+      next: string | null;
+    };
+    expect(first.changes).toHaveLength(20);
+    expect(first.changes[0]).toMatchObject({
+      id: "c-24",
+      title: "Change 24",
+      status: "applied",
+      targets: [A],
+      openedBy: "Laptop",
+      approvedBy: ["Phone", "Tablet"],
+    });
+    expect(first.next).not.toBeNull();
+    const second = (await (
+      await t.call(
+        "GET",
+        `/api/proposals/history?before=${encodeURIComponent(first.next!)}`,
+      )
+    ).json()) as { changes: { id: string }[]; next: string | null };
+    expect(second.changes.map((change) => change.id)).toEqual([
+      "c-04",
+      "c-03",
+      "c-02",
+      "c-01",
+      "c-00",
+    ]);
+    expect(second.next).toBeNull();
+  });
+
   it("with two devices, one approval admits a third at once", async () => {
     const t = setup();
     const [laptop, phone, tablet] = await fleet(3);

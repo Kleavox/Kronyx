@@ -1,7 +1,6 @@
 import { SESSION_MS, createSession, type Session } from "./passkeys";
 
 export { SESSION_MS };
-export const HIDDEN_LIMIT_MS = 2 * 60_000;
 
 export interface Clock {
   expiresAt: number;
@@ -19,11 +18,7 @@ export function start(
 
 export function alive(clock: Clock, now: number): boolean {
   if (now >= clock.expiresAt) return false;
-  return (
-    clock.prompting ||
-    clock.hiddenSince === null ||
-    now - clock.hiddenSince < HIDDEN_LIMIT_MS
-  );
+  return clock.prompting || clock.hiddenSince === null;
 }
 
 export function hidden(clock: Clock, now: number): Clock {
@@ -66,10 +61,7 @@ function schedule(now: number) {
   clearTimeout(timer);
   if (!state) return;
   const { clock } = state;
-  const sleepAt =
-    clock.hiddenSince !== null && !clock.prompting
-      ? clock.hiddenSince + HIDDEN_LIMIT_MS
-      : Infinity;
+  const sleepAt = clock.prompting ? Infinity : (clock.hiddenSince ?? Infinity);
   const at = Math.min(clock.expiresAt, sleepAt);
   timer = setTimeout(endSession, Math.max(0, at - now));
 }

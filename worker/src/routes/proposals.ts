@@ -69,6 +69,7 @@ interface ProposalRow {
 }
 
 const DAY_MS = 24 * 3_600_000;
+const CHANGES_PAGE = 20;
 const SKEW_MS = 60_000;
 const MAX_OPEN = 5;
 
@@ -355,13 +356,13 @@ export function registerProposalRoutes(
     const rows = await context.env.DB.prepare(
       `SELECT id, change, title, version, approvals, status, opened_by, opened_at, expires_at, closed_at
        FROM proposals WHERE owner_user_id = ? AND (status = 'open' OR closed_at >= ?)
-       ORDER BY opened_at, id LIMIT 50`,
+       ORDER BY opened_at DESC, id DESC LIMIT 50`,
     )
       .bind(ownerId, new Date(now - 30 * DAY_MS).toISOString())
       .all<ProposalRow>();
     const fleet = await loadFleet(context.env.DB, ownerId);
     return context.json({
-      proposals: rows.results.map((row) => {
+      proposals: rows.results.toReversed().map((row) => {
         const approvals = JSON.parse(row.approvals) as Approval[];
         const change = decodeChange(row.change);
         return {
@@ -380,6 +381,60 @@ export function registerProposalRoutes(
               : null,
         };
       }),
+    });
+  });
+
+  app.get("/api/proposals/history", requireOperator, async (context) => {
+    const ownerId = context.get("identity").id;
+    const [at, id] = (context.req.query("before") ?? "").split("|");
+    const [rows, devices] = await Promise.all([
+      context.env.DB.prepare(
+        `SELECT id, change, title, version, approvals, status, opened_by, opened_at, expires_at, closed_at
+         FROM proposals
+         WHERE owner_user_id = ?1 AND status <> 'open'
+           AND (?2 IS NULL OR closed_at < ?2 OR (closed_at = ?2 AND id < ?3))
+         ORDER BY closed_at DESC, id DESC LIMIT ?4`,
+      )
+        .bind(ownerId, at || null, id ?? "", CHANGES_PAGE + 1)
+        .all<ProposalRow>(),
+      context.env.DB.prepare(
+        "SELECT id, name FROM devices WHERE owner_user_id = ?",
+      )
+        .bind(ownerId)
+        .all<{ id: string; name: string }>(),
+    ]);
+    const page = rows.results.slice(0, CHANGES_PAGE);
+    const known = new Map(
+      devices.results.map((device) => [device.id, device.name]),
+    );
+    const last = page.at(-1);
+    return context.json({
+      changes: page.map((row) => {
+        const change = decodeChange(row.change);
+        const names = new Map(known);
+        for (const key of change?.core ?? []) {
+          if (!names.has(key.id)) names.set(key.id, key.name);
+        }
+        const name = (device: string) =>
+          names.get(device) ?? "A removed device";
+        return {
+          id: row.id,
+          title: row.title,
+          status: row.status,
+          version: row.version,
+          targets: Object.keys(change?.access ?? {}),
+          openedBy: name(row.opened_by),
+          approvedBy: (
+            JSON.parse(row.approvals) as { credentialId: string }[]
+          ).map((approval) => name(approval.credentialId)),
+          openedAt: row.opened_at,
+          closedAt: row.closed_at,
+        };
+      }),
+      next:
+        rows.results.length > CHANGES_PAGE && last
+          ? `${last.closed_at}|${last.id}`
+          : null,
     });
   });
 

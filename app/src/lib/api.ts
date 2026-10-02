@@ -1,4 +1,5 @@
 import {
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
@@ -7,9 +8,11 @@ import {
 import { toast } from "sonner";
 
 import type {
+  ActionHistory,
   ActionRecord,
   ActionVerb,
   BatchMode,
+  ChangeHistory,
   CheckKind,
   CheckResults,
   DevicesResponse,
@@ -338,6 +341,33 @@ export const useFirstTrust = () =>
       apiFetch<{ queued: number }>("/api/trust", send("POST", { changes })),
     DEVICE_QUERIES,
   );
+
+const page = (path: string, before: string) =>
+  before
+    ? `${path}${path.includes("?") ? "&" : "?"}before=${encodeURIComponent(before)}`
+    : path;
+
+export function useHistory(node: string) {
+  return useInfiniteQuery({
+    queryKey: queryKeys.history(node),
+    queryFn: ({ pageParam }) =>
+      apiFetch<ActionHistory>(
+        page(node ? `/api/history?node=${node}` : "/api/history", pageParam),
+      ),
+    initialPageParam: "",
+    getNextPageParam: (last) => last.next ?? undefined,
+  });
+}
+
+export function useChangeHistory() {
+  return useInfiniteQuery({
+    queryKey: queryKeys.changeHistory,
+    queryFn: ({ pageParam }) =>
+      apiFetch<ChangeHistory>(page("/api/proposals/history", pageParam)),
+    initialPageParam: "",
+    getNextPageParam: (last) => last.next ?? undefined,
+  });
+}
 
 export function useProposals() {
   return useQuery({

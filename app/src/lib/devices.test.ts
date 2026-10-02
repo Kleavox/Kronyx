@@ -5,6 +5,7 @@ import {
   accessChange,
   accessIds,
   admitChange,
+  appliedOn,
   buildChange,
   canRestartServer,
   decodeChange,
@@ -389,5 +390,25 @@ describe("fingerprint, always", () => {
     expect(change.core?.map((key) => key.id)).toEqual(["phone"]);
     expect(predictMissing(pair, change, ["phone"])).toBeNull();
     expect(describeChange(pair, change).title).toBe("Remove Laptop");
+  });
+});
+
+describe("recent changes", () => {
+  it("counts the servers that took an applied change, ignoring removed ones", () => {
+    const fleet = view(
+      [laptop, phone],
+      [
+        { node: node(N1), trust: trust(5, [laptop, phone], [laptop]) },
+        { node: node(N2), trust: trust(4, [laptop, phone], [laptop]) },
+      ],
+    );
+    expect(appliedOn(fleet, { version: 5, targets: [N1, N2, N3] })).toEqual({
+      done: 1,
+      total: 2,
+    });
+    expect(appliedOn(fleet, { version: 4, targets: [N1, N2] })).toEqual({
+      done: 2,
+      total: 2,
+    });
   });
 });

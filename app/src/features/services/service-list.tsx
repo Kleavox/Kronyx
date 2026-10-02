@@ -9,12 +9,14 @@ import { Button } from "@/components/ui/button";
 import { useSignedAction } from "@/features/deploy/use-signed-action";
 import { NodeActions } from "@/features/nodes/node-actions";
 import { useCancelActions } from "@/lib/api";
-import { capitalize, nodeState, parseTimestamp } from "@/lib/format";
+import { capitalize, clockTime, nodeState, parseTimestamp } from "@/lib/format";
+import { historyText } from "@/lib/history";
 import { handleOf, serverOperation } from "@/lib/operations";
 import {
   actionText,
   canReadLogs,
   displayName,
+  durationText,
   isPending,
   primaryAction,
   toTarget,
@@ -75,6 +77,42 @@ export function ActionOutcome({
         {action.output}
       </pre>
     </details>
+  );
+}
+
+export function ActionRow({
+  action,
+  nodeName,
+  deviceName,
+  where = false,
+}: {
+  action: ActionRecord;
+  nodeName: string;
+  deviceName?: string;
+  where?: boolean;
+}) {
+  const duration = durationText(action);
+  const extra = [where ? `on ${nodeName}` : null, deviceName ?? null]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <li className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-1 px-3 py-2.5 text-sm sm:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)]">
+      <span className="font-mono text-xs leading-5 text-muted-foreground">
+        {clockTime(action.requestedAt)}
+      </span>
+      <span className="min-w-0 break-words">
+        {historyText(action)}
+        {extra && <span className="text-muted-foreground"> {extra}</span>}
+      </span>
+      <span className="col-start-2 flex min-w-0 flex-wrap items-baseline gap-x-1 font-mono text-xs text-muted-foreground sm:col-start-auto sm:justify-end">
+        {isPending(action) ? (
+          <PendingText action={action} nodeName={nodeName} />
+        ) : (
+          <ActionOutcome action={action} nodeName={nodeName} />
+        )}
+        {duration && <span>· {duration}</span>}
+      </span>
+    </li>
   );
 }
 

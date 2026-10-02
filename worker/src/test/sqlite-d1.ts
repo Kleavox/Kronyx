@@ -32,6 +32,16 @@ export function createTestDb(): TestDb {
     sqlite.exec(readFileSync(join(MIGRATIONS, file), "utf8"));
   }
 
+  const size = () => {
+    const pages = sqlite.prepare("PRAGMA page_count").get() as {
+      page_count: number;
+    };
+    const page = sqlite.prepare("PRAGMA page_size").get() as {
+      page_size: number;
+    };
+    return pages.page_count * page.page_size;
+  };
+
   const statement = (source: string, values: SQLInputValue[] = []) => {
     const [sql, params] = positional(source, values);
     return {
@@ -39,7 +49,7 @@ export function createTestDb(): TestDb {
       all: async () => ({
         results: sqlite.prepare(sql).all(...params),
         success: true,
-        meta: {},
+        meta: { size_after: size() },
       }),
       first: async (column?: string) => {
         const row = sqlite.prepare(sql).get(...params) as

@@ -1,6 +1,6 @@
 import type { ActionKind } from "../types";
 
-export const SESSION_MS = 15 * 60_000;
+export const SESSION_MS = 5 * 60_000;
 const COMMAND_GRACE_MS = 60 * 60_000;
 const BROWSER_KEY = "kry.devices";
 

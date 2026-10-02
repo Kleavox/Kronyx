@@ -1,4 +1,11 @@
-import { Activity, Boxes, Server, Siren, type LucideIcon } from "lucide-react";
+import {
+  Activity,
+  Boxes,
+  History,
+  Server,
+  Siren,
+  type LucideIcon,
+} from "lucide-react";
 
 interface Section {
   to: string;
@@ -12,4 +19,5 @@ export const SECTIONS: Section[] = [
   { to: "/services", label: "Services", icon: Boxes },
   { to: "/checks", label: "Checks", icon: Activity },
   { to: "/incidents", label: "Incidents", icon: Siren },
+  { to: "/history", label: "History", icon: History },
 ];

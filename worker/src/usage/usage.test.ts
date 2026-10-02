@@ -162,6 +162,15 @@ describe("usage", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it("reports the database size against the 500 MB of the free plan", async () => {
+    const { call } = setup();
+    const body = (await (await call()).json()) as {
+      storage: { bytes: number | null; limit: number };
+    };
+    expect(body.storage.limit).toBe(500_000_000);
+    expect(body.storage.bytes).toBeGreaterThan(0);
+  });
+
   it("stores the Krynodes share of each quota", async () => {
     const { call } = setup();
     expect(

@@ -177,6 +177,17 @@ const writeSetting = (db: D1Database, key: string, value: unknown) =>
     .bind(key, JSON.stringify(value), new Date().toISOString())
     .run();
 
+const STORAGE_LIMIT = 500_000_000;
+
+async function readStorage(db: D1Database) {
+  const result = await db.prepare("SELECT 1").all();
+  const bytes = result.meta.size_after;
+  return {
+    bytes: typeof bytes === "number" ? bytes : null,
+    limit: STORAGE_LIMIT,
+  };
+}
+
 async function readBudget(db: D1Database): Promise<Budget> {
   const stored = budgetSchema.safeParse(await readSetting(db, "budget"));
   return stored.success ? stored.data : DEFAULT_BUDGET;
@@ -239,9 +250,10 @@ export function registerUsageRoutes(
 ): void {
   app.get("/api/usage", requireOperator, async (context) => {
     const now = Date.now();
-    const [cached, budget] = await Promise.all([
+    const [cached, budget, storage] = await Promise.all([
       currentUsage(context.env, now),
       readBudget(context.env.DB),
+      readStorage(context.env.DB),
     ]);
     const usage = cached?.usage ?? null;
     return context.json({
@@ -254,6 +266,7 @@ export function registerUsageRoutes(
       account: usage?.account ?? null,
       krynodes: usage?.krynodes ?? null,
       budget,
+      storage,
       quotas: FREE_QUOTAS,
       resetAt: new Date(
         Math.floor(now / DAY_MS) * DAY_MS + DAY_MS,

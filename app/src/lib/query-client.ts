@@ -17,10 +17,12 @@ export const queryKeys = {
   services: ["services"],
   nodeActions: (id: string) => ["actions", "node", id],
   action: (id: string | null) => ["actions", "one", id],
+  history: (node: string) => ["actions", "history", node],
   incident: (id: string) => ["incidents", id],
   enrollment: (id: string) => ["enrollments", id],
   devices: ["devices"],
   proposals: ["proposals"],
+  changeHistory: ["proposals", "history"],
   usage: ["usage"],
 } as const;
 
