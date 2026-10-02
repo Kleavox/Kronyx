@@ -22,26 +22,9 @@ export function ChangeDetails({
   const admitted = (change.core ?? []).filter((key) =>
     summary.admitted.includes(key.id),
   );
-  const nextCore = change.core
-    ? change.core.map((key) => key.id)
-    : fleet.core.map((device) => device.id);
-  const touchOnly = nextCore
-    .filter(
-      (id) =>
-        fleet.devices.find((device) => device.id === id)?.verifies === false,
-    )
-    .map(fleet.name);
-  const leavingTouch = summary.removed
-    .filter(
-      (id) =>
-        fleet.devices.find((device) => device.id === id)?.verifies === false,
-    )
-    .map(fleet.name);
   const empty =
     admitted.length === 0 &&
     summary.removed.length === 0 &&
-    !summary.passphrase &&
-    !summary.requireUv &&
     summary.access.length === 0;
 
   return (
@@ -51,7 +34,7 @@ export function ChangeDetails({
         return (
           <section
             key={key.id}
-            aria-label={`New core device ${key.name}`}
+            aria-label={`New device ${key.name}`}
             className="rounded-md border bg-card p-3"
           >
             <p className="font-medium">
@@ -72,7 +55,7 @@ export function ChangeDetails({
       })}
       {summary.removed.length > 0 && (
         <section>
-          <h3 className={HEADING}>Leaving the core</h3>
+          <h3 className={HEADING}>Leaving</h3>
           <ul className="space-y-1">
             {summary.removed.map((id) => (
               <li key={id}>
@@ -81,45 +64,6 @@ export function ChangeDetails({
               </li>
             ))}
           </ul>
-        </section>
-      )}
-      {summary.requireUv && (
-        <section>
-          <h3 className={HEADING}>Require fingerprint</h3>
-          <p>
-            Servers then accept only passkeys that verify you, with a
-            fingerprint, a face or a security key, for approvals and actions. A
-            touch alone stops working, the passphrase is dropped, and this
-            cannot be turned off from the dashboard.
-          </p>
-          {leavingTouch.length > 0 && (
-            <p className="mt-1">
-              {leavingTouch.join(", ")} only{" "}
-              {leavingTouch.length === 1
-                ? "takes a touch, so it leaves"
-                : "take a touch, so they leave"}{" "}
-              the core.
-            </p>
-          )}
-          {touchOnly.length > 0 && (
-            <p className="mt-1 text-destructive">
-              {touchOnly.join(", ")} only{" "}
-              {touchOnly.length === 1 ? "takes" : "take"} a touch and must leave
-              the core in this change.
-            </p>
-          )}
-        </section>
-      )}
-      {summary.passphrase && (
-        <section>
-          <h3 className={HEADING}>
-            {fleet.view.passphrase ? "Change passphrase" : "Set passphrase"}
-          </h3>
-          <p>
-            Servers will ask for the passphrase on devices that cannot prove a
-            fingerprint
-            {touchOnly.length > 0 ? ` (${touchOnly.join(", ")})` : ""}.
-          </p>
         </section>
       )}
       {summary.access.length > 0 && (

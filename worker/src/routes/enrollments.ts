@@ -11,13 +11,10 @@ const ENROLLMENT_TTL_MS = 30 * 60_000;
 function installCommand(env: Env, token: string, fleet: Fleet): string {
   const endpoint = agentOrigin(env);
   const core = fleet.devices.filter((device) => fleet.core.includes(device.id));
-  const passphrase = fleet.passphrase
-    ? ` --passphrase ${fleet.passphrase.salt}.${fleet.passphrase.iterations}.${fleet.passphrase.publicKey}`
-    : "";
   const grant = core.length < 2 ? " --grant" : "";
   const trust =
     core.length > 0
-      ? ` --trust ${env.PUBLIC_ORIGIN}${passphrase}${grant} -- ${core
+      ? ` --trust ${env.PUBLIC_ORIGIN}${grant} -- ${core
           .map((device) => `${device.id}.${device.alg}.${device.publicKey}`)
           .join(" ")}`
       : "";

@@ -10,7 +10,6 @@ import {
   signIntent,
   signTargets,
   approveChange,
-  grantVerified,
   nameFor,
   thisBrowser,
 } from "./passkeys";
@@ -66,12 +65,7 @@ describe("passkeys", () => {
 
   it("builds a grant whose challenge is the SHA-256 of its bytes", async () => {
     const seen = authenticator();
-    const session = await createSession(
-      ["ZGV2aWNl"],
-      "kry.example.test",
-      null,
-      T,
-    );
+    const session = await createSession(["ZGV2aWNl"], "kry.example.test", T);
     const grantBytes = fromB64url(session.grant.grant);
     expect(seen[0]).toEqual(await sha256(grantBytes));
     expect(decode(session.grant.grant)).toMatchObject({
@@ -91,12 +85,7 @@ describe("passkeys", () => {
 
   it("signs a command the session key verifies (P1363)", async () => {
     authenticator();
-    const session = await createSession(
-      ["ZGV2aWNl"],
-      "kry.example.test",
-      null,
-      T,
-    );
+    const session = await createSession(["ZGV2aWNl"], "kry.example.test", T);
     const command = actionCommand(
       {
         id: "55555555-5555-4555-8555-555555555555",
@@ -156,47 +145,6 @@ describe("passkeys", () => {
     });
   });
 
-  it("adds a passphrase proof only when the passkey did not verify the user", async () => {
-    const asked: { purpose: string; data: Uint8Array }[] = [];
-    const prove = async (purpose: string, data: Uint8Array) => {
-      asked.push({ purpose, data });
-      return "cHJvb2Y";
-    };
-    authenticator(0x05);
-    const verified = await createSession(
-      ["ZGV2aWNl"],
-      "kry.example.test",
-      prove,
-      T,
-    );
-    expect(verified.grant).not.toHaveProperty("proof");
-    expect(asked).toHaveLength(0);
-    authenticator(0x19);
-    const touched = await createSession(
-      ["ZGV2aWNl"],
-      "kry.example.test",
-      prove,
-      T,
-    );
-    expect(touched.grant.proof).toBe("cHJvb2Y");
-    expect(asked[0]?.purpose).toBe("grant");
-    expect(asked[0]?.data).toEqual(fromB64url(touched.grant.grant));
-    const change = b64url(new TextEncoder().encode('{"v":2}'));
-    const approval = await approveChange(
-      change,
-      ["ZGV2aWNl"],
-      "kry.example.test",
-      prove,
-    );
-    expect(approval.proof).toBe("cHJvb2Y");
-    expect(asked[1]).toEqual({
-      purpose: "approve:ZGV2aWNl",
-      data: fromB64url(change),
-    });
-    const bare = await createSession(["ZGV2aWNl"], "kry.example.test", null, T);
-    expect(bare.grant).not.toHaveProperty("proof");
-  });
-
   it("remembers the passkeys this browser used", async () => {
     const store = new Map<string, string>();
     vi.stubGlobal("localStorage", {
@@ -205,12 +153,12 @@ describe("passkeys", () => {
     });
     expect(thisBrowser()).toEqual([]);
     authenticator();
-    await createSession(["ZGV2aWNl"], "kry.example.test", null, T);
-    await createSession(["ZGV2aWNl"], "kry.example.test", null, T);
+    await createSession(["ZGV2aWNl"], "kry.example.test", T);
+    await createSession(["ZGV2aWNl"], "kry.example.test", T);
     expect(thisBrowser()).toEqual(["ZGV2aWNl"]);
     store.clear();
     authenticator(0x05, "cross-platform");
-    await createSession(["ZGV2aWNl"], "kry.example.test", null, T);
+    await createSession(["ZGV2aWNl"], "kry.example.test", T);
     expect(thisBrowser()).toEqual([]);
     vi.stubGlobal("localStorage", {
       getItem: () => {
@@ -222,18 +170,13 @@ describe("passkeys", () => {
     });
     expect(thisBrowser()).toEqual([]);
     await expect(
-      createSession(["ZGV2aWNl"], "kry.example.test", null, T),
+      createSession(["ZGV2aWNl"], "kry.example.test", T),
     ).resolves.toBeDefined();
   });
 
   it("signs every target before anything is sent", async () => {
     authenticator();
-    const session = await createSession(
-      ["ZGV2aWNl"],
-      "kry.example.test",
-      null,
-      T,
-    );
+    const session = await createSession(["ZGV2aWNl"], "kry.example.test", T);
     const targets = await signTargets(
       session,
       "rollback",
@@ -263,12 +206,7 @@ describe("passkeys", () => {
 
   it("signs a service action with its own kind", async () => {
     authenticator();
-    const session = await createSession(
-      ["ZGV2aWNl"],
-      "kry.example.test",
-      null,
-      T,
-    );
+    const session = await createSession(["ZGV2aWNl"], "kry.example.test", T);
     const [target] = await signTargets(
       session,
       "restart",
@@ -291,7 +229,7 @@ describe("passkeys", () => {
     });
   });
 
-  it("asks for verification without requiring it, so servers decide", async () => {
+  it("always asks for a fingerprint, the device's own first", async () => {
     const asked: CredentialRequestOptions[] = [];
     vi.stubGlobal("navigator", {
       credentials: {
@@ -309,21 +247,22 @@ describe("passkeys", () => {
         },
       },
     });
-    await createSession(["ZGV2aWNl"], "kry.example.test", null, T);
-    expect(asked[0]?.publicKey?.userVerification).toBe("preferred");
+    await createSession(["ZGV2aWNl"], "kry.example.test", T).catch(() => null);
+    expect(asked[0]?.publicKey?.userVerification).toBe("required");
+    expect(asked[0]?.publicKey?.hints?.[0]).toBe("client-device");
   });
 
-  it("accepts a passkey that reports presence without verification", async () => {
+  it("refuses a passkey that reports presence without verification", async () => {
     authenticator(0x19);
     await expect(
-      createSession(["ZGV2aWNl"], "kry.example.test", null, T),
-    ).resolves.toMatchObject({ grant: { credentialId: "ZGV2aWNl" } });
+      createSession(["ZGV2aWNl"], "kry.example.test", T),
+    ).rejects.toThrow(/did not verify a fingerprint/u);
   });
 
   it("stops at once when the passkey was not touched", async () => {
     authenticator(0x00);
     await expect(
-      createSession(["ZGV2aWNl"], "kry.example.test", null, T),
+      createSession(["ZGV2aWNl"], "kry.example.test", T),
     ).rejects.toThrow(/was not touched.*flags 0x00, platform/u);
   });
 
@@ -346,15 +285,15 @@ describe("passkeys", () => {
     vi.stubGlobal("navigator", { credentials: created(0x59) });
     await expect(
       registerDevice("Laptop", "kry.example.test", user, []),
-    ).resolves.toMatchObject({ id: "bmV3", alg: -7, verifies: false });
+    ).rejects.toThrow(/did not verify a fingerprint/u);
     vi.stubGlobal("navigator", { credentials: created(0x45) });
     await expect(
       registerDevice("Laptop", "kry.example.test", user, []),
-    ).resolves.toMatchObject({ verifies: true });
+    ).resolves.toMatchObject({ id: "bmV3", alg: -7, verifies: true });
   });
 });
 
-describe("fingerprint rule", () => {
+describe("fingerprint, always", () => {
   it("requires verification and refuses a touch-only answer", async () => {
     const asked: CredentialRequestOptions[] = [];
     const answer = (flags: number) =>
@@ -376,25 +315,23 @@ describe("fingerprint rule", () => {
       });
     answer(0x01);
     await expect(
-      createSession(["ZGV2aWNl"], "kry.example.test", "fingerprint", T),
-    ).rejects.toThrow(/did not confirm a fingerprint/u);
+      createSession(["ZGV2aWNl"], "kry.example.test", T),
+    ).rejects.toThrow(/did not verify a fingerprint/u);
     expect(asked[0]?.publicKey?.userVerification).toBe("required");
     await expect(
       approveChange(
         b64url(new Uint8Array([1])),
         ["ZGV2aWNl"],
         "kry.example.test",
-        "fingerprint",
       ),
-    ).rejects.toThrow(/did not confirm a fingerprint/u);
+    ).rejects.toThrow(/did not verify a fingerprint/u);
     answer(0x05);
     const approval = await approveChange(
       b64url(new Uint8Array([1])),
       ["ZGV2aWNl"],
       "kry.example.test",
-      "fingerprint",
     );
-    expect(approval).not.toHaveProperty("proof");
+    expect(approval.credentialId).toBe("ZGV2aWNl");
   });
 
   it("names a passkey after where it lives and refuses a touch-only one", async () => {
@@ -407,6 +344,7 @@ describe("fingerprint rule", () => {
         expect(
           options.publicKey?.authenticatorSelection?.userVerification,
         ).toBe("required");
+        expect(options.publicKey?.hints?.[0]).toBe("client-device");
         return {
           id: "bmV3",
           authenticatorAttachment: "cross-platform",
@@ -423,50 +361,22 @@ describe("fingerprint rule", () => {
     vi.stubGlobal("navigator", { credentials: created(0x01, ["internal"]) });
     await expect(
       registerDevice("Laptop", "kry.example.test", user, [], {
-        required: true,
         guessed: true,
       }),
-    ).rejects.toThrow(/cannot verify a fingerprint/u);
+    ).rejects.toThrow(/did not verify a fingerprint/u);
     vi.stubGlobal("navigator", { credentials: created(0x05, ["hybrid"]) });
     await expect(
       registerDevice("Laptop", "kry.example.test", user, [], {
-        required: true,
         guessed: true,
       }),
     ).resolves.toMatchObject({ name: "Phone", verifies: true });
   });
 });
 
-describe("sessions under the fingerprint rule", () => {
-  it("knows whether a session's grant proved a fingerprint", async () => {
-    authenticator(0x01);
-    const touched = await createSession(
-      ["ZGV2aWNl"],
-      "kry.example.test",
-      null,
-      T,
-    );
-    authenticator(0x05);
-    const verified = await createSession(
-      ["ZGV2aWNl"],
-      "kry.example.test",
-      null,
-      T,
-    );
-    expect(grantVerified(touched)).toBe(false);
-    expect(grantVerified(verified)).toBe(true);
-  });
-});
-
 describe("dashboard intents", () => {
   it("signs what is about to happen with the session key", async () => {
     authenticator();
-    const session = await createSession(
-      ["ZGV2aWNl"],
-      "kry.example.test",
-      null,
-      T,
-    );
+    const session = await createSession(["ZGV2aWNl"], "kry.example.test", T);
     const header = await signIntent(
       session,
       "node.delete",

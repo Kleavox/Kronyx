@@ -12,15 +12,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useApproveProposal, useOpenProposal } from "@/lib/api";
-import {
-  decodeChange,
-  describeChange,
-  fingerprintsRequired,
-  predictMissing,
-} from "@/lib/devices";
+import { decodeChange, describeChange, predictMissing } from "@/lib/devices";
 import { capitalize } from "@/lib/format";
 import { approveChange } from "@/lib/passkeys";
-import { proverFor } from "@/lib/passphrase-prompt";
 import type { ProposalRecord } from "@/types";
 
 import { ChangeDetails } from "./change-details";
@@ -114,9 +108,6 @@ function Body({
         review.text,
         signers,
         window.location.hostname,
-        fingerprintsRequired(fleet.view)
-          ? "fingerprint"
-          : proverFor(fleet.view.passphrase),
       );
       const reply = proposal
         ? await approve.mutateAsync({ id: proposal.id, approval })
@@ -132,7 +123,7 @@ function Body({
       }
       onClose();
     } catch (caught) {
-      setError(failure(caught, fingerprintsRequired(fleet.view)));
+      setError(failure(caught));
     } finally {
       setWorking(false);
     }
@@ -145,7 +136,7 @@ function Body({
         <DialogDescription>
           {proposal
             ? `Opened by ${fleet.name(proposal.openedBy)} · Expires ${when(change.expiresAt)}`
-            : `Expires ${when(change.expiresAt)} unless enough core devices approve it.`}
+            : `Expires ${when(change.expiresAt)} unless enough devices approve it.`}
         </DialogDescription>
       </DialogHeader>
       <ChangeDetails fleet={fleet} change={change} />
@@ -157,11 +148,12 @@ function Body({
         {!mineApproved && after && (
           <p>After you approve: {capitalize(after)}.</p>
         )}
-        {mineApproved && (
-          <p>You approved this. Approve on another core device.</p>
-        )}
+        {mineApproved && <p>You approved this. Approve on another device.</p>}
         {!proposal && after === undefined && (
-          <p>Approve with a core device. The servers count the approvals.</p>
+          <p>
+            Approve with one of your trusted devices. The servers count the
+            approvals.
+          </p>
         )}
       </div>
       {error && (

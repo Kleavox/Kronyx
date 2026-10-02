@@ -1,7 +1,7 @@
 import type { Env } from "../env";
 
 interface CheckChange {
-  checkName: string;
+  checkName: string | null;
   summary: string;
   occurredAt: string;
 }
@@ -14,7 +14,6 @@ const COLOR = {
   muted: "#8a8a94",
   primary: "#8b7bff",
   destructive: "#f0616d",
-  success: "#34d399",
 };
 
 const SANS =
@@ -134,67 +133,51 @@ const incidentsLink = (env: Env) => ({
 const names = (changes: CheckChange[]) =>
   changes.map((change) => change.checkName).join(", ");
 
+const plural = (count: number, word: string) =>
+  `${count} ${word}${count === 1 ? "" : "s"}`;
+
 export async function sendServerEmail(
   env: Env,
-  message: { nodeName: string; down: CheckChange[]; up: CheckChange[] },
+  message: { nodeId: string; nodeName: string; down: CheckChange[] },
 ): Promise<void> {
-  const { nodeName, down, up } = message;
+  const { nodeId, nodeName } = message;
+  const offline = message.down.find((change) => change.checkName === null);
+  const down = message.down.filter((change) => change.checkName !== null);
   const parts = [
+    ...(offline ? ["offline"] : []),
     ...(down.length > 0
-      ? [
-          `${down.length} ${down.length === 1 ? "check" : "checks"} down — ${names(down)}`,
-        ]
-      : []),
-    ...(up.length > 0
-      ? [
-          `${down.length > 0 ? "" : up.length === 1 ? "check " : "checks "}back up — ${names(up)}`,
-        ]
+      ? [`${plural(down.length, "check")} down — ${names(down)}`]
       : []),
   ];
   const heading = `${nodeName}: ${parts.join(" · ")}`;
-  const intro =
-    down.length > 0
-      ? `Checks on ${nodeName} kept failing for 90 seconds and opened incidents.`
-      : `Checks on ${nodeName} respond again.`;
+  const intro = offline
+    ? `${nodeName} stopped reporting. Its checks cannot run until it is back.`
+    : `Checks on ${nodeName} kept failing and opened incidents.`;
   await deliver(env, {
     title: `[Krynodes] ${heading}`,
     preheader: intro,
-    badge:
-      down.length > 0
-        ? { label: "Down", color: COLOR.destructive }
-        : { label: "Resolved", color: COLOR.success },
+    badge: offline
+      ? { label: "Offline", color: COLOR.destructive }
+      : { label: "Down", color: COLOR.destructive },
     heading,
     intro,
     rows: [
       ["Server", nodeName],
+      ...(offline
+        ? [["Last report", utcTime(offline.occurredAt)] as [string, string]]
+        : []),
       ...down.map((change): [string, string] => [
-        change.checkName,
+        change.checkName ?? nodeName,
         `${change.summary} · since ${utcTime(change.occurredAt)}`,
       ]),
-      ...up.map((change): [string, string] => [
-        change.checkName,
-        `Back up · ${utcTime(change.occurredAt)}`,
-      ]),
     ],
-    action: incidentsLink(env),
-  });
-}
-
-export async function sendDigestEmail(
-  env: Env,
-  message: { count: number; since: number },
-): Promise<void> {
-  const heading = `${message.count} more check ${message.count === 1 ? "change" : "changes"}`;
-  const intro =
-    "Krynodes sends at most 6 incident mails an hour. These came after that; the dashboard shows where things stand now.";
-  await deliver(env, {
-    title: `[Krynodes] ${heading}`,
-    preheader: intro,
-    badge: { label: "Held back", color: COLOR.primary },
-    heading,
-    intro,
-    rows: [["Since", utcTime(new Date(message.since).toISOString())]],
-    action: incidentsLink(env),
+    action:
+      down.length === 0
+        ? {
+            label: `Open ${nodeName}`,
+            href: new URL(`/nodes/${nodeId}`, env.PUBLIC_ORIGIN).toString(),
+          }
+        : incidentsLink(env),
   });
 }
 
@@ -203,7 +186,7 @@ export async function sendProposalEmail(
   message: { title: string; openedBy: string },
 ): Promise<void> {
   const detail =
-    "A core device opened this change. It needs more approvals before it reaches your servers.";
+    "A trusted device opened this change. It needs more approvals before it reaches your servers.";
   await deliver(env, {
     title: `[Krynodes] Waiting for approval: ${message.title}`,
     preheader: detail,

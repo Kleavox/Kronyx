@@ -191,8 +191,6 @@ export interface NodeTrust {
   version: number;
   core: string[];
   access: string[];
-  passphrase: boolean;
-  requireUv?: boolean;
 }
 
 interface ServiceNode {
@@ -216,15 +214,8 @@ export interface DeviceRecord {
   core: boolean;
 }
 
-export interface PassphraseKey {
-  salt: string;
-  iterations: number;
-  publicKey: string;
-}
-
 export interface DevicesResponse {
   devices: DeviceRecord[];
-  passphrase: PassphraseKey | null;
 }
 
 type ProposalStatus =

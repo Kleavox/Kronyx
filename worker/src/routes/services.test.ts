@@ -14,6 +14,12 @@ const FOREIGN = "44444444-4444-4444-8444-444444444444";
 const b64 = (value: unknown) =>
   Buffer.from(JSON.stringify(value)).toString("base64url");
 
+const authData = (flags: number) =>
+  Buffer.from(
+    Uint8Array.from({ length: 37 }, (_, index) => (index === 32 ? flags : 0)),
+  ).toString("base64url");
+const VERIFIED = authData(0x05);
+
 const signedFor = (target: {
   id: string;
   nodeId: string;
@@ -24,7 +30,7 @@ const signedFor = (target: {
   grant: {
     grant: "Z3JhbnQ",
     credentialId: "ZGV2aWNlLTE",
-    authenticatorData: "YXV0aA",
+    authenticatorData: VERIFIED,
     clientDataJSON: "Y2xpZW50",
     signature: "c2ln",
   },
@@ -226,6 +232,24 @@ describe("POST /api/actions", () => {
     const pending = await restart([{ nodeId: A }]);
     expect(pending.status).toBe(409);
     expect((await reply(pending)).code).toBe("ACTION_PENDING");
+  });
+
+  it("refuses an action whose session was opened with a touch", async () => {
+    const { call } = setup();
+    const target = {
+      id: crypto.randomUUID(),
+      nodeId: A,
+      kind: "docker",
+      name: "adguard",
+    };
+    const signed = signedFor({ ...target, action: "restart" });
+    signed.grant.authenticatorData = authData(0x01);
+    const response = await call("POST", "/api/actions", {
+      action: "restart",
+      targets: [{ ...target, signed }],
+    });
+    expect(response.status).toBe(400);
+    expect((await reply(response)).code).toBe("FINGERPRINT_NEEDED");
   });
 
   it("refuses an unsigned restart and one signed for another service", async () => {

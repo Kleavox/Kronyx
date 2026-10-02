@@ -17,7 +17,9 @@ const b64 = (value: unknown) =>
 
 const assertion = {
   credentialId: "ZGV2aWNlLTE",
-  authenticatorData: "YXV0aA",
+  authenticatorData: Buffer.from(
+    Uint8Array.from({ length: 37 }, (_, index) => (index === 32 ? 5 : 0)),
+  ).toString("base64url"),
   clientDataJSON: "Y2xpZW50",
   signature: "c2ln",
 };
@@ -76,6 +78,7 @@ function setup() {
       name,
       alg: -7,
       publicKey: "TUZrd0V3WUhLb1pJemowQ0FRWUlLb1pJemowREFRY0RRZ0FF",
+      verifies: true,
     });
   const change = (nodeIds: string[], version = 1, keys = ["ZGV2aWNlLTE"]) =>
     b64({

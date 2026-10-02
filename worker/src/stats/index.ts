@@ -1,5 +1,5 @@
 import { loadStatus, statusVersion } from "./data";
-import { personalize, REFRESH_ROUNDS, renderStatus } from "./page";
+import { LOCAL_TIMES, personalize, REFRESH_ROUNDS, renderStatus } from "./page";
 
 export interface StatsEnv {
   DB: D1Database;
@@ -9,9 +9,20 @@ export interface StatsEnv {
 const MAX_AGE = 600;
 const FRESH_MS = 300_000;
 
+const CSP =
+  "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+let scriptHash: Promise<string> | undefined;
+
+const pageCsp = async () => {
+  scriptHash ??= crypto.subtle
+    .digest("SHA-256", new TextEncoder().encode(LOCAL_TIMES))
+    .then((digest) => btoa(String.fromCharCode(...new Uint8Array(digest))));
+  return `${CSP}; script-src 'sha256-${await scriptHash}'`;
+};
+
 const HEADERS = {
-  "Content-Security-Policy":
-    "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  "Content-Security-Policy": CSP,
   "Referrer-Policy": "no-referrer",
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
@@ -73,6 +84,7 @@ export async function serveStats(
     response = new Response(renderStatus(await loadStatus(env.DB, now), now), {
       headers: {
         ...HEADERS,
+        "Content-Security-Policy": await pageCsp(),
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": `public, max-age=${MAX_AGE}`,
         "X-Rendered-At": String(now),

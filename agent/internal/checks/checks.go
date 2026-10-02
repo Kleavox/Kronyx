@@ -27,7 +27,43 @@ var serviceStates = func(ctx context.Context, units []string) (string, error) {
 	return "", err
 }
 
+var (
+	recheckDelay  = 5 * time.Second
+	recheckBudget = 40 * time.Second
+)
+
+const rechecks = 2
+
 func RunAll(ctx context.Context, definitions []reporter.Check) []reporter.CheckResult {
+	started := time.Now()
+	results := runOnce(ctx, definitions)
+	for range rechecks {
+		var failed []int
+		for index, result := range results {
+			if result.Status == "DOWN" {
+				failed = append(failed, index)
+			}
+		}
+		if len(failed) == 0 || time.Since(started) > recheckBudget {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return results
+		case <-time.After(recheckDelay):
+		}
+		again := make([]reporter.Check, len(failed))
+		for position, index := range failed {
+			again[position] = definitions[index]
+		}
+		for position, result := range runOnce(ctx, again) {
+			results[failed[position]] = result
+		}
+	}
+	return results
+}
+
+func runOnce(ctx context.Context, definitions []reporter.Check) []reporter.CheckResult {
 	results := make([]reporter.CheckResult, len(definitions))
 	semaphore := make(chan struct{}, 4)
 	var wait sync.WaitGroup

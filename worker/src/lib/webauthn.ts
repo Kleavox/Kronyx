@@ -1,5 +1,3 @@
-import { proofMessage } from "@krynodes/protocol";
-
 import { fromB64url, toB64url } from "./b64url";
 
 const encoder = new TextEncoder();
@@ -112,32 +110,6 @@ export async function verifyAssertion(
     throw new Error("passkey signature is invalid");
   }
   return { uv: (flags & 0x04) !== 0 };
-}
-
-export async function verifyProof(
-  publicKey: string,
-  purpose: string,
-  data: Uint8Array<ArrayBuffer>,
-  proof: string,
-): Promise<boolean> {
-  try {
-    const key = await crypto.subtle.importKey(
-      "raw",
-      fromB64url(publicKey),
-      { name: "Ed25519" },
-      false,
-      ["verify"],
-    );
-    const message = proofMessage(purpose, toB64url(await sha256(data)));
-    return await crypto.subtle.verify(
-      { name: "Ed25519" },
-      key,
-      fromB64url(proof),
-      encoder.encode(message),
-    );
-  } catch {
-    return false;
-  }
 }
 
 export async function fingerprint(publicKey: string): Promise<string> {

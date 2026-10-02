@@ -3,7 +3,6 @@ package actions
 import (
 	"crypto"
 	"crypto/ecdsa"
-	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -98,8 +97,6 @@ type deployCase struct {
 	signer       *ecdsa.PrivateKey
 	command      Command
 	extra        bool
-	proof        ed25519.PrivateKey
-	purpose      string
 }
 
 func newDeployCase(t *testing.T, alg int) *deployCase {
@@ -153,13 +150,6 @@ func (c *deployCase) request(t *testing.T) Request {
 	grant["authenticatorData"] = assertion.AuthenticatorData
 	grant["clientDataJSON"] = assertion.ClientDataJSON
 	grant["signature"] = assertion.Signature
-	if c.proof != nil {
-		purpose := c.purpose
-		if purpose == "" {
-			purpose = "grant"
-		}
-		grant["proof"] = proofFor(c.proof, purpose, grantBytes)
-	}
 	if c.extra {
 		signed["extra"] = true
 	}
@@ -207,14 +197,6 @@ func TestAWrongRPIDHashIsRefused(t *testing.T) {
 	c := newDeployCase(t, algES256)
 	c.assertion.rpID = "evil.example"
 	refused(t, c.verify(t, testNow), "rp id does not match")
-}
-
-func TestAPasskeyWithoutUserVerificationIsAccepted(t *testing.T) {
-	c := newDeployCase(t, algES256)
-	c.assertion.flags = flagPresent
-	if err := c.verify(t, testNow); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestAMissingUserPresenceIsRefused(t *testing.T) {
@@ -335,29 +317,4 @@ func TestAPasskeyWithoutAccessToThisServerIsRefused(t *testing.T) {
 	c := newDeployCase(t, algES256)
 	c.trust.Access = nil
 	refused(t, c.verify(t, testNow), "no access to this server")
-}
-
-func TestAGrantWithoutFingerprintNeedsThePassphrase(t *testing.T) {
-	c := newDeployCase(t, algES256)
-	pass, private := passphraseKey(t)
-	c.trust.Passphrase = &pass
-	c.assertion.flags = flagPresent
-	refused(t, c.verify(t, testNow), "passphrase is needed")
-
-	c.proof = private
-	if err := c.verify(t, testNow); err != nil {
-		t.Fatal(err)
-	}
-
-	c.purpose = "approve:cred-1"
-	refused(t, c.verify(t, testNow), "passphrase is wrong")
-}
-
-func TestAGrantWithAFingerprintNeedsNoPassphrase(t *testing.T) {
-	c := newDeployCase(t, algES256)
-	pass, _ := passphraseKey(t)
-	c.trust.Passphrase = &pass
-	if err := c.verify(t, testNow); err != nil {
-		t.Fatal(err)
-	}
 }

@@ -39,6 +39,7 @@ export interface LiveCheck {
 
 interface Transition {
   kind: "opened" | "resolved";
+  checkId: string;
   checkName: string;
   summary: string;
   occurredAt: string;
@@ -324,6 +325,7 @@ export function resultStatements(
       const summary = `${check.name} is down${result.message ? `: ${result.message}` : ""}`;
       transitions.push({
         kind: "opened",
+        checkId: check.id,
         checkName: check.name,
         summary,
         occurredAt: receivedAt,
@@ -338,6 +340,7 @@ export function resultStatements(
     if (result.status === "UP" && check.status === "DOWN") {
       transitions.push({
         kind: "resolved",
+        checkId: check.id,
         checkName: check.name,
         summary: `${check.name} is responding again.`,
         occurredAt: receivedAt,
@@ -371,6 +374,7 @@ export async function commit(
     .filter((_, index) => (results[offset + index]?.meta.changes ?? 0) > 0)
     .map((transition) => ({
       nodeId,
+      checkId: transition.checkId,
       checkName: transition.checkName,
       kind: transition.kind,
       summary: transition.summary,

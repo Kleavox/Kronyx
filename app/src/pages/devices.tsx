@@ -1,4 +1,4 @@
-import { MIN_AGENT_VERSION } from "@krynodes/protocol/versions";
+import { TRUST_AGENT } from "@krynodes/protocol/versions";
 import { Fingerprint } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
@@ -27,7 +27,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AccessEditor } from "@/features/devices/access-editor";
+import {
+  AccessDialog,
+  type AccessScope,
+} from "@/features/devices/access-dialog";
 import {
   ApprovalDialog,
   approvalLine,
@@ -53,15 +56,15 @@ import {
   decodeChange,
   describeChange,
   fingerprint,
-  fingerprintsRequired,
   firstTrusts,
   formatPrint,
-  removeChange,
-  requireUvChange,
-  serverState,
+  accessChange,
   agentCurrent,
+  removeChange,
+  serverState,
   syncChange,
-  uvBlocker,
+  trustReady,
+  twinOf,
   type FleetServer,
   type ServerState,
 } from "@/lib/devices";
@@ -75,7 +78,7 @@ const DAY_MS = 24 * 3_600_000;
 
 const STATE: Record<ServerState, { label: string; tone: string }> = {
   update: {
-    label: `Needs agent ${MIN_AGENT_VERSION}`,
+    label: `Needs agent ${TRUST_AGENT}`,
     tone: "text-muted-foreground",
   },
   empty: { label: "Not trusted yet", tone: "text-warning" },
@@ -103,10 +106,7 @@ function useSetUp(fleet: Fleet, onAdmit: (device: DeviceRecord) => void) {
           name: identity?.email ?? "Krynodes",
         },
         fleet.devices.map((device) => device.id),
-        {
-          required: fingerprintsRequired(fleet.view),
-          guessed: !name.trim() || name.trim() === guessName(),
-        },
+        { guessed: !name.trim() || name.trim() === guessName() },
       );
       await register.mutateAsync(input);
       const hasCore = fleet.core.some((device) =>
@@ -122,12 +122,30 @@ function useSetUp(fleet: Fleet, onAdmit: (device: DeviceRecord) => void) {
         });
       }
     } catch (error) {
-      toast.error(failure(error, fingerprintsRequired(fleet.view)));
+      toast.error(failure(error));
     } finally {
       setWorking(false);
     }
   };
   return { name, setName, working, setUp };
+}
+
+function HowToVerify({ waiting }: { waiting?: string }) {
+  return (
+    <div className="space-y-1 text-xs text-muted-foreground">
+      <p>
+        Your device asks for your fingerprint, or your face on Windows Hello, a
+        Mac or an iPhone. A security key such as a YubiKey works too. Passkeys
+        that only take a touch cannot join. Without a fingerprint reader, choose
+        &ldquo;Use a phone&rdquo; in the passkey window.
+        {waiting ? ` ${waiting}` : ""}
+      </p>
+      <p>
+        Browsers cannot tell a fingerprint from the device&rsquo;s PIN, so keep
+        that PIN to yourself.
+      </p>
+    </div>
+  );
 }
 
 function SetUpForm({
@@ -197,15 +215,18 @@ function FirstDevice({ fleet }: { fleet: Fleet }) {
         <Fingerprint aria-hidden="true" className="mb-3 size-6 text-primary" />
         <h2 className="font-medium">Control servers with your fingerprint</h2>
         <p className="mt-1.5 text-sm text-muted-foreground">
-          Start, stop, restart and deploy need a fingerprint from a core device.
-          Servers keep the keys themselves, so nothing on Cloudflare can act on
-          its own.
+          Start, stop, restart and deploy need a fingerprint from a trusted
+          device. Servers keep the keys themselves, so nothing on Cloudflare can
+          act on its own.
         </p>
         <p className="my-4 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
           Set up this device first. Share the admin login only after your own
           devices are set up.
         </p>
         <SetUpForm setup={setup} label="Set up this device" />
+        <div className="mt-3">
+          <HowToVerify />
+        </div>
       </section>
     </>
   );
@@ -237,13 +258,13 @@ function NewDevice({ fleet, device }: { fleet: Fleet; device: DeviceRecord }) {
         </h2>
         <BigPrint publicKey={device.publicKey} className="my-4 sm:text-3xl" />
         <p className="text-sm">
-          Open Trusted devices on one of your core devices and approve it. Check
-          that it shows this code.
+          Open Trusted devices on one of your other devices and approve it.
+          Check that it shows this code.
         </p>
         <p className="mt-2 text-xs text-muted-foreground">
-          {fleet.core.length >= 2
-            ? "Two core devices approve a new one. "
-            : "Your core device approves it on its own. "}
+          {fleet.core.length > 2
+            ? "Two of your devices approve a new one. "
+            : "One of your devices approves it. "}
           This page updates by itself once your servers take it.
         </p>
         {!joining && (
@@ -281,25 +302,23 @@ function serversText(fleet: Fleet, device: DeviceRecord): string {
     : `${count} of ${plural(total, "server")}`;
 }
 
-function proofText(fleet: Fleet, device: DeviceRecord): string | null {
+function proofText(device: DeviceRecord): string | null {
   if (device.verifies === null) return null;
-  if (device.verifies) return "Fingerprint";
-  if (fingerprintsRequired(fleet.view)) return "Cannot sign";
-  return fleet.view.passphrase ? "Needs passphrase" : "Touch only";
+  return device.verifies ? "Fingerprint" : "Cannot sign";
 }
 
 function DeviceRow({
   fleet,
   device,
   onRename,
-  onAccess,
+  onServers,
   onRemove,
   onForget,
 }: {
   fleet: Fleet;
   device: DeviceRecord;
   onRename: () => void;
-  onAccess: () => void;
+  onServers: () => void;
   onRemove: () => void;
   onForget: () => void;
 }) {
@@ -307,9 +326,12 @@ function DeviceRow({
     label: string;
     onSelect: () => void;
     destructive?: boolean;
-  }[] = [{ label: "Rename", onSelect: onRename }];
+  }[] = [];
+  if (device.core && fleet.trusted.length > 0) {
+    items.push({ label: "Servers", onSelect: onServers });
+  }
+  items.push({ label: "Rename", onSelect: onRename });
   if (device.core) {
-    items.push({ label: "Change access", onSelect: onAccess });
     if (fleet.core.length > 1) {
       items.push({ label: "Remove", onSelect: onRemove, destructive: true });
     }
@@ -318,7 +340,7 @@ function DeviceRow({
   }
   const facts = [
     formatPrint(device.fingerprint),
-    proofText(fleet, device),
+    proofText(device),
     device.core ? serversText(fleet, device) : null,
     device.lastUsedAt ? `Used ${timeAgo(device.lastUsedAt)}` : "Never used",
   ].filter(Boolean);
@@ -330,16 +352,13 @@ function DeviceRow({
           {fleet.mine.includes(device.id) && (
             <Badge variant="outline">This device</Badge>
           )}
-          <Badge
-            variant="secondary"
-            className={cn(!device.core && "text-warning")}
-          >
-            {device.core
-              ? "Core"
-              : fleet.joining.includes(device.id)
+          {!device.core && (
+            <Badge variant="secondary" className="text-warning">
+              {fleet.joining.includes(device.id)
                 ? "Joining"
                 : "Waiting for approval"}
-          </Badge>
+            </Badge>
+          )}
         </div>
         <p className="mt-1 font-mono text-xs text-muted-foreground">
           {facts.join(" · ")}
@@ -350,23 +369,51 @@ function DeviceRow({
   );
 }
 
-function ServerRow({ fleet, server }: { fleet: Fleet; server: FleetServer }) {
-  const state = STATE[serverState(fleet.view, server)];
-  const names = accessIds(fleet.devices, server.trust).map(fleet.name);
+function ServerRow({
+  fleet,
+  server,
+  onDevices,
+  onRemoveAll,
+  onSync,
+}: {
+  fleet: Fleet;
+  server: FleetServer;
+  onDevices: () => void;
+  onRemoveAll: () => void;
+  onSync: () => void;
+}) {
+  const kind = serverState(fleet.view, server);
+  const state = STATE[kind];
+  const trusted = (server.trust?.core.length ?? 0) > 0;
+  const reaching = accessIds(fleet.devices, server.trust).length;
+  const items: {
+    label: string;
+    onSelect: () => void;
+    destructive?: boolean;
+  }[] = [];
+  if (trusted && agentCurrent(server.node)) {
+    items.push({ label: "Devices", onSelect: onDevices });
+    if (kind === "behind") items.push({ label: "Sync", onSelect: onSync });
+    if (reaching > 0) {
+      items.push({
+        label: "Remove every device",
+        onSelect: onRemoveAll,
+        destructive: true,
+      });
+    }
+  }
   return (
-    <li className="px-4 py-3 text-sm">
-      <div className="flex items-center gap-3">
-        <span className="min-w-0 flex-1 truncate font-medium">
-          {server.node.name}
-        </span>
-        <span className={cn("shrink-0 font-mono text-xs", state.tone)}>
-          {state.label}
-        </span>
-      </div>
-      {(server.trust?.core.length ?? 0) > 0 && (
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">
-          {names.length > 0 ? `Access: ${names.join(", ")}` : "No access"}
-        </p>
+    <li className="flex min-h-12 items-center gap-3 px-4 py-2 text-sm">
+      <span className="min-w-0 flex-1 truncate font-medium">
+        {server.node.name}
+      </span>
+      <span className={cn("shrink-0 font-mono text-xs", state.tone)}>
+        {state.label}
+      </span>
+      {items.length > 0 ? (
+        <RowMenu label={`Options for ${server.node.name}`} items={items} />
+      ) : (
+        <span aria-hidden="true" className="size-8 shrink-0" />
       )}
     </li>
   );
@@ -458,7 +505,7 @@ function ProposalCard({
       <p className="mt-2 font-mono text-xs">{approvalLine(fleet, proposal)}</p>
       {mineApproved && (
         <p className="mt-1 text-xs text-muted-foreground">
-          You approved this. Approve on another core device.
+          You approved this. Approve on another device.
         </p>
       )}
       <div className="mt-3 flex flex-wrap gap-2">
@@ -480,10 +527,12 @@ function ProposalCard({
 
 function PendingCard({
   device,
+  twin,
   onReview,
   onForget,
 }: {
   device: DeviceRecord;
+  twin: DeviceRecord | null;
   onReview: () => void;
   onForget: () => void;
 }) {
@@ -491,15 +540,18 @@ function PendingCard({
     <li className={cn(SECTION, "p-4")}>
       <p className="font-medium">Admit {device.name}</p>
       <p className="mt-0.5 text-xs text-muted-foreground">
-        Registered {when(device.createdAt)} · Not approved yet
+        Registered {when(device.createdAt)} ·{" "}
+        {twin ? `Same passkey as ${twin.name}` : "Not approved yet"}
       </p>
       <p className="mt-2 font-mono text-xs">
         {formatPrint(device.fingerprint)}
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
-        <Button size="sm" className="h-9 md:h-8" onClick={onReview}>
-          Review
-        </Button>
+        {!twin && (
+          <Button size="sm" className="h-9 md:h-8" onClick={onReview}>
+            Review
+          </Button>
+        )}
         <Button
           size="sm"
           variant="ghost"
@@ -621,8 +673,8 @@ function FirstTrustDialog({
             {servers.map((server) => server.node.name).join(", ")}{" "}
             {servers.length === 1 ? "trusts" : "trust"} no device yet.{" "}
             {founding
-              ? "They take this device as their first core device, with access."
-              : "They take your core devices with no access; give access afterwards with Change access."}
+              ? "They take this device as their first trusted device, and it reaches them."
+              : "They take your trusted devices; choose which ones reach them from each server's menu."}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <ul className="divide-y rounded-md border text-sm">
@@ -686,7 +738,7 @@ function Manage({ fleet }: { fleet: Fleet }) {
   const forget = useForgetDevice();
   const [review, setReview] = useState<Review | null>(null);
   const [adding, setAdding] = useState(false);
-  const [editing, setEditing] = useState(false);
+  const [scope, setScope] = useState<AccessScope | null>(null);
   const [renaming, setRenaming] = useState<DeviceRecord | null>(null);
   const [forgetting, setForgetting] = useState<DeviceRecord | null>(null);
   const [cancelling, setCancelling] = useState<ProposalRecord | null>(null);
@@ -705,7 +757,7 @@ function Manage({ fleet }: { fleet: Fleet }) {
     before?: () => void,
   ) {
     before?.();
-    setEditing(false);
+    setScope(null);
     setReview({ text, proposal });
   }
 
@@ -721,7 +773,7 @@ function Manage({ fleet }: { fleet: Fleet }) {
   const behind = fleet.servers.filter(
     (server) => states.get(server.node.id) === "behind",
   );
-  const old = fleet.trusted.filter((server) => !agentCurrent(server.node));
+  const old = fleet.trusted.filter((server) => !trustReady(server.node));
   const admitting = new Set(
     fleet.open.flatMap((proposal) =>
       (decodeChange(proposal.change)?.core ?? []).map((key) => key.id),
@@ -733,35 +785,15 @@ function Manage({ fleet }: { fleet: Fleet }) {
   const founder =
     fleet.devices.find((device) => fleet.mine.includes(device.id)) ??
     fleet.devices[0];
-  const ruled = fingerprintsRequired(fleet.view);
-  const uvWaiting = fleet.open.some(
-    (proposal) => decodeChange(proposal.change)?.requireUv,
-  );
-  const blocker = uvBlocker(fleet.view);
-  const offerUv =
-    fleet.core.length > 0 && old.length === 0 && !ruled && !uvWaiting;
-  const leaving = fleet.core
+  const touchOnly = fleet.core
     .filter((device) => device.verifies === false)
     .map((device) => device.name);
-  const staying = fleet.core.length - leaving.length;
-  const requireButton = (
-    <Button
-      size="sm"
-      className="h-9 md:h-8"
-      onClick={() =>
-        openReview(buildChange(fleet.view, requireUvChange(fleet.view)))
-      }
-    >
-      Require fingerprint
-    </Button>
-  );
 
   const addButton = (
     <Button size="sm" className="h-9 md:h-8" onClick={() => setAdding(true)}>
       Add device
     </Button>
   );
-  let uvNotice = false;
   let notice: ReactNode = null;
   if (fleet.core.length === 0) {
     notice =
@@ -778,51 +810,45 @@ function Manage({ fleet }: { fleet: Fleet }) {
           }
         >
           Trust {founder?.name ?? "this device"} on your servers. It becomes
-          your first core device.
+          your first trusted device.
         </Notice>
       ) : (
         <Notice tone="warning">
-          Update your servers to agent {MIN_AGENT_VERSION}, then trust this
-          device on them.
+          Update your servers to agent {TRUST_AGENT}, then trust this device on
+          them.
         </Notice>
       );
   } else if (old.length > 0) {
     notice = (
       <Notice tone="warning">
         Update {old.map((server) => server.node.name).join(", ")} to agent{" "}
-        {MIN_AGENT_VERSION}. Devices and access cannot change until every server
-        speaks it.
+        {TRUST_AGENT}. Devices cannot be added or removed until every server
+        runs it.
       </Notice>
     );
   } else if (fleet.core.length === 1 && fleet.pending.length === 0) {
     notice = (
       <Notice action={addButton}>
-        {ruled
-          ? "Add a second fingerprint device as a backup, such as a security key or another phone."
-          : "Add a second device, such as your phone. It gets access to your servers."}
+        Add a second device as a backup, such as your phone or a security key.
+        It gets access to your servers.
       </Notice>
     );
-  } else if (offerUv) {
-    uvNotice = true;
-    notice = blocker ? (
+  } else if (touchOnly.length > 0) {
+    notice = (
       <Notice tone="warning">
-        Servers still accept a touch without a fingerprint. {blocker}
-      </Notice>
-    ) : (
-      <Notice action={requireButton}>
-        Servers still accept a touch without a fingerprint.{" "}
-        {leaving.length > 0
-          ? `Requiring one removes ${leaving.join(", ")}, which only ${leaving.length === 1 ? "takes" : "take"} a touch.`
-          : "Require one so only verified passkeys approve and sign."}
-        {staying === 1 &&
-          " Add a second fingerprint device afterwards as a backup."}
+        {touchOnly.join(", ")} cannot sign:{" "}
+        {touchOnly.length === 1
+          ? "its passkey only takes"
+          : "their passkeys only take"}{" "}
+        a touch. Remove {touchOnly.length === 1 ? "it" : "them"} and set{" "}
+        {touchOnly.length === 1 ? "it" : "them"} up again with a fingerprint.
       </Notice>
     );
   } else if (fleet.core.length === 2 && fleet.pending.length === 0) {
     notice = (
       <Notice action={addButton}>
-        Add a third device as a backup. With two, losing one needs SSH to
-        recover.
+        Either of your two devices approves changes alone. Add a third and every
+        change needs two of them.
       </Notice>
     );
   }
@@ -835,11 +861,9 @@ function Manage({ fleet }: { fleet: Fleet }) {
         title="Trusted devices"
         meta={
           <span className="font-mono text-xs text-muted-foreground">
-            {plural(fleet.core.length, "core device")} ·{" "}
-            {ruled ? "Fingerprint required" : "Touch allowed"}
+            {plural(fleet.core.length, "trusted device")}
           </span>
         }
-        actions={offerUv && !blocker && !uvNotice ? requireButton : undefined}
       />
       {notice}
 
@@ -862,6 +886,7 @@ function Manage({ fleet }: { fleet: Fleet }) {
               <PendingCard
                 key={device.id}
                 device={device}
+                twin={twinOf(fleet.view, device)}
                 onReview={() =>
                   openReview(
                     buildChange(fleet.view, admitChange(fleet.view, device)),
@@ -892,11 +917,9 @@ function Manage({ fleet }: { fleet: Fleet }) {
           {adding && (
             <div className="space-y-2 border-b px-4 py-3">
               <SetUpForm setup={setup} label="Set up with fingerprint" />
-              <p className="text-xs text-muted-foreground">
-                {ruled
-                  ? 'Only passkeys that verify a fingerprint can join. On a computer without one, choose "Use a phone" in the passkey window; the phone joins.'
-                  : 'To add your phone from here, choose "Use a phone" in the passkey window. It joins as waiting; core devices approve it.'}
-              </p>
+              <HowToVerify
+                waiting={`It waits until ${fleet.core.length > 2 ? "two of your devices approve" : "one of your devices approves"} it.`}
+              />
             </div>
           )}
           <ul className="divide-y">
@@ -906,7 +929,7 @@ function Manage({ fleet }: { fleet: Fleet }) {
                 fleet={fleet}
                 device={device}
                 onRename={() => setRenaming(device)}
-                onAccess={() => setEditing(true)}
+                onServers={() => setScope({ device })}
                 onRemove={() =>
                   openReview(
                     buildChange(fleet.view, removeChange(fleet.view, device)),
@@ -917,7 +940,7 @@ function Manage({ fleet }: { fleet: Fleet }) {
             ))}
           </ul>
           <p className="border-t px-4 py-3 text-xs text-muted-foreground">
-            The last core device leaves only over SSH:{" "}
+            The last device leaves only over SSH:{" "}
             <code className="font-mono">sudo kry trust --reset</code>.
           </p>
         </section>
@@ -949,21 +972,27 @@ function Manage({ fleet }: { fleet: Fleet }) {
                   Sync {plural(behind.length, "server")}
                 </Button>
               )}
-              {fleet.core.length > 0 && fleet.trusted.length > 0 && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-9 md:h-8"
-                  onClick={() => setEditing(true)}
-                >
-                  Change access
-                </Button>
-              )}
             </div>
           </div>
           <ul className="divide-y">
             {fleet.servers.map((server) => (
-              <ServerRow key={server.node.id} fleet={fleet} server={server} />
+              <ServerRow
+                key={server.node.id}
+                fleet={fleet}
+                server={server}
+                onDevices={() => setScope({ server })}
+                onSync={() =>
+                  openReview(buildChange(fleet.view, syncChange(fleet.view)))
+                }
+                onRemoveAll={() =>
+                  openReview(
+                    buildChange(
+                      fleet.view,
+                      accessChange(fleet.view, { [server.node.id]: [] }),
+                    ),
+                  )
+                }
+              />
             ))}
           </ul>
           <RecentChanges fleet={fleet} />
@@ -975,10 +1004,10 @@ function Manage({ fleet }: { fleet: Fleet }) {
         review={review}
         onClose={() => setReview(null)}
       />
-      <AccessEditor
+      <AccessDialog
         fleet={fleet}
-        open={editing}
-        onClose={() => setEditing(false)}
+        scope={scope}
+        onClose={() => setScope(null)}
         onReview={(text) => openReview(text)}
       />
       <RenameDialog device={renaming} onClose={() => setRenaming(null)} />
@@ -992,7 +1021,7 @@ function Manage({ fleet }: { fleet: Fleet }) {
         open={forgetting !== null}
         onOpenChange={(open) => !open && setForgetting(null)}
         title={`Forget ${forgetting?.name ?? "this device"}?`}
-        description="It never joined the core, so no server knows it. It can be set up again later."
+        description="No server knows it yet. It can be set up again later."
         confirmLabel="Forget"
         mutation={forget}
         variables={forgetting?.id ?? ""}

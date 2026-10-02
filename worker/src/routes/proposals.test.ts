@@ -49,7 +49,7 @@ const sha256 = async (bytes: Uint8Array<ArrayBuffer>) =>
 const encode = (value: unknown) =>
   toB64url(new TextEncoder().encode(JSON.stringify(value)));
 
-function setup(agent = "0.3.1") {
+function setup(agent = "0.3.5") {
   const { db, sqlite } = createTestDb();
   for (const id of [A, B, C]) {
     seedNode(sqlite, { id });
@@ -95,6 +95,17 @@ function setup(agent = "0.3.1") {
       },
       env,
     );
+  const touchOnly = (passkey: TestPasskey) =>
+    sqlite
+      .prepare(
+        "INSERT INTO devices (id, owner_user_id, name, alg, public_key, created_at, verifies) VALUES (?, 'standalone', ?, -7, ?, ?, 0)",
+      )
+      .run(
+        passkey.id,
+        passkey.name,
+        passkey.publicKey,
+        new Date().toISOString(),
+      );
   const register = (passkey: TestPasskey, verifies = true) =>
     call("POST", "/api/devices", {
       id: passkey.id,
@@ -186,6 +197,7 @@ function setup(agent = "0.3.1") {
     sqlite,
     env,
     mail,
+    touchOnly,
     pokes,
     call,
     register,
@@ -198,7 +210,7 @@ function setup(agent = "0.3.1") {
 }
 
 async function fleet(count: number) {
-  const names = ["Laptop", "Phone", "Tablet", "Helper"];
+  const names = ["Laptop", "Phone", "Tablet", "Helper", "Spare"];
   return Promise.all(
     names
       .slice(0, count)
@@ -240,7 +252,27 @@ describe("proposals", () => {
     ]);
   });
 
-  it("keeps a third device waiting until a second core device approves", async () => {
+  it("names the device and the server an access change gives", async () => {
+    const t = setup();
+    const [laptop, phone] = await fleet(2);
+    await t.register(laptop!);
+    await t.register(phone!);
+    await t.report(A, [laptop!, phone!], [laptop!]);
+    const text = t.change({ access: { [A]: [laptop!, phone!] } });
+    const response = await t.open(text, await t.approval(phone!, text));
+    expect(await reply(response)).toMatchObject({
+      status: "open",
+      missing: "needs approval from another device that reaches this server",
+    });
+    const listed = (await (await t.call("GET", "/api/proposals")).json()) as {
+      proposals: { status: string; title: string }[];
+    };
+    expect(listed.proposals).toMatchObject([
+      { status: "open", title: `Give Phone access to ${A}` },
+    ]);
+  });
+
+  it("with two devices, one approval admits a third at once", async () => {
     const t = setup();
     const [laptop, phone, tablet] = await fleet(3);
     for (const key of [laptop!, phone!, tablet!]) await t.register(key);
@@ -249,10 +281,30 @@ describe("proposals", () => {
       core: [laptop!, phone!, tablet!],
       access: { [A]: [laptop!, phone!] },
     });
+    expect(
+      await reply(t.open(text, await t.approval(phone!, text))),
+    ).toMatchObject({ status: "applied" });
+    expect(t.mail).toEqual([]);
+  });
+
+  it("with three devices, keeps a fourth waiting until a second device approves", async () => {
+    const t = setup();
+    const [laptop, phone, spare, tablet] = await fleet(5).then((keys) => [
+      keys[0],
+      keys[1],
+      keys[4],
+      keys[2],
+    ]);
+    for (const key of [laptop!, phone!, spare!, tablet!]) await t.register(key);
+    await t.report(A, [laptop!, phone!, spare!], [laptop!, phone!]);
+    const text = t.change({
+      core: [laptop!, phone!, spare!, tablet!],
+      access: { [A]: [laptop!, phone!] },
+    });
     const opened = await reply(t.open(text, await t.approval(laptop!, text)));
     expect(opened).toMatchObject({
       status: "open",
-      missing: "needs 1 more core device",
+      missing: "needs 1 more approval",
     });
     expect(t.trustActions()).toHaveLength(0);
     const again = await t.call(
@@ -324,58 +376,21 @@ describe("proposals", () => {
     expect((await reply(oldReply)).code).toBe("NEEDS_AGENT");
   });
 
-  it("asks for the passphrase when a device cannot prove a fingerprint", async () => {
-    const t = setup();
-    const [laptop, phone] = await fleet(2);
-    await t.register(laptop!, false);
-    await t.register(phone!);
-    const passphrase = await testPassphrase();
-    t.sqlite
-      .prepare(
-        "INSERT INTO passphrase (owner_user_id, salt, iterations, public_key, set_at) VALUES ('standalone', ?, ?, ?, ?)",
-      )
-      .run(
-        passphrase.key.salt,
-        passphrase.key.iterations,
-        passphrase.key.publicKey,
-        new Date().toISOString(),
-      );
-    await t.report(A, [laptop!, phone!], [laptop!], 1, true);
-    const text = t.change({ access: { [A]: [laptop!, phone!] } });
-    const bare = await t.open(
-      text,
-      await t.approval(laptop!, text, { verified: false }),
-    );
-    expect(bare.status).toBe(400);
-    expect((await reply(bare)).code).toBe("PASSPHRASE_NEEDED");
-    const proven = await t.open(
-      text,
-      await t.approval(laptop!, text, {
-        verified: false,
-        proof: await passphrase.proof(
-          `approve:${laptop!.id}`,
-          fromB64url(text),
-        ),
-      }),
-    );
-    expect(await reply(proven)).toMatchObject({ status: "applied" });
-  });
-
   it("lists, cancels, expires and supersedes proposals", async () => {
     const t = setup();
-    const [laptop, phone, tablet, helper] = await fleet(4);
-    for (const key of [laptop!, phone!, tablet!, helper!])
+    const [laptop, phone, tablet, helper, spare] = await fleet(5);
+    for (const key of [laptop!, phone!, tablet!, helper!, spare!])
       await t.register(key);
-    await t.report(A, [laptop!, phone!], [laptop!, phone!]);
+    await t.report(A, [laptop!, phone!, spare!], [laptop!, phone!]);
     const admitTablet = t.change({
-      core: [laptop!, phone!, tablet!],
+      core: [laptop!, phone!, spare!, tablet!],
       access: { [A]: [laptop!, phone!] },
     });
     const first = await reply(
       t.open(admitTablet, await t.approval(laptop!, admitTablet)),
     );
     const admitHelper = t.change({
-      core: [laptop!, phone!, helper!],
+      core: [laptop!, phone!, spare!, helper!],
       access: { [A]: [laptop!, phone!] },
     });
     const second = await reply(
@@ -387,7 +402,7 @@ describe("proposals", () => {
       "open",
     ]);
     expect(listed.proposals![0]!.approvals).toEqual([laptop!.id]);
-    expect(listed.proposals![0]!.missing).toBe("needs 1 more core device");
+    expect(listed.proposals![0]!.missing).toBe("needs 1 more approval");
 
     expect(
       (await t.call("POST", `/api/proposals/${second.id}/cancel`)).status,
@@ -398,8 +413,8 @@ describe("proposals", () => {
     });
     const extra = t.change({
       version: 3,
+      core: [laptop!, phone!, spare!, helper!],
       access: { [A]: [laptop!, phone!] },
-      passphrase: (await testPassphrase()).key,
     });
     const late = await reply(t.open(extra, await t.approval(laptop!, extra)));
     t.sqlite
@@ -438,57 +453,6 @@ describe("proposals", () => {
       phone!.id,
     ]);
   });
-
-  it("stores the passphrase once a change setting it applies", async () => {
-    const t = setup();
-    const [laptop, phone] = await fleet(2);
-    await t.register(laptop!);
-    await t.register(phone!);
-    await t.report(A, [laptop!, phone!], [laptop!, phone!]);
-    const passphrase = await testPassphrase();
-    const text = t.change({
-      access: { [A]: [laptop!, phone!] },
-      passphrase: passphrase.key,
-    });
-    const opened = await reply(t.open(text, await t.approval(laptop!, text)));
-    expect(opened.status).toBe("open");
-    await t.call("POST", `/api/proposals/${opened.id}/approvals`, {
-      approval: await t.approval(phone!, text),
-    });
-    const devices = await reply(t.call("GET", "/api/devices"));
-    expect(devices.passphrase).toEqual(passphrase.key);
-    expect(devices.devices!.every((device) => device.core)).toBe(true);
-  });
-
-  it("counts the passphrase as new on a server that missed it", async () => {
-    const t = setup();
-    const [laptop, phone] = await fleet(2);
-    await t.register(laptop!);
-    await t.register(phone!);
-    const passphrase = await testPassphrase();
-    t.sqlite
-      .prepare(
-        "INSERT INTO passphrase (owner_user_id, salt, iterations, public_key, set_at) SELECT owner_user_id, ?, ?, ?, '2026-09-30T00:00:00.000Z' FROM devices LIMIT 1",
-      )
-      .run(
-        passphrase.key.salt,
-        passphrase.key.iterations,
-        passphrase.key.publicKey,
-      );
-    await t.report(A, [laptop!, phone!], [laptop!], 3, true);
-    await t.report(B, [laptop!, phone!], [laptop!], 2, false);
-    const text = t.change({
-      version: 4,
-      core: [laptop!, phone!],
-      access: { [A]: [laptop!], [B]: [laptop!] },
-      passphrase: passphrase.key,
-    });
-    const opened = await reply(t.open(text, await t.approval(laptop!, text)));
-    expect(opened).toMatchObject({
-      status: "open",
-      missing: "needs 1 more core device",
-    });
-  });
 });
 
 describe("first trust", () => {
@@ -498,6 +462,7 @@ describe("first trust", () => {
     await t.register(laptop!);
     const text = t.change({
       version: 1,
+      requireUv: true,
       core: [laptop!],
       access: { [A]: [laptop!] },
     });
@@ -515,6 +480,7 @@ describe("first trust", () => {
     await t.report(A, [laptop!, phone!], [laptop!, phone!]);
     const good = t.change({
       version: 1,
+      requireUv: true,
       core: [laptop!, phone!],
       access: { [C]: [] },
     });
@@ -523,6 +489,7 @@ describe("first trust", () => {
     ).toBe(202);
     const withAccess = t.change({
       version: 1,
+      requireUv: true,
       core: [laptop!, phone!],
       access: { [B]: [laptop!] },
     });
@@ -531,6 +498,7 @@ describe("first trust", () => {
     ).toBe(400);
     const extraKey = t.change({
       version: 1,
+      requireUv: true,
       core: [laptop!, phone!, tablet!],
       access: { [B]: [] },
     });
@@ -539,6 +507,7 @@ describe("first trust", () => {
     ).toBe(400);
     const trusted = t.change({
       version: 1,
+      requireUv: true,
       core: [laptop!, phone!],
       access: { [A]: [] },
     });
@@ -551,7 +520,7 @@ describe("devices", () => {
   it("lists devices with their fingerprint, role and verification", async () => {
     const t = setup();
     const [laptop, phone] = await fleet(2);
-    await t.register(laptop!, false);
+    t.touchOnly(laptop!);
     await t.register(phone!);
     await t.report(A, [laptop!], [laptop!]);
     const body = await reply(t.call("GET", "/api/devices"));
@@ -564,7 +533,6 @@ describe("devices", () => {
       }),
       expect.objectContaining({ id: phone!.id, core: false, verifies: true }),
     ]);
-    expect(body.passphrase).toBeNull();
   });
 
   it("forgets a device that never joined the core, never a core device", async () => {
@@ -581,6 +549,24 @@ describe("devices", () => {
     );
     const body = await reply(t.call("GET", "/api/devices"));
     expect(body.devices!.map((device) => device.id)).toEqual([laptop!.id]);
+  });
+
+  it("refuses the same passkey twice, even under another id", async () => {
+    const t = setup();
+    const [phone] = await fleet(1);
+    expect((await t.register(phone!)).status).toBe(201);
+    const again = await t.call("POST", "/api/devices", {
+      id: "c2FtZS1waG9uZQ",
+      name: "Phone again",
+      alg: phone!.alg,
+      publicKey: phone!.publicKey,
+      verifies: true,
+    });
+    expect(again.status).toBe(409);
+    expect(await reply(again)).toMatchObject({
+      code: "DEVICE_EXISTS",
+      message: `This passkey is already registered as ${phone!.name}.`,
+    });
   });
 
   it("renames a device", async () => {
@@ -602,6 +588,62 @@ describe("devices", () => {
   });
 });
 
+describe("fingerprint, always", () => {
+  async function unruled() {
+    const t = setup();
+    const [laptop, phone] = await fleet(2);
+    await t.register(laptop!);
+    await t.register(phone!);
+    for (const id of [A, B, C]) {
+      await t.report(id, [laptop!, phone!], [laptop!, phone!]);
+    }
+    return { t, laptop: laptop!, phone: phone! };
+  }
+
+  it("refuses a touch approval even where no server asked for fingerprints", async () => {
+    const { t, laptop, phone } = await unruled();
+    const text = t.change({ access: { [A]: [laptop], [B]: [laptop, phone] } });
+    const response = await t.open(
+      text,
+      await t.approval(phone, text, { verified: false }),
+    );
+    expect(response.status).toBe(400);
+    expect((await reply(response)).code).toBe("FINGERPRINT_NEEDED");
+  });
+
+  it("refuses a change that carries a passphrase", async () => {
+    const { t, laptop, phone } = await unruled();
+    const text = t.change({
+      access: {
+        [A]: [laptop, phone],
+        [B]: [laptop, phone],
+        [C]: [laptop, phone],
+      },
+      passphrase: (await testPassphrase()).key,
+    });
+    const response = await t.open(text, await t.approval(phone, text));
+    expect(response.status).toBe(400);
+    expect((await reply(response)).code).toBe("NO_PASSPHRASE");
+  });
+
+  it("refuses to register a passkey that only takes a touch", async () => {
+    const { t } = await unruled();
+    const [, , tablet] = await fleet(3);
+    const response = await t.register(tablet!, false);
+    expect(response.status).toBe(422);
+    expect((await reply(response)).code).toBe("CANNOT_VERIFY");
+  });
+
+  it("lists devices without a passphrase", async () => {
+    const { t } = await unruled();
+    const body = (await (await t.call("GET", "/api/devices")).json()) as Record<
+      string,
+      unknown
+    >;
+    expect("passphrase" in body).toBe(false);
+  });
+});
+
 describe("fingerprint rule", () => {
   const everywhere = (keys: TestPasskey[]) => ({
     [A]: keys,
@@ -609,10 +651,10 @@ describe("fingerprint rule", () => {
     [C]: keys,
   });
 
-  async function touchAndPhone(agent = "0.3.1", requireUv = false) {
+  async function touchAndPhone(agent = "0.3.5", requireUv = false) {
     const t = setup(agent);
     const [laptop, phone] = await fleet(2);
-    await t.register(laptop!, false);
+    t.touchOnly(laptop!);
     await t.register(phone!);
     for (const id of [A, B, C]) {
       await t.report(
@@ -627,89 +669,8 @@ describe("fingerprint rule", () => {
     return { t, laptop: laptop!, phone: phone! };
   }
 
-  it("turns on when the touch-only device leaves and the phone approves with a fingerprint", async () => {
-    const { t, laptop, phone } = await touchAndPhone();
-    const passphrase = await testPassphrase();
-    t.sqlite
-      .prepare(
-        "INSERT INTO passphrase (owner_user_id, salt, iterations, public_key, set_at) VALUES ('standalone', ?, ?, ?, ?)",
-      )
-      .run(
-        passphrase.key.salt,
-        passphrase.key.iterations,
-        passphrase.key.publicKey,
-        new Date().toISOString(),
-      );
-    const text = t.change({
-      core: [phone],
-      requireUv: true,
-      access: everywhere([phone]),
-    });
-    const opened = await reply(
-      t.open(
-        text,
-        await t.approval(laptop, text, {
-          verified: false,
-          proof: await passphrase.proof(
-            `approve:${laptop.id}`,
-            fromB64url(text),
-          ),
-        }),
-      ),
-    );
-    expect(opened).toMatchObject({
-      status: "open",
-      missing: "needs 1 more core device",
-    });
-    const applied = await reply(
-      t.call("POST", `/api/proposals/${opened.id}/approvals`, {
-        approval: await t.approval(phone, text),
-      }),
-    );
-    expect(applied.status).toBe("applied");
-    expect(t.trustActions()).toHaveLength(3);
-    expect((await reply(t.call("GET", "/api/devices"))).passphrase).toBeNull();
-  });
-
-  it("keeps waiting while a device that stays only touched", async () => {
-    const { t, laptop, phone } = await touchAndPhone();
-    const [tablet] = (await fleet(3)).slice(2);
-    await t.register(tablet!);
-    for (const id of [A, B, C]) {
-      await t.report(id, [laptop, phone, tablet!], [laptop, phone, tablet!]);
-    }
-    const text = t.change({
-      core: [phone, tablet!],
-      requireUv: true,
-      access: everywhere([phone, tablet!]),
-    });
-    const opened = await reply(
-      t.open(text, await t.approval(laptop, text, { verified: false })),
-    );
-    const after = await reply(
-      t.call("POST", `/api/proposals/${opened.id}/approvals`, {
-        approval: await t.approval(phone, text),
-      }),
-    );
-    expect(after).toMatchObject({
-      status: "open",
-      missing: "every core device that stays must approve with a fingerprint",
-    });
-  });
-
-  it("refuses to keep a device known to only touch", async () => {
-    const { t, laptop, phone } = await touchAndPhone();
-    const text = t.change({
-      requireUv: true,
-      access: everywhere([laptop, phone]),
-    });
-    const response = await t.open(text, await t.approval(phone, text));
-    expect(response.status).toBe(422);
-    expect((await reply(response)).code).toBe("CANNOT_VERIFY");
-  });
-
-  it("needs agent 0.3.1 on every server", async () => {
-    const { t, phone } = await touchAndPhone("0.3.0");
+  it("needs agent 0.3.5 on every server to change the devices or the rule", async () => {
+    const { t, phone } = await touchAndPhone("0.3.4");
     const text = t.change({
       core: [phone],
       requireUv: true,
@@ -717,22 +678,23 @@ describe("fingerprint rule", () => {
     });
     const response = await t.open(text, await t.approval(phone, text));
     expect(response.status).toBe(422);
-    expect(await reply(response)).toMatchObject({ code: "NEEDS_AGENT" });
+    expect(await reply(response)).toMatchObject({
+      code: "NEEDS_AGENT",
+      message: expect.stringContaining("0.3.5"),
+    });
   });
 
-  it("refuses a touch, even with the passphrase, once a server requires fingerprints", async () => {
-    const { t, laptop, phone } = await touchAndPhone("0.3.1", true);
-    const text = t.change({ access: { [A]: [laptop, phone] } });
-    const response = await t.open(
-      text,
-      await t.approval(laptop, text, { verified: false }),
-    );
-    expect(response.status).toBe(400);
-    expect((await reply(response)).code).toBe("FINGERPRINT_NEEDED");
+  it("changes which servers a device reaches on older agents too", async () => {
+    const { t, laptop, phone } = await touchAndPhone("0.3.4");
+    const text = t.change({
+      access: { [A]: [phone], [B]: [laptop, phone], [C]: [laptop, phone] },
+    });
+    const response = await t.open(text, await t.approval(phone, text));
+    expect(response.status).toBe(201);
   });
 
   it("refuses a passphrase once fingerprints are required", async () => {
-    const { t, phone, laptop } = await touchAndPhone("0.3.1", true);
+    const { t, phone, laptop } = await touchAndPhone("0.3.5", true);
     const passphrase = await testPassphrase();
     const text = t.change({
       access: everywhere([laptop, phone]),
@@ -744,7 +706,7 @@ describe("fingerprint rule", () => {
   });
 
   it("refuses to admit or register a device without a fingerprint once required", async () => {
-    const { t, phone } = await touchAndPhone("0.3.1", true);
+    const { t, phone } = await touchAndPhone("0.3.5", true);
     for (const id of [A, B, C])
       await t.report(id, [phone], [phone], 1, false, true);
     const [, , tablet, helper] = await fleet(4);
@@ -771,7 +733,7 @@ describe("fingerprint rule", () => {
   });
 
   it("gives a new server the rule with its first trust", async () => {
-    const { t, phone } = await touchAndPhone("0.3.1", true);
+    const { t, phone } = await touchAndPhone("0.3.5", true);
     for (const id of [A, B])
       await t.report(id, [phone], [phone], 1, false, true);
     t.sqlite

@@ -1,5 +1,5 @@
 import type { Env } from "../env";
-import { verifyAssertion, verifyProof } from "../lib/webauthn";
+import { verifyAssertion } from "../lib/webauthn";
 import type { Fleet } from "./fleet";
 
 interface Approval {
@@ -30,13 +30,12 @@ export async function verifyApproval(
   fleet: Fleet,
   bytes: Uint8Array<ArrayBuffer>,
   approval: Approval,
-  purpose: string,
 ) {
   const device = fleet.devices.find(
     (entry) => entry.id === approval.credentialId && entry.removedAt === null,
   );
   if (!device || !fleet.core.includes(device.id)) {
-    throw new Refusal(403, "NOT_CORE", "Use the passkey of a core device.");
+    throw new Refusal(403, "NOT_CORE", "Use the passkey of a trusted device.");
   }
   const origin = new URL(env.PUBLIC_ORIGIN);
   let uv: boolean;
@@ -53,30 +52,11 @@ export async function verifyApproval(
       `The approval did not verify: ${(error as Error).message}.`,
     );
   }
-  if (uv) return;
-  if (fleet.requireUv) {
+  if (!uv) {
     throw new Refusal(
       400,
       "FINGERPRINT_NEEDED",
-      "This passkey did not confirm a fingerprint. Use your phone or a security key.",
+      "This passkey did not verify a fingerprint. Use the fingerprint, or choose Use a phone in the passkey window.",
     );
-  }
-  if (!fleet.passphrase) return;
-  if (!approval.proof) {
-    throw new Refusal(
-      400,
-      "PASSPHRASE_NEEDED",
-      "This device cannot prove a fingerprint. Enter the passphrase.",
-    );
-  }
-  if (
-    !(await verifyProof(
-      fleet.passphrase.publicKey,
-      purpose,
-      bytes,
-      approval.proof,
-    ))
-  ) {
-    throw new Refusal(400, "PASSPHRASE_WRONG", "The passphrase is wrong.");
   }
 }

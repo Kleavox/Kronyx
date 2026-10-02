@@ -6,16 +6,14 @@ const signIntent = vi.fn();
 vi.mock("./deploy-session", () => ({ openSession }));
 vi.mock("./passkeys", () => ({ signIntent }));
 
-const { guardedFetch } = await import("./proof");
+const { failure, guardedFetch } = await import("./proof");
 
 const NEEDED = {
   code: "PROOF_NEEDED",
-  message: "Confirm with the passkey of a core device.",
+  message: "Confirm with the passkey of a trusted device.",
   op: "node.delete",
   target: "n1",
   core: ["phone"],
-  requireUv: true,
-  passphrase: null,
 };
 
 function replies(...answers: [number, unknown][]) {
@@ -45,7 +43,7 @@ describe("guardedFetch", () => {
     openSession.mockResolvedValue({ grant: {} });
     signIntent.mockResolvedValue("signed-intent");
     await guardedFetch("/api/nodes/n1", { method: "DELETE" });
-    expect(openSession).toHaveBeenCalledWith(["phone"], "fingerprint");
+    expect(openSession).toHaveBeenCalledWith(["phone"]);
     expect(signIntent).toHaveBeenCalledWith(
       { grant: {} },
       "node.delete",
@@ -75,5 +73,19 @@ describe("guardedFetch", () => {
     await expect(
       guardedFetch("/api/nodes/n1", { method: "DELETE" }),
     ).rejects.toThrow(/No fingerprint was confirmed/u);
+  });
+});
+
+describe("failure", () => {
+  it("says a passkey this browser already holds is registered", () => {
+    expect(
+      failure(new DOMException("previously registered", "InvalidStateError")),
+    ).toBe("This device is already registered.");
+  });
+
+  it("points a cancelled or failed fingerprint to another way", () => {
+    expect(failure(new DOMException("cancelled", "NotAllowedError"))).toMatch(
+      /^No fingerprint was confirmed/u,
+    );
   });
 });

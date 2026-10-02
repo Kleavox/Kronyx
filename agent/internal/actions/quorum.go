@@ -6,27 +6,26 @@ import (
 	"slices"
 )
 
-type quorumApproval struct {
-	ID       string `json:"id"`
-	Verified bool   `json:"verified"`
-	UV       bool   `json:"uv"`
-}
-
 type quorumInput struct {
 	Current struct {
 		Core   []string `json:"core"`
 		Access []string `json:"access"`
 	} `json:"current"`
 	Change struct {
-		Core              []string `json:"core"`
-		PassphraseChanged bool     `json:"passphraseChanged"`
-		RequireUV         bool     `json:"requireUv"`
-		Access            []string `json:"access"`
+		Core   []string `json:"core"`
+		Access []string `json:"access"`
 	} `json:"change"`
-	Approvals []quorumApproval `json:"approvals"`
+	Approvals []string `json:"approvals"`
 }
 
-var errWithAccess = errors.New("needs approval from another device with access here")
+var errWithAccess = errors.New("needs approval from another device that reaches this server")
+
+func quorum(devices int) int {
+	if devices > 2 {
+		return 2
+	}
+	return 1
+}
 
 func sameSet(a, b []string) bool {
 	if len(a) != len(b) {
@@ -42,9 +41,9 @@ func sameSet(a, b []string) bool {
 
 func evaluateQuorum(in quorumInput) error {
 	var approvers []string
-	for _, approval := range in.Approvals {
-		if !slices.Contains(approvers, approval.ID) {
-			approvers = append(approvers, approval.ID)
+	for _, id := range in.Approvals {
+		if !slices.Contains(approvers, id) {
+			approvers = append(approvers, id)
 		}
 	}
 	if len(approvers) == 0 {
@@ -52,12 +51,7 @@ func evaluateQuorum(in quorumInput) error {
 	}
 	for _, id := range approvers {
 		if !slices.Contains(in.Current.Core, id) {
-			return errors.New("an approval comes from outside the core")
-		}
-	}
-	for _, approval := range in.Approvals {
-		if !approval.Verified {
-			return errors.New("an approval is not verified")
+			return errors.New("an approval comes from a device the servers do not trust")
 		}
 	}
 	core := in.Change.Core
@@ -66,27 +60,17 @@ func evaluateQuorum(in quorumInput) error {
 	}
 	for _, id := range in.Change.Access {
 		if !slices.Contains(core, id) {
-			return errors.New("access names a device outside the core")
+			return errors.New("access names a device the servers do not trust")
 		}
 	}
 	coreChanged := in.Change.Core != nil && !sameSet(in.Change.Core, in.Current.Core)
-	if coreChanged || in.Change.PassphraseChanged || in.Change.RequireUV {
-		need := min(2, len(in.Current.Core))
-		if len(approvers) < need {
-			missing := need - len(approvers)
-			plural := "s"
-			if missing == 1 {
-				plural = ""
-			}
-			return fmt.Errorf("needs %d more core device%s", missing, plural)
+	if need := quorum(len(in.Current.Core)); coreChanged && len(approvers) < need {
+		missing := need - len(approvers)
+		plural := "s"
+		if missing == 1 {
+			plural = ""
 		}
-	}
-	if in.Change.RequireUV {
-		for _, id := range core {
-			if !slices.ContainsFunc(in.Approvals, func(approval quorumApproval) bool { return approval.ID == id && approval.UV }) {
-				return errors.New("every core device that stays must approve with a fingerprint")
-			}
-		}
+		return fmt.Errorf("needs %d more approval%s", missing, plural)
 	}
 	for _, id := range in.Change.Access {
 		if slices.Contains(in.Current.Access, id) {
@@ -96,9 +80,16 @@ func evaluateQuorum(in quorumInput) error {
 		if slices.ContainsFunc(others, func(approver string) bool { return slices.Contains(in.Current.Access, approver) }) {
 			continue
 		}
-		rest := slices.DeleteFunc(slices.Clone(in.Current.Core), func(member string) bool { return member == id })
-		if len(others) < min(2, len(rest)) {
+		if slices.ContainsFunc(in.Current.Access, func(member string) bool { return member != id }) {
 			return errWithAccess
+		}
+		rest := slices.DeleteFunc(slices.Clone(in.Current.Core), func(member string) bool { return member == id })
+		need := max(1, min(quorum(len(in.Current.Core)), len(rest)))
+		if len(others) < need {
+			if need == 1 {
+				return errors.New("needs approval from another trusted device")
+			}
+			return errors.New("needs approval from two other trusted devices")
 		}
 	}
 	for _, id := range in.Current.Access {

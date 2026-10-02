@@ -14,69 +14,13 @@ func requireUvCase(core []TrustKey, access []string) *changeCase {
 	return c
 }
 
-func TestTurningOnFingerprintsRemovesTouchOnlyDevicesAndDropsThePassphrase(t *testing.T) {
+func TestWithTwoDevicesOneFingerprintTurnsFingerprintsOn(t *testing.T) {
 	found := devices(t, "a", "b")
-	pass, private := passphraseKey(t)
 	current := storeOf(found, []string{"a", "b"}, []string{"a", "b"})
-	current.Passphrase = &pass
-	c := requireUvCase(keysOf(found, "b"), []string{"b"}).by(found, "a", "b")
-	c.approvals[0].flags = flagPresent
-	c.approvals[0].passphrase = private
-	next, err := apply(t, current, c)
-	if err != nil {
-		t.Fatal(err)
+	next, err := apply(t, current, requireUvCase(nil, []string{"a", "b"}).by(found, "b"))
+	if err != nil || !next.RequireUV || len(next.Core) != 2 {
+		t.Fatalf("next %+v err %v", next, err)
 	}
-	if !next.RequireUV || next.Passphrase != nil || len(next.Core) != 1 || next.Core[0].ID != "b" {
-		t.Fatalf("next %+v", next)
-	}
-	if report := next.Report(); !report.RequireUV || report.Passphrase {
-		t.Fatalf("report %+v", report)
-	}
-}
-
-func TestTurningOnFingerprintsWhileATouchOnlyDeviceStaysIsRefused(t *testing.T) {
-	found := devices(t, "a", "b")
-	current := storeOf(found, []string{"a", "b"}, []string{"a", "b"})
-	c := requireUvCase(nil, []string{"a", "b"}).by(found, "a", "b")
-	c.approvals[0].flags = flagPresent
-	_, err := apply(t, current, c)
-	refused(t, err, "must approve with a fingerprint")
-}
-
-func TestTurningOnFingerprintsNeedsTwoCoreDevices(t *testing.T) {
-	found := devices(t, "a", "b")
-	current := storeOf(found, []string{"a", "b"}, []string{"a", "b"})
-	_, err := apply(t, current, requireUvCase(nil, []string{"a", "b"}).by(found, "b"))
-	refused(t, err, "needs 1 more core device")
-}
-
-func TestOnceFingerprintsAreRequiredATouchIsRefusedEvenWithThePassphrase(t *testing.T) {
-	found := devices(t, "a", "b")
-	pass, private := passphraseKey(t)
-	current := storeOf(found, []string{"a", "b"}, []string{"a", "b"})
-	current.Passphrase = &pass
-	current.RequireUV = true
-	c := newChange(2, nil, map[string][]string{testNode: {"a"}}).by(found, "a")
-	c.approvals[0].flags = flagPresent
-	c.approvals[0].passphrase = private
-	_, err := apply(t, current, c)
-	refused(t, err, "did not verify a fingerprint")
-}
-
-func TestOnceFingerprintsAreRequiredAPassphraseIsRefused(t *testing.T) {
-	found := devices(t, "a", "b")
-	pass, _ := passphraseKey(t)
-	current := storeOf(found, []string{"a", "b"}, []string{"a", "b"})
-	current.RequireUV = true
-	c := newChange(2, nil, map[string][]string{testNode: {"a", "b"}}).by(found, "a", "b")
-	c.body["passphrase"] = pass
-	_, err := apply(t, current, c)
-	refused(t, err, "no passphrase")
-
-	c = requireUvCase(nil, []string{"a", "b"}).by(found, "a", "b")
-	c.body["passphrase"] = pass
-	_, err = apply(t, storeOf(found, []string{"a", "b"}, []string{"a", "b"}), c)
-	refused(t, err, "no passphrase")
 }
 
 func TestTheFingerprintRuleCannotBeTurnedOff(t *testing.T) {
@@ -150,28 +94,28 @@ func loadBrowserUVFixture(t *testing.T) browserUVFixture {
 	return fixture
 }
 
-func TestTheBrowsersFingerprintRuleAppliesAndItsDeployVerifies(t *testing.T) {
+func TestTheBrowsersTouchApprovalIsRefusedAndItsFingerprintDeployVerifies(t *testing.T) {
 	fixture := loadBrowserUVFixture(t)
-	trust := Trust{}
-	for _, request := range []Request{fixture.First, fixture.Admit} {
-		next, err := ApplyTrustChange(trust, request, issuedAt(t, request))
-		if err != nil {
-			t.Fatal(err)
-		}
-		trust = next
-	}
-	strict := trust
-	strict.RequireUV = true
-	_, err := ApplyTrustChange(strict, fixture.Enable, issuedAt(t, fixture.Enable))
-	refused(t, err, "did not verify a fingerprint")
-
-	ruled, err := ApplyTrustChange(trust, fixture.Enable, issuedAt(t, fixture.Enable))
+	trust, err := ApplyTrustChange(Trust{}, fixture.First, issuedAt(t, fixture.First))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ruled.RequireUV || len(ruled.Core) != 1 || len(ruled.Access) != 1 || ruled.NodeID != fixture.NodeID {
-		t.Fatalf("ruled %+v", ruled)
+	_, err = ApplyTrustChange(trust, fixture.Admit, issuedAt(t, fixture.Admit))
+	refused(t, err, "did not verify a fingerprint")
+
+	var signed signedTrust
+	if err := json.Unmarshal(fixture.Enable.Signed, &signed); err != nil {
+		t.Fatal(err)
 	}
+	raw, err := b64.DecodeString(signed.Change)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var change trustChange
+	if err := json.Unmarshal(raw, &change); err != nil {
+		t.Fatal(err)
+	}
+	ruled := Trust{V: 2, NodeID: fixture.NodeID, Origin: change.Origin, RPID: change.RPID, Version: change.Version, Core: change.Core, Access: change.Access[fixture.NodeID], RequireUV: true}
 	now, err := time.Parse(time.RFC3339Nano, fixture.Now)
 	if err != nil {
 		t.Fatal(err)

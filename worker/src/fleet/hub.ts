@@ -14,14 +14,13 @@ import {
 import { windowStart } from "../agent/windows";
 import type { Env } from "../env";
 import {
-  drain as drainMail,
-  emptyBox,
-  enqueue,
-  nextAlarm,
+  loadBox,
+  receive,
   type IncidentNotice,
   type MailBox,
+  type ServerChanges,
 } from "../incident/notify";
-import { sendDigestEmail, sendServerEmail } from "../lib/mail";
+import { sendServerEmail } from "../lib/mail";
 import { actionsSchema, heartbeatSchema } from "../schemas";
 import { agentConfigResponseSchema } from "@krynodes/protocol";
 import {
@@ -44,6 +43,19 @@ type Reply = (message: Record<string, unknown>) => void;
 
 const WATCH = "watch";
 const MAIL = "mail";
+const ROSTER = "roster";
+const RECHECK_MS = 60_000;
+
+interface RosterEntry {
+  interval: number;
+  lastSeen?: number;
+  offline?: boolean;
+  checkedAt?: number;
+}
+
+type Roster = Record<string, RosterEntry>;
+
+const offlineAfterMs = (interval: number) => Math.max(90, 3 * interval) * 1000;
 
 const watching = (ws: WebSocket) =>
   (ws.deserializeAttachment() as { watch?: boolean } | null)?.watch === true;
@@ -129,6 +141,10 @@ export class FleetHub {
     }
     this.ctx.acceptWebSocket(ws, [nodeId]);
     ws.serializeAttachment(newState(nodeId, ownerId, interval));
+    const roster = await this.roster();
+    roster[nodeId] = { interval, offline: roster[nodeId]?.offline };
+    await this.ctx.storage.put(ROSTER, roster);
+    await this.schedule(Date.now());
   }
 
   async watch(ws: WebSocket): Promise<void> {
@@ -243,42 +259,117 @@ export class FleetHub {
     this.announce(["nodes"]);
   }
 
-  private async queueMail(notices: IncidentNotice[], now: number) {
-    const box = enqueue(
-      (await this.ctx.storage.get<MailBox>(MAIL)) ?? emptyBox(),
-      notices,
-      now,
-    );
+  private async box() {
+    return loadBox(await this.ctx.storage.get<MailBox>(MAIL));
+  }
+
+  private async roster() {
+    return (await this.ctx.storage.get<Roster>(ROSTER)) ?? {};
+  }
+
+  private pulse(nodeId: string, entry: RosterEntry) {
+    const socket = this.ctx.getWebSockets(nodeId)[0];
+    const state = socket?.deserializeAttachment() as StreamState | undefined;
+    return state
+      ? {
+          seen: state.lastSeen ?? state.connectedAt,
+          limit: offlineAfterMs(state.interval),
+        }
+      : { seen: entry.lastSeen, limit: offlineAfterMs(entry.interval) };
+  }
+
+  private async schedule(now: number) {
+    const times: number[] = [];
+    for (const [nodeId, entry] of Object.entries(await this.roster())) {
+      if (entry.offline) continue;
+      const { seen, limit } = this.pulse(nodeId, entry);
+      times.push(
+        Math.max((seen ?? now) + limit, (entry.checkedAt ?? 0) + RECHECK_MS),
+      );
+    }
+    if (times.length === 0) await this.ctx.storage.deleteAlarm();
+    else
+      await this.ctx.storage.setAlarm(
+        Math.max(Math.min(...times), now + 1_000),
+      );
+  }
+
+  private async notify(notices: IncidentNotice[], now: number) {
+    const { box, send } = receive(await this.box(), notices, now);
     await this.ctx.storage.put(MAIL, box);
-    await this.ctx.storage.setAlarm(nextAlarm(box) ?? now);
+    return send;
+  }
+
+  private async watchdog(now: number): Promise<IncidentNotice[]> {
+    const db = this.env.DB;
+    const roster = await this.roster();
+    const notices: IncidentNotice[] = [];
+    let changed = false;
+    for (const [nodeId, entry] of Object.entries(roster)) {
+      if (entry.offline) continue;
+      const { seen, limit } = this.pulse(nodeId, entry);
+      if (seen === undefined) {
+        entry.lastSeen = now;
+        changed = true;
+        continue;
+      }
+      if (now - seen <= limit || now - (entry.checkedAt ?? 0) < RECHECK_MS) {
+        continue;
+      }
+      changed = true;
+      const known = await db
+        .prepare(
+          "SELECT id FROM nodes WHERE id = ? AND enrolled_at IS NOT NULL AND disabled_at IS NULL",
+        )
+        .bind(nodeId)
+        .first();
+      if (!known) {
+        delete roster[nodeId];
+      } else if (await inMaintenance(db, nodeId, now, now)) {
+        entry.checkedAt = now;
+      } else {
+        entry.offline = true;
+        delete entry.checkedAt;
+        for (const socket of this.ctx.getWebSockets(nodeId)) {
+          const state = socket.deserializeAttachment() as StreamState;
+          socket.serializeAttachment({ ...state, away: true });
+        }
+        notices.push({
+          nodeId,
+          checkId: null,
+          checkName: null,
+          kind: "opened",
+          summary: "Stopped reporting",
+          occurredAt: new Date(seen).toISOString(),
+        });
+      }
+    }
+    if (changed) await this.ctx.storage.put(ROSTER, roster);
+    return notices;
   }
 
   async alarm(): Promise<void> {
-    const { send, digest, box } = drainMail(
-      (await this.ctx.storage.get<MailBox>(MAIL)) ?? emptyBox(),
-      Date.now(),
-    );
-    await this.ctx.storage.put(MAIL, box);
-    const next = nextAlarm(box);
-    if (next === null) await this.ctx.storage.deleteAlarm();
-    else await this.ctx.storage.setAlarm(next);
+    const now = Date.now();
+    const offline = await this.watchdog(now);
+    const send = offline.length > 0 ? await this.notify(offline, now) : [];
+    await this.schedule(now);
+    await this.mail(send);
+  }
+
+  private async mail(send: ServerChanges[]) {
+    if (send.length === 0) return;
     try {
-      if (send.length > 0) {
-        const ids = send.map((server) => server.nodeId);
-        const rows = await this.env.DB.prepare(
-          `SELECT id, name FROM nodes WHERE id IN (${ids.map(() => "?").join(", ")})`,
-        )
-          .bind(...ids)
-          .all<{ id: string; name: string }>();
-        const names = new Map(rows.results.map((row) => [row.id, row.name]));
-        for (const server of send) {
-          const nodeName = names.get(server.nodeId);
-          if (nodeName) {
-            await sendServerEmail(this.env, { nodeName, ...server });
-          }
-        }
+      const ids = send.map((server) => server.nodeId);
+      const rows = await this.env.DB.prepare(
+        `SELECT id, name FROM nodes WHERE id IN (${ids.map(() => "?").join(", ")})`,
+      )
+        .bind(...ids)
+        .all<{ id: string; name: string }>();
+      const names = new Map(rows.results.map((row) => [row.id, row.name]));
+      for (const server of send) {
+        const nodeName = names.get(server.nodeId);
+        if (nodeName) await sendServerEmail(this.env, { nodeName, ...server });
       }
-      if (digest) await sendDigestEmail(this.env, digest);
     } catch (error) {
       console.error("[kry mail]", error);
     }
@@ -329,10 +420,16 @@ export class FleetHub {
       leading.push(...heartbeatStatements(db, node, beat, now));
     }
     leading.push(...retried.statements);
+    if (current.lastSeen === null || current.away) {
+      await this.returned(node.id);
+    }
     const notices = await commit(this.env, node.id, leading, ingestion);
-    if (notices.length > 0) await this.queueMail(notices, now);
+    const mails = notices.length > 0 ? await this.notify(notices, now) : [];
     const actions = await heartbeatActions(db, node.id, now);
-    ws.serializeAttachment(folded.state);
+    ws.serializeAttachment({ ...folded.state, away: false });
+    if (current.lastSeen === null || notices.length > 0) {
+      await this.schedule(now);
+    }
     reply({
       type: "heartbeat",
       response: heartbeatResponse(
@@ -350,6 +447,15 @@ export class FleetHub {
       ...(actions.length > 0 ? ["actions"] : []),
     ];
     if (topics.length > 0) this.announce(topics);
+    await this.mail(mails);
+  }
+
+  private async returned(nodeId: string) {
+    const roster = await this.roster();
+    const entry = roster[nodeId];
+    if (!entry?.offline) return;
+    roster[nodeId] = { interval: entry.interval };
+    await this.ctx.storage.put(ROSTER, roster);
   }
 
   private flushStatement(nodeId: string, flush: Flush) {
@@ -372,6 +478,13 @@ export class FleetHub {
     if (drained.flushed) {
       statements.push(this.flushStatement(state.nodeId, drained.flushed));
     }
+    const roster = await this.roster();
+    roster[state.nodeId] = {
+      ...roster[state.nodeId],
+      interval: state.interval,
+      lastSeen: state.lastSeen ?? state.connectedAt,
+    };
+    await this.ctx.storage.put(ROSTER, roster);
     if (state.beat && state.lastSeen !== null) {
       statements.push(
         ...heartbeatStatements(

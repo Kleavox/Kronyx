@@ -94,7 +94,9 @@ and refuses to publish if it does not match `agent/internal/update/release.pub`.
 
 Checks run on the agent of the server they belong to: HTTP (down on errors,
 timeouts and 5xx answers), TCP (down when the connection fails) and systemd
-(up while the unit is active). A check's menu on the Checks page or the node
+(up while the unit is active). From agent 0.3.4 a failing check is tried twice
+more, 5 seconds apart, before the agent reports it down, and an incident opens
+only at the second such report in a row. A check's menu on the Checks page or the node
 page has **Edit** (name, server, kind, target, timeout), **Pause** / **Resume**,
 **Status page** and **Remove**, which asks first. Changing what is checked (kind,
 target or server) or pausing starts the status fresh and closes an open
@@ -102,18 +104,21 @@ incident; the history stays. A server with a live connection (below) runs the
 changed check within seconds; others at their next report.
 
 Removing a check, pausing it or changing its kind, target or server asks for
-a core device's fingerprint (see Deploy), like deleting a server or creating
+a trusted device's fingerprint (see Deploy), like deleting a server or creating
 an install command. One fingerprint covers 15 minutes of such work. An owner
 with no trusted device yet is not asked.
 
-Incident mail is grouped: the Worker waits 90 seconds and sends one mail per
-server ("pivox: 2 checks down — Health, API", "pivox: check back up — API"); a
-check that goes down and comes back inside the wait is left out. At most 6
-incident mails go out an hour; what comes after waits for one summary mail.
-While an action runs on a server and for 2 minutes after it (10 minutes after
-a restart, until the agent is back), failing checks there open no incident and
-their bars read "maintenance"; a check still failing afterwards opens one at
-its next failure. Actions and deploys never mail.
+Incident mail goes out the moment a failure is confirmed, one mail per server
+for that report ("pivox: 2 checks down — Health, API"). A server that stops
+reporting mails at once too ("pivox: offline"), at the moment the dashboard
+turns it Offline: no report for three intervals, at least 90 seconds. Each
+check and each server mails its first failure in an hour; later failures in
+that hour, recoveries and "back online" never mail. While an action runs on a
+server and for 2 minutes after it (10 minutes after a restart, until the agent
+is back), failing checks there open no incident, a silent server is not called
+offline, and the bars read "maintenance"; anything still down afterwards mails
+then. Actions and deploys never mail. Mail shows times in UTC; the dashboard
+and the status page use the browser's time zone.
 
 ### Live connection
 
@@ -241,35 +246,43 @@ on its own. One fingerprint opens a 15-minute session, like sudo: nothing on
 screen counts it down, a tab hidden for 2 minutes ends it, and **Lock actions**
 in the account menu ends it at once.
 
-From agent 0.3.0 one admin login can be shared safely by several people:
+From agent 0.3.0 one admin login can be shared safely by several people, and
+from agent 0.3.5 the rules are these:
 
-- **Core devices** are the passkeys every server knows. Only they approve
-  changes. **Access** is the core devices that may run actions on one server.
+- **Trusted devices** are the passkeys every server knows. Each one reaches
+  (may run actions on) only the servers it is given. A device someone
+  registers waits until it is approved, and you get an email.
 - The first device trusts itself on your servers (**Trust on servers**). The
-  second one, such as your phone, is approved by the first alone and gets
-  access to every server enrolled then.
-- From then on a new core device, removing one and **Require fingerprint**
-  need approvals from two core devices. A device registered by someone else
-  stays inert until then, and you get an email.
-- Giving a device access to a server needs one core device that already has
-  access there (never the device itself), or two other core devices. Servers
-  enrolled later start with the core and no access.
+  second one, such as your phone, is approved by the first and reaches every
+  server enrolled then.
+- With one or two trusted devices, one approval adds or removes a device.
+  With more than two, two approvals from two different devices.
+- A device's ⋯ **Servers** chooses the servers it reaches; a server's ⋯
+  **Devices** shows who reaches it, and **Remove every device** takes them all
+  away. A server is given to a device only by another device that already
+  reaches it, never by the device itself; when nobody else reaches it, by one
+  other trusted device (two when there are more than two). Servers enrolled
+  later start with the devices and nobody reaching them.
+- A passkey already registered, under any name, cannot be set up again.
+- Servers below agent 0.3.5 still take server changes, but adding or removing
+  devices waits until every server runs it.
 - Changes wait under **Waiting for approval** for up to 24 hours. Each approval
   signs the exact change; the dialog shows new devices' key fingerprints for
   you to compare with the new device's screen.
-- **Require fingerprint** (agent 0.3.1) makes every server accept only
-  passkeys that verify you: a fingerprint, a face or a security key. A passkey
-  that only takes a touch (such as Microsoft Password Manager) leaves the core
-  in the same change, and every device that stays approves it with a
-  fingerprint, so you cannot lock yourself out. It cannot be turned off from
-  the dashboard.
+- Every approval, session and confirmation needs a passkey that verifies you:
+  the fingerprint by default, a face on Windows Hello, a Mac or an iPhone, or a
+  security key such as a YubiKey. A touch alone ("a finger is there") is
+  refused by the browser, the Worker and every server (agent 0.3.5); a passkey
+  that only takes a touch (such as Microsoft Password Manager) cannot join, and
+  one trusted earlier reads **Cannot sign** until it is removed and set up
+  again. There is no passphrase and no setting to turn this off.
 - On a computer without a fingerprint reader, choose **Use a phone** in the
   passkey window: the phone's own passkey signs, so the phone is the trusted
   device. It joins as "Phone"; a security key joins as "Security key".
-- WebAuthn only reports that the person was verified, not how, so a security
-  key's PIN counts the same as a fingerprint.
+- WebAuthn only reports that the person was verified, not how, so a device or
+  security key PIN counts the same as a fingerprint. Keep those PINs private.
 - Keep two fingerprint devices or more: with one, losing it needs SSH to
-  recover.
+  recover. With two, the other removes a lost one alone.
 
 To start over on a server:
 
@@ -284,7 +297,9 @@ A second Worker, `stats` (`worker/wrangler.stats.jsonc`), serves a public page a
 on under **Status page** in a check's menu: name, optional public note, current
 state, 90 days of incident-based uptime, and recent incidents. It never shows a
 check's kind, target, server or error messages. The page is plain HTML, cached
-for 10 minutes and rate limited per IP. CI deploys it after the dashboard.
+for 10 minutes and rate limited per IP. One small inline script, allowed by its
+hash in the CSP, rewrites times into the visitor's time zone; without script
+they read UTC. CI deploys it after the dashboard.
 
 ## Why there is no ESLint
 

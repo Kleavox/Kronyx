@@ -1,25 +1,24 @@
-import type { PassphraseKey } from "../types";
 import { openSession } from "./deploy-session";
 import { ApiError, apiFetch, errorMessage } from "./http";
 import { signIntent } from "./passkeys";
-import { proverFor } from "./passphrase-prompt";
 
 const NO_FINGERPRINT_HERE =
   "No fingerprint was confirmed. If this device has none, choose Use a phone in the passkey window.";
 
-export function failure(error: unknown, ruled = false): string {
+export function failure(error: unknown): string {
+  if (error instanceof DOMException && error.name === "InvalidStateError") {
+    return "This device is already registered.";
+  }
   if (!(error instanceof DOMException && error.name === "NotAllowedError")) {
     return errorMessage(error);
   }
-  return ruled ? NO_FINGERPRINT_HERE : "The fingerprint was cancelled.";
+  return NO_FINGERPRINT_HERE;
 }
 
 interface Needed {
   op: string;
   target: string;
   core: string[];
-  requireUv: boolean;
-  passphrase: PassphraseKey | null;
 }
 
 export async function guardedFetch<T = unknown>(
@@ -35,10 +34,7 @@ export async function guardedFetch<T = unknown>(
     const needed = error.details as unknown as Needed;
     let proof: string;
     try {
-      const session = await openSession(
-        needed.core,
-        needed.requireUv ? "fingerprint" : proverFor(needed.passphrase),
-      );
+      const session = await openSession(needed.core);
       proof = await signIntent(
         session,
         needed.op,
@@ -46,7 +42,7 @@ export async function guardedFetch<T = unknown>(
         window.location.origin,
       );
     } catch (cause) {
-      throw new Error(failure(cause, needed.requireUv));
+      throw new Error(failure(cause));
     }
     return apiFetch<T>(path, {
       ...init,

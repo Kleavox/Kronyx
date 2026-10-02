@@ -87,22 +87,20 @@ func run(args []string) error {
 }
 
 type trustOptions struct {
-	initial    bool
-	reset      bool
-	origin     string
-	config     string
-	keys       []string
-	passphrase string
-	grant      bool
+	initial bool
+	reset   bool
+	origin  string
+	config  string
+	keys    []string
+	grant   bool
 }
 
 func parseTrust(args []string) (trustOptions, error) {
 	var options trustOptions
 	flags := flag.NewFlagSet("trust", flag.ContinueOnError)
-	flags.BoolVar(&options.initial, "initial", false, "trust the first core devices")
+	flags.BoolVar(&options.initial, "initial", false, "trust the first devices")
 	flags.BoolVar(&options.reset, "reset", false, "forget every trusted device")
-	flags.StringVar(&options.passphrase, "passphrase", "", "the passphrase key as <salt>.<iterations>.<publicKey>")
-	flags.BoolVar(&options.grant, "grant", false, "give the core devices access to this server")
+	flags.BoolVar(&options.grant, "grant", false, "let the trusted devices reach this server")
 	flags.StringVar(&options.origin, "origin", "", "the dashboard origin, such as https://kry.kleavox.xyz")
 	flags.StringVar(&options.config, "config", defaultConfigPath, "path to the agent config")
 	if err := flags.Parse(args); err != nil {
@@ -141,7 +139,7 @@ func trustDevices(args []string) error {
 	if err != nil {
 		return err
 	}
-	trust, err := actions.ParseTrustArgs(options.origin, options.keys, options.passphrase, options.grant)
+	trust, err := actions.ParseTrustArgs(options.origin, options.keys, options.grant)
 	if err != nil {
 		return err
 	}
@@ -149,7 +147,7 @@ func trustDevices(args []string) error {
 	if err := actions.SaveTrust(actions.StateDir, trust); err != nil {
 		return err
 	}
-	fmt.Printf("This server trusts %d core devices; %d have access.\n", len(trust.Core), len(trust.Access))
+	fmt.Printf("This server trusts %d devices; %d reach it.\n", len(trust.Core), len(trust.Access))
 	return nil
 }
 

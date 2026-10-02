@@ -1,10 +1,4 @@
-import {
-  SESSION_MS,
-  createSession,
-  grantVerified,
-  type Proof,
-  type Session,
-} from "./passkeys";
+import { SESSION_MS, createSession, type Session } from "./passkeys";
 
 export { SESSION_MS };
 export const HIDDEN_LIMIT_MS = 2 * 60_000;
@@ -161,21 +155,11 @@ async function withPrompt<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
-export async function openSession(
-  devices: string[],
-  prove: Proof = null,
-): Promise<Session> {
+export async function openSession(devices: string[]): Promise<Session> {
   const current = activeSession();
-  if (
-    current &&
-    devices.includes(current.grant.credentialId) &&
-    (grantVerified(current) ||
-      (prove !== "fingerprint" && (!prove || current.grant.proof)))
-  ) {
-    return current;
-  }
+  if (current && devices.includes(current.grant.credentialId)) return current;
   const session = await withPrompt(() =>
-    createSession(devices, window.location.hostname, prove),
+    createSession(devices, window.location.hostname),
   );
   startSession(session);
   return session;

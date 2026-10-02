@@ -3,20 +3,21 @@ import { describe, expect, it } from "vitest";
 import { trustChangeSchema } from "./change";
 import { summarizeChange } from "./summary";
 
-const names = { a: "Laptop", b: "Phone", c: "Tablet" };
+const names = { a: "Laptop", b: "Phone", c: "Tablet", d: "Key", e: "Spare" };
 const N1 = "11111111-1111-4111-8111-111111111111";
 const N2 = "22222222-2222-4222-8222-222222222222";
+const N3 = "33333333-3333-4333-8333-333333333333";
+const servers = { [N1]: "pivox", [N2]: "vps", [N3]: "europa" };
 
 describe("change summaries", () => {
   it("names an admission", () => {
     const summary = summarizeChange({
       names,
+      servers,
       currentCore: ["a"],
       currentAccess: { [N1]: ["a"], [N2]: ["a"] },
-      currentPassphrase: false,
       change: {
         core: ["a", "b"],
-        passphrase: false,
         access: { [N1]: ["a", "b"], [N2]: ["a", "b"] },
       },
     });
@@ -28,16 +29,15 @@ describe("change summaries", () => {
     ]);
   });
 
-  it("names a removal, an access change and a passphrase", () => {
+  it("names a removal and an access change", () => {
     expect(
       summarizeChange({
         names,
+        servers,
         currentCore: ["a", "b", "c"],
         currentAccess: { [N1]: ["a", "c"] },
-        currentPassphrase: true,
         change: {
           core: ["a", "b"],
-          passphrase: false,
           access: { [N1]: ["a"] },
         },
       }).title,
@@ -45,51 +45,59 @@ describe("change summaries", () => {
     expect(
       summarizeChange({
         names,
+        servers,
         currentCore: ["a", "b"],
         currentAccess: { [N1]: ["a"], [N2]: ["a"] },
-        currentPassphrase: false,
         change: {
           core: null,
-          passphrase: false,
           access: { [N1]: ["a", "b"], [N2]: ["a", "b"] },
         },
       }).title,
+    ).toBe("Give Phone access to pivox and vps");
+  });
+
+  it("names who gets or loses which server", () => {
+    const title = (
+      currentAccess: Record<string, string[]>,
+      access: Record<string, string[]>,
+    ) =>
+      summarizeChange({
+        names,
+        servers,
+        currentCore: ["a", "b", "c", "d", "e"],
+        currentAccess,
+        change: { core: null, access },
+      }).title;
+    expect(title({ [N1]: ["a"] }, { [N1]: ["a", "c"] })).toBe(
+      "Give Tablet access to pivox",
+    );
+    expect(title({ [N1]: ["a", "c"] }, { [N1]: ["a"] })).toBe(
+      "Take pivox from Tablet",
+    );
+    expect(title({ [N3]: ["a", "b", "c"] }, { [N3]: [] })).toBe(
+      "Take europa from Laptop, Phone and Tablet",
+    );
+    expect(title({ [N3]: ["a", "b", "c", "d"] }, { [N3]: [] })).toBe(
+      "Take europa from 4 devices",
+    );
+    expect(
+      title(
+        { [N1]: ["a"], [N2]: ["a", "c"] },
+        { [N1]: ["a", "c"], [N2]: ["a"] },
+      ),
+    ).toBe("Give Tablet access to pivox · Take vps from Tablet");
+    expect(
+      title({ [N1]: [], [N2]: [] }, { [N1]: ["a", "b"], [N2]: ["b", "c"] }),
     ).toBe("Change access on 2 servers");
     expect(
       summarizeChange({
         names,
+        servers: {},
         currentCore: ["a", "b"],
-        currentAccess: { [N1]: ["a", "b"] },
-        currentPassphrase: false,
-        change: { core: null, passphrase: true, access: { [N1]: ["a", "b"] } },
+        currentAccess: { [N1]: ["a"] },
+        change: { core: null, access: { [N1]: ["a", "b"] } },
       }).title,
-    ).toBe("Set passphrase");
-    expect(
-      summarizeChange({
-        names,
-        currentCore: ["a", "b"],
-        currentAccess: { [N1]: ["a", "b"] },
-        currentPassphrase: true,
-        change: { core: null, passphrase: true, access: { [N1]: ["a", "b"] } },
-      }).title,
-    ).toBe("Change passphrase");
-  });
-
-  it("names turning on fingerprints next to the removal it needs", () => {
-    const summary = summarizeChange({
-      names,
-      currentCore: ["a", "b"],
-      currentAccess: { [N1]: ["a", "b"] },
-      currentPassphrase: true,
-      change: {
-        core: ["b"],
-        passphrase: false,
-        requireUv: true,
-        access: { [N1]: ["b"] },
-      },
-    });
-    expect(summary.title).toBe("Remove Laptop · Require fingerprint");
-    expect(summary.requireUv).toBe(true);
+    ).toBe("Give Phone access to an unknown server");
   });
 
   it("parses a change and refuses one of the old format", () => {

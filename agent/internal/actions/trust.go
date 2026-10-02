@@ -1,7 +1,6 @@
 package actions
 
 import (
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"net/url"
@@ -17,11 +16,8 @@ import (
 )
 
 const (
-	trustChangeLimit   = 24 * time.Hour
-	maxTrustedKeys     = 20
-	minPassphraseWork  = 100000
-	maxPassphraseWork  = 10000000
-	passphraseSaltSize = 16
+	trustChangeLimit = 24 * time.Hour
+	maxTrustedKeys   = 20
 )
 
 var credentialID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -67,7 +63,7 @@ func LoadTrust(stateDir string) (Trust, error) {
 	}
 	var trust Trust
 	if err := strict(raw, &trust); err == nil && (trust.V == 2 || len(trust.Core) == 0) {
-		return trust, nil
+		return settled(trust), nil
 	}
 	var old trustV1
 	if err := strict(raw, &old); err != nil {
@@ -78,7 +74,7 @@ func LoadTrust(stateDir string) (Trust, error) {
 	}
 	upgraded := Trust{V: 2, NodeID: old.NodeID, Origin: old.Origin, RPID: old.RPID, Version: old.Version, Core: old.Keys}
 	upgraded.Access = upgraded.coreIDs()
-	return upgraded, nil
+	return settled(upgraded), nil
 }
 
 func SaveTrust(stateDir string, trust Trust) error {
@@ -128,23 +124,11 @@ func checkKeys(keys []TrustKey) error {
 	return nil
 }
 
-func checkPassphrase(key *PassphraseKey) error {
-	if key == nil {
-		return nil
-	}
-	salt, saltErr := decode("passphrase salt", key.Salt)
-	public, publicErr := decode("passphrase key", key.PublicKey)
-	if saltErr != nil || publicErr != nil || len(salt) != passphraseSaltSize || len(public) != ed25519.PublicKeySize || key.Iterations < minPassphraseWork || key.Iterations > maxPassphraseWork {
-		return errors.New("the passphrase key is malformed")
-	}
-	return nil
-}
-
 func checkAccess(access, core []string) error {
 	var seen []string
 	for _, id := range access {
 		if !slices.Contains(core, id) {
-			return errors.New("access names a device outside the core")
+			return errors.New("access names a device the servers do not trust")
 		}
 		if slices.Contains(seen, id) {
 			return errors.New("access lists a device twice")
@@ -188,12 +172,10 @@ func ApplyTrustChange(current Trust, request Request, now time.Time) (Trust, err
 	if change.RPID != host {
 		return Trust{}, errors.New("the rp id is not the host of the origin")
 	}
-	if err := checkPassphrase(change.Passphrase); err != nil {
-		return Trust{}, err
+	if change.Passphrase != nil {
+		return Trust{}, errors.New("servers no longer use a passphrase")
 	}
-	if change.Passphrase != nil && (current.RequireUV || change.RequireUV != nil) {
-		return Trust{}, errors.New("fingerprints are required, so no passphrase is used")
-	}
+	current = settled(current)
 	if len(current.Core) == 0 {
 		return firstTrust(change, signed)
 	}
@@ -228,24 +210,16 @@ func ApplyTrustChange(current Trust, request Request, now time.Time) (Trust, err
 		input.Change.Core = next.coreIDs()
 	}
 	input.Change.Access = access
-	if change.Passphrase != nil {
-		input.Change.PassphraseChanged = current.Passphrase == nil || *current.Passphrase != *change.Passphrase
-		next.Passphrase = change.Passphrase
-	}
-	if next.RequireUV {
-		next.Passphrase = nil
-	}
-	input.Change.RequireUV = next.RequireUV && !current.RequireUV
 	challenge := digest(changeBytes)
 	for _, item := range signed.Approvals {
 		uv, err := verifyAssertion(current, input.Current.Core, item.Assertion, challenge)
 		if err != nil {
 			return Trust{}, err
 		}
-		if err := current.verified(uv, item.Proof, "approve:"+item.CredentialID, changeBytes); err != nil {
+		if err := verified(uv); err != nil {
 			return Trust{}, err
 		}
-		input.Approvals = append(input.Approvals, quorumApproval{ID: item.CredentialID, Verified: true, UV: uv})
+		input.Approvals = append(input.Approvals, item.CredentialID)
 	}
 	if err := evaluateQuorum(input); err != nil {
 		return Trust{}, err
@@ -268,14 +242,14 @@ func firstTrust(change trustChange, signed signedTrust) (Trust, error) {
 	for id, list := range change.Access {
 		nodeID, access = id, list
 	}
-	next := Trust{V: 2, NodeID: nodeID, Origin: change.Origin, RPID: change.RPID, Version: change.Version, Core: change.Core, Access: access, Passphrase: change.Passphrase, RequireUV: change.RequireUV != nil}
+	next := Trust{V: 2, NodeID: nodeID, Origin: change.Origin, RPID: change.RPID, Version: change.Version, Core: change.Core, Access: access, RequireUV: true}
 	if err := checkAccess(access, next.coreIDs()); err != nil {
 		return Trust{}, err
 	}
 	return next, nil
 }
 
-func ParseTrustArgs(origin string, tokens []string, passphrase string, grant bool) (Trust, error) {
+func ParseTrustArgs(origin string, tokens []string, grant bool) (Trust, error) {
 	host, err := originHost(origin)
 	if err != nil {
 		return Trust{}, err
@@ -295,24 +269,9 @@ func ParseTrustArgs(origin string, tokens []string, passphrase string, grant boo
 	if err := checkKeys(keys); err != nil {
 		return Trust{}, err
 	}
-	trust := Trust{V: 2, Origin: origin, RPID: host, Version: 1, Core: keys, Access: []string{}}
+	trust := Trust{V: 2, Origin: origin, RPID: host, Version: 1, Core: keys, Access: []string{}, RequireUV: true}
 	if grant {
 		trust.Access = trust.coreIDs()
-	}
-	if passphrase != "" {
-		parts := strings.Split(passphrase, ".")
-		if len(parts) != 3 {
-			return Trust{}, errors.New("the passphrase key is malformed")
-		}
-		iterations, err := strconv.Atoi(parts[1])
-		if err != nil {
-			return Trust{}, errors.New("the passphrase key is malformed")
-		}
-		key := &PassphraseKey{Salt: parts[0], Iterations: iterations, PublicKey: parts[2]}
-		if err := checkPassphrase(key); err != nil {
-			return Trust{}, err
-		}
-		trust.Passphrase = key
 	}
 	return trust, nil
 }

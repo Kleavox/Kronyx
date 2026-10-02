@@ -38,10 +38,12 @@ func TestQuorumMatchesTheSharedFixture(t *testing.T) {
 }
 
 func TestQuorumSaysWhatIsMissing(t *testing.T) {
-	input := quorumInput{Approvals: []quorumApproval{{ID: "a", Verified: true}}}
-	input.Current.Core = []string{"a", "b"}
-	input.Current.Access = []string{"a", "b"}
-	input.Change.Core = []string{"a", "b", "c"}
-	input.Change.Access = []string{"a", "b"}
-	refused(t, evaluateQuorum(input), "needs 1 more core device")
+	input := quorumInput{Approvals: []string{"a"}}
+	input.Current.Core = []string{"a", "b", "c"}
+	input.Current.Access = []string{"a", "b", "c"}
+	input.Change.Core = []string{"a", "b", "c", "d"}
+	input.Change.Access = []string{"a", "b", "c"}
+	refused(t, evaluateQuorum(input), "needs 1 more approval")
+	input.Approvals = nil
+	refused(t, evaluateQuorum(input), "needs an approval")
 }

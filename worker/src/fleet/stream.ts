@@ -42,6 +42,7 @@ export interface StreamState {
   beat: Beat | null;
   window: Accumulator | null;
   wroteNode: boolean;
+  away?: boolean;
 }
 
 export interface Flush {

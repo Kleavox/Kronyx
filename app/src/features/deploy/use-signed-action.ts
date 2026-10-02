@@ -7,7 +7,6 @@ import {
 } from "@/lib/api";
 import { failure } from "@/lib/proof";
 import { signersFor } from "@/lib/devices";
-import { proverFor } from "@/lib/passphrase-prompt";
 import { signTargets, type CommandTarget } from "@/lib/passkeys";
 import type { ActionVerb, BatchMode } from "@/types";
 
@@ -36,17 +35,8 @@ export function useSignedAction(toastErrors = true) {
       const reports = targets.map((target) => trust.get(target.nodeId) ?? null);
       const signers = signersFor(devices.data?.devices ?? [], reports);
       if (signers.length === 0) throw new Error(NO_SIGNER);
-      const ruled = reports.some((report) => report?.requireUv);
-      const strict = reports.some((report) => report?.passphrase);
       try {
-        const session = await open(
-          signers,
-          ruled
-            ? "fingerprint"
-            : strict
-              ? proverFor(devices.data?.passphrase ?? null)
-              : null,
-        );
+        const session = await open(signers);
         return await postActions({
           action,
           mode,
@@ -54,7 +44,7 @@ export function useSignedAction(toastErrors = true) {
         });
       } catch (error) {
         throw error instanceof DOMException && error.name === "NotAllowedError"
-          ? new Error(failure(error, ruled))
+          ? new Error(failure(error))
           : error;
       }
     },
